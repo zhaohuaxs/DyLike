@@ -22,6 +22,44 @@
             app:layout_constraintTop_toTopOf="parent"
             tools:ignore="ContentDescription" />
 
+        <!-- 启动自动播放角标：当该播放列表被设为启动自动播放时显示 -->
+        <TextView
+            android:id="@+id/tv_auto_play_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_auto_play_badge"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:text="自动"
+            android:textColor="@android:color/white"
+            android:textSize="10sp"
+            android:translationZ="1dp"
+            android:visibility="gone"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintBottom_toBottomOf="@+id/iv_cover"
+            tools:visibility="visible" />
+
+        <!-- 播放类型角标：当播放列表显式设为短/长视频时显示（全局模式不显示） -->
+        <TextView
+            android:id="@+id/tv_play_mode_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_play_mode_badge"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:textColor="@android:color/white"
+            android:textSize="10sp"
+            android:translationZ="1dp"
+            android:visibility="gone"
+            app:layout_constraintEnd_toEndOf="@+id/iv_cover"
+            app:layout_constraintTop_toTopOf="@+id/iv_cover"
+            tools:text="短"
+            tools:visibility="visible" />
+
         <TextView
             android:id="@+id/tv_title"
             android:layout_width="0dp"

@@ -23,6 +23,8 @@ class MediaItemAdapter(
     private var onLongItemClick: ((item: MediaData, position: Int) -> Unit)? = null
     private var batchMode = false
     private var sourceList: List<SourceData> = emptyList()
+    // 当前设为启动自动播放的媒体库 id（空表示未设置）；用于控制卡片角标显隐
+    private var autoPlayMediaId: String = ""
 
     override fun createBinding(inflater: LayoutInflater, parent: ViewGroup): ItemMediaListBinding {
         return ItemMediaListBinding.inflate(LayoutInflater.from(parent.context), parent, false)
@@ -37,7 +39,7 @@ class MediaItemAdapter(
             "4:3" -> "10:9"
             else -> "9:13"
         }
-        
+
         val cardParams = binding.cardView.layoutParams as ConstraintLayout.LayoutParams
         cardParams.dimensionRatio = cardRatio
         binding.cardView.layoutParams = cardParams
@@ -59,6 +61,9 @@ class MediaItemAdapter(
             binding.ivType.visibility = View.GONE
         }
         binding.ivThumb.setCover(item, sourceList)
+        // 显示启动自动播放角标（仅当该媒体库被设为启动自动播放时）
+        binding.tvAutoPlayBadge.visibility =
+            if (autoPlayMediaId.isNotEmpty() && autoPlayMediaId == item.id) View.VISIBLE else View.GONE
         changeSelect(binding, item, position)
         binding.root.setOnClickListener {
             if (position < dataSet.size) {
@@ -126,6 +131,16 @@ class MediaItemAdapter(
     fun setSourceList(sourceList: List<SourceData>) {
         this.sourceList = sourceList
         notifyAllChanged()
+    }
+
+    // 设置当前启动自动播放的媒体库 id，并刷新角标显示
+    // 参数允许为空（SPManager.string 返回 String?），内部归一化为非空字符串处理
+    fun setAutoPlayMediaId(autoPlayMediaId: String?) {
+        val normalized = autoPlayMediaId ?: ""
+        if (this.autoPlayMediaId != normalized) {
+            this.autoPlayMediaId = normalized
+            notifyAllChanged()
+        }
     }
 
     fun getBatchMode(): Boolean {

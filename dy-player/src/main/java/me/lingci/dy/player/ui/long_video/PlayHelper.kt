@@ -328,6 +328,24 @@ object PlayHelper {
         }
     }
 
+    /**
+     * 播放完成时同步清零 playSeek，保留弹幕轨道信息。
+     * 绕过 [updateInfo] 的 6 秒节流，确保下次点击"重新播放"时 onPlayStart 不会 seekTo 到历史位置。
+     */
+    fun resetPlaySeek(context: Context, videoData: VideoData) {
+        try {
+            val file = infoFile(context, videoData)
+            if (!file.exists()) return
+            // 读取现有 info，仅把 playSeek 置 0，保留弹幕轨道
+            val info = file.readJsonEntity<PlayInfo>() ?: return
+            if (info.playSeek == 0L) return
+            info.playSeek = 0L
+            file.writeJsonEntity(info)
+        } catch (e: Exception) {
+            logD("resetPlaySeek failed", videoData.videoUrl, e)
+        }
+    }
+
 }
 
 @OptIn(InternalSerializationApi::class)

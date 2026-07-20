@@ -178,6 +178,18 @@ open class SpUtil(context: Context) : SpBase(context) {
     // 长视频画中画：开启后按 Home 键自动进入 PiP 小窗（需系统支持）
     var longVideoPip by SPManager.boolean(true)
 
+    // 实验室开关：App 启动时自动播放指定媒体库的上次视频
+    var autoPlayOnLaunch by SPManager.boolean(false)
+
+    // 实验室开关：短视频自动加载播放进度（开启时恢复上次进度，关闭时每次从头播放）
+    var shortAutoLoadProgress by SPManager.boolean(true)
+
+    // 设为启动自动播放的媒体库 id（空字符串表示未设置；单选，仅保留一个）
+    var autoPlayMediaId by SPManager.string("")
+
+    // 设为启动自动播放的播放列表 id（空字符串表示未设置；与 autoPlayMediaId 互斥，仅保留一个）
+    var autoPlayPlaylistId by SPManager.string("")
+
     private companion object {
         private const val KEY_VIDEO_PLAYER_CORE = "videoPlayerCore"
         // Kept only for migration and old backup restore. New runtime reads videoPlayerCore.

@@ -21,6 +21,7 @@ import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.ActivityMainBinding
 import me.lingci.dy.player.entity.VersionData
 import me.lingci.dy.player.util.AppUtil
+import me.lingci.dy.player.util.AutoPlayOnLaunch
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.okhttp.httpGet
 import me.lingci.lib.base.ui.BaseDisplayActivity
@@ -47,6 +48,11 @@ class MainActivity : BaseDisplayActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         init()
+        // 启动自动播放：仅在冷启动（无 savedInstanceState）时触发一次，
+        // 避免旋转屏幕、从后台恢复或从播放页返回时重复触发
+        if (savedInstanceState == null) {
+            AutoPlayOnLaunch.tryTrigger(this, lifecycleScope)
+        }
     }
 
     override fun onStart() {

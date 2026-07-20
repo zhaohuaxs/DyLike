@@ -58,6 +58,16 @@ class LabSettingsFragment : BaseFragment() {
         binding.swLabLongVideoPortrait.setOnClickListener {
             spUtil.labLongVideoPortrait = binding.swLabLongVideoPortrait.isChecked
         }
+        // App 启动自动播放：开启后可在媒体库长按菜单中指定一个媒体库
+        binding.swLabAutoPlayOnLaunch.isChecked = spUtil.autoPlayOnLaunch
+        binding.swLabAutoPlayOnLaunch.setOnClickListener {
+            spUtil.autoPlayOnLaunch = binding.swLabAutoPlayOnLaunch.isChecked
+        }
+        // 短视频自动加载进度：开启时恢复上次进度，关闭时每次从头播放
+        binding.swLabShortAutoLoadProgress.isChecked = spUtil.shortAutoLoadProgress
+        binding.swLabShortAutoLoadProgress.setOnClickListener {
+            spUtil.shortAutoLoadProgress = binding.swLabShortAutoLoadProgress.isChecked
+        }
     }
 
     override fun resetView() {

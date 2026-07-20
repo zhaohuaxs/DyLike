@@ -238,7 +238,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                 return true
             }
             R.id.menu_add_to_playlist -> {
-                val videos = mediaDetailAdapter.getData()
+                // 根据当前模式选择对应适配器获取视频数据
+                val videos = if (shortMode) videoShortItemAdapter.getData() else mediaDetailAdapter.getData()
                 if (videos.isEmpty()) {
                     ToastUtil.showToast(this, "没有可添加的视频")
                 } else {

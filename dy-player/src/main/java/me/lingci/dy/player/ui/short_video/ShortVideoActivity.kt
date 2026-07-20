@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.ActivityShortVideoBinding
+import me.lingci.dy.player.cache.ProgressManagerImpl
 import me.lingci.dy.player.core.DyPlayerCore
 import me.lingci.dy.player.core.DyPlayerCoreRegistry
 import me.lingci.dy.player.entity.MediaData
@@ -53,6 +54,7 @@ import me.lingci.lib.player.widget.render.ShortVideoRenderViewFactory
 import me.lingci.lib.player.widget.videoview.CustomVideoView
 import xyz.doikki.videoplayer.player.BaseVideoView.OnStateChangeListener
 import xyz.doikki.videoplayer.player.VideoView
+import xyz.doikki.videoplayer.player.VideoViewManager
 import xyz.doikki.videoplayer.render.TextureRenderViewFactory
 import java.io.File
 import java.io.FileOutputStream
@@ -79,6 +81,8 @@ class ShortVideoActivity : BaseActivity() {
         private const val CONTROL_ALPHA_DIM_PROGRESS = 0.4f
         private const val CONTROL_ALPHA_RESTORE_VISIBLE_PROGRESS = 0.5f
         private const val CONTROL_ALPHA_RESTORE_DURATION = 160L
+        // 播放完成判定阈值：剩余时间小于此值视为播放完成（毫秒）
+        private const val COMPLETION_THRESHOLD = 1000L
 
         fun start(context: Context, list: ArrayList<VideoData>, index: Int, history: Boolean) {
             val i = Intent(context, ShortVideoActivity::class.java)
@@ -114,6 +118,25 @@ class ShortVideoActivity : BaseActivity() {
             i.putExtra(KEY_INDEX, index)
             i.putExtra(KEY_HISTORY, history)
             i.putExtra(KEY_RANDOM, random)
+            start(context, i, list)
+        }
+
+        // 同时携带 mediaData 与 random：供自动播放等需要既记录历史又显式控制随机的入口使用
+        fun start(
+            context: Context,
+            mediaData: MediaData?,
+            list: ArrayList<VideoData>,
+            index: Int,
+            history: Boolean,
+            random: Boolean
+        ) {
+            val i = Intent(context, ShortVideoActivity::class.java)
+            i.putExtra(KEY_INDEX, index)
+            i.putExtra(KEY_HISTORY, history)
+            i.putExtra(KEY_RANDOM, random)
+            if (mediaData != null && !history) {
+                i.putExtra(KEY_MEDIA, mediaData)
+            }
             start(context, i, list)
         }
 
@@ -599,6 +622,11 @@ class ShortVideoActivity : BaseActivity() {
 
     private fun startPlay(position: Int) {
         mediaPlaybackRecorder.cancelLastPlayedUpdate()
+        // 记录上一个视频的播放状态，用于切换时判断是否需要清除进度
+        // 注意：currentPosition getter 会更新 mCurrentPosition，必须在 release() 之前调用
+        val previousUrl = if (mCurPos in mVideoList.indices) mVideoList[mCurPos].videoUrl else null
+        val previousPosition = if (::mVideoView.isInitialized) mVideoView.currentPosition else 0L
+        val previousDuration = if (::mVideoView.isInitialized) mVideoView.duration else 0L
         val count = mViewPagerImpl.childCount
         for (i in 0 until count) {
             val itemView = mViewPagerImpl.getChildAt(i)
@@ -607,12 +635,25 @@ class ShortVideoActivity : BaseActivity() {
                 activeShortVideoControlView?.setOnVideoTransformChangedListener(null)
                 clearSubtitleCueListener()
                 mVideoView.release()
+                // 播放完成重置进度：循环播放下 onCompletion 不触发，
+                // 若上一个视频已播放到接近结尾，清除其进度，避免下次从最后一刻开始
+                if (previousUrl != null && previousDuration > 0 &&
+                    previousPosition >= previousDuration - COMPLETION_THRESHOLD
+                ) {
+                    (VideoViewManager.getConfig().mProgressManager as? ProgressManagerImpl)
+                        ?.clearSavedProgressByUrl(previousUrl)
+                }
                 removeViewFormParent(mVideoView)
                 subtitleControlView.clearText()
                 subtitleControlView.clearSubtitleLayoutBounds()
                 // mVideoList[position]
                 val videoBean = viewHolder.mVideoData
                 applyPlaybackCoreFor(videoBean)
+                // 自动加载进度开关：关闭时清除新视频进度记录，使其从 0 开始播放
+                if (!spUtil.shortAutoLoadProgress) {
+                    (VideoViewManager.getConfig().mProgressManager as? ProgressManagerImpl)
+                        ?.clearSavedProgressByUrl(videoBean.videoUrl)
+                }
                 logAndCache(TAG, "D", "开始播放: pos=$position, url=${videoBean.videoUrl}, type=${videoBean.type}")
                 if (videoBean.type == StorageType.WEBDAV) {
                     logAndCache(TAG, "D", "URL类型: webdav, url=${videoBean.videoUrl}")
