@@ -152,11 +152,16 @@ class ShortVideoActivity : BaseActivity() {
     private var immersiveScheduled = false
     private val enterImmersiveRunnable = Runnable {
         immersiveScheduled = false
-        activeShortVideoControlView?.enterImmersive()
+        // 暂停态不自动进沉浸(用户主动暂停,需保留控制层);恢复播放后由 onPlayStateChanged 重新计时
+        if (::mVideoView.isInitialized && mVideoView.isPlaying) {
+            activeShortVideoControlView?.enterImmersive()
+        }
     }
     private fun scheduleImmersive() {
         if (!spUtil.showSysBar.not()) return
         immersiveHandler.removeCallbacks(enterImmersiveRunnable)
+        // 视频暂停时不调度进沉浸(用户主动暂停,需保留控制层)
+        if (::mVideoView.isInitialized && !mVideoView.isPlaying) return
         immersiveScheduled = true
         immersiveHandler.postDelayed(enterImmersiveRunnable, 3000)
     }
