@@ -490,6 +490,13 @@ class ShortVideoActivity : BaseActivity() {
                     updateSubtitleDocking()
                     onPlayStart()
                     scheduleMediaLastPlayedUpdate(mCurPos)
+                    // 恢复播放 → 重新计时沉浸(scheduleImmersive 内部先 remove 再 post,幂等)
+                    scheduleImmersive()
+                }
+                if (playState == VideoView.STATE_PAUSED) {
+                    logAndCache(TAG, "D", "STATE_PAUSED: pos=$mCurPos")
+                    // 暂停 → 取消已挂的沉浸计时(用户主动暂停,不应再被吞掉控制层)
+                    cancelImmersive()
                 }
                 if (playState == VideoView.STATE_ERROR) {
                     logAndCache(TAG, "E", "STATE_ERROR: pos=$mCurPos")
