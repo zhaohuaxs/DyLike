@@ -396,6 +396,116 @@ fi
 $ADB shell 'run-as '"$PKG"' sed -i '"'"'s|<boolean name="showSysBar" value="false" />|<boolean name="showSysBar" value="true" />|'"'"' /data/data/'"$PKG"'/shared_prefs/'"$PKG"'_preferences.xml' 2>/dev/null || true
 
 # ============================================================
+# 测试 13: 沉浸态单击 — 退沉浸但继续播放(不暂停)
+# ============================================================
+echo ""
+log_info "=== 测试 13: 沉浸态单击应退沉浸且继续播放 ==="
+
+# 计算屏幕中心(避免依赖测试 11 的局部变量)
+SCREEN_W=$($ADB shell wm size 2>/dev/null | grep -o '[0-9]*x[0-9]*' | head -1 | cut -d'x' -f1)
+SCREEN_H=$($ADB shell wm size 2>/dev/null | grep -o '[0-9]*x[0-9]*' | head -1 | cut -d'x' -f2)
+TAP_X=$((SCREEN_W / 2))
+TAP_Y=$((SCREEN_H / 2))
+SHORT_VIDEO_ACT="$PKG/me.lingci.dy.player.ui.short_video.ShortVideoActivity"
+
+# 确保沉浸开启(showSysBar=false),幂等
+$ADB shell 'run-as '"$PKG"' sed -i '"'"'s|<boolean name="showSysBar" value="true" />|<boolean name="showSysBar" value="false" />|'"'"' /data/data/'"$PKG"'/shared_prefs/'"$PKG"'_preferences.xml' 2>/dev/null || true
+
+$ADB shell am force-stop $PKG
+sleep 2
+SHORT_VIDEO=$(find_test_video)
+clear_logcat
+$ADB shell am start -a android.intent.action.VIEW -d "file://$SHORT_VIDEO" -t "video/mp4" -n "$SHORT_VIDEO_ACT" >/dev/null 2>&1
+sleep $WAIT_MED
+
+# 等待进入沉浸(3秒定时器 + 余量)
+sleep 5
+
+# 记录单击前的最近播放状态
+BEFORE=$( $ADB logcat -d 2>/dev/null | grep -oE 'STATE_(PLAYING|PAUSED)' | tail -1 )
+log_info "单击前最近状态: $BEFORE"
+
+# 沉浸态单击屏幕中心
+$ADB shell input tap $TAP_X $TAP_Y
+sleep 1
+
+# 单击后 1 秒内的播放状态(应仍为 PLAYING, 不应出现新的 STATE_PAUSED)
+AFTER=$( $ADB logcat -d 2>/dev/null | grep -oE 'STATE_(PLAYING|PAUSED)' | tail -1 )
+log_info "单击后最近状态: $AFTER"
+
+if [ "$AFTER" = "STATE_PLAYING" ]; then
+    log_pass "沉浸态单击后继续播放(未暂停)"
+else
+    log_fail "沉浸态单击后播放被中断(状态=$AFTER, 期望 STATE_PLAYING)"
+fi
+
+# ============================================================
+# 测试 14: 沉浸态双击 — 退沉浸 + 点赞 + 继续播放
+# ============================================================
+echo ""
+log_info "=== 测试 14: 沉浸态双击应退沉浸且继续播放 ==="
+
+# 重新进入沉浸
+$ADB shell am force-stop $PKG
+sleep 2
+clear_logcat
+$ADB shell am start -a android.intent.action.VIEW -d "file://$SHORT_VIDEO" -t "video/mp4" -n "$SHORT_VIDEO_ACT" >/dev/null 2>&1
+sleep $WAIT_MED
+sleep 5  # 进沉浸
+
+# 双击(两次 input tap,间隔 < 双击阈值 300ms)
+$ADB shell input tap $TAP_X $TAP_Y
+$ADB shell input tap $TAP_X $TAP_Y
+sleep 1
+
+AFTER2=$( $ADB logcat -d 2>/dev/null | grep -oE 'STATE_(PLAYING|PAUSED)' | tail -1 )
+log_info "双击后最近状态: $AFTER2"
+
+# UI 应恢复(tv_title 可见)
+$ADB shell uiautomator dump /sdcard/dbl_check.xml >/dev/null 2>&1
+$ADB exec-out cat /sdcard/dbl_check.xml > /tmp/dbl_ui.xml 2>/dev/null
+DBL_TITLE=$(grep -c 'tv_title' /tmp/dbl_ui.xml 2>/dev/null || echo "0")
+
+if [ "$AFTER2" = "STATE_PLAYING" ] && [ "$DBL_TITLE" -gt 0 ]; then
+    log_pass "沉浸态双击后退沉浸并继续播放"
+else
+    log_fail "沉浸态双击异常(状态=$AFTER2, tv_title出现次数=$DBL_TITLE)"
+fi
+
+# ============================================================
+# 测试 15: 暂停态不自动进沉浸 — 暂停后等待 >3s 控制层仍可见
+# ============================================================
+echo ""
+log_info "=== 测试 15: 暂停态不应自动进沉浸 ==="
+
+# 当前应在非沉浸态(上一测试退出了沉浸)。单击一次触发暂停(非沉浸态单击=暂停)
+# 注意:需确保此刻是非沉浸态。先等一秒再单击,此时 UI 已恢复(测试14已退出沉浸)
+$ADB shell input tap $TAP_X $TAP_Y
+sleep 1
+
+# 确认已暂停
+PAUSED_STATE=$( $ADB logcat -d 2>/dev/null | grep -oE 'STATE_(PLAYING|PAUSED)' | tail -1 )
+log_info "暂停操作后状态: $PAUSED_STATE"
+
+# 等待超过沉浸定时器(3秒 + 余量)
+sleep 5
+
+# UI 应仍可见(tv_title 存在),证明未进沉浸
+$ADB shell uiautomator dump /sdcard/pause_check.xml >/dev/null 2>&1
+$ADB exec-out cat /sdcard/pause_check.xml > /tmp/pause_ui.xml 2>/dev/null
+PAUSE_TITLE=$(grep -c 'tv_title' /tmp/pause_ui.xml 2>/dev/null || echo "0")
+
+if [ "$PAUSE_TITLE" -gt 0 ]; then
+    log_pass "暂停态未自动进沉浸(控制层保留)"
+else
+    log_fail "暂停态错误地进入了沉浸(tv_title 被隐藏)"
+fi
+
+# 恢复播放(再单击一次),避免影响后续测试
+$ADB shell input tap $TAP_X $TAP_Y
+sleep 1
+
+# ============================================================
 # 汇总
 # ============================================================
 echo ""
