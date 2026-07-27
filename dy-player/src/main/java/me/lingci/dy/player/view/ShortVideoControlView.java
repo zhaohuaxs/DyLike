@@ -203,6 +203,13 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     // 解决单击：仅当确定不是双击时触发
     @Override
     public boolean onSingleTapConfirmed(@NonNull MotionEvent e) {
+        if (immersiveMode) {
+            // 沉浸态单击：仅退出沉浸并重新计时，不暂停播放
+            if (mOnShortVideoListener != null) {
+                mOnShortVideoListener.onSingleTap();
+            }
+            return true;
+        }
         if (mOnShortVideoListener != null) {
             mOnShortVideoListener.onSingleTap();
         }
