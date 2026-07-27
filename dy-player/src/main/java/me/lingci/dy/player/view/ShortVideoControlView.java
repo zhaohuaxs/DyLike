@@ -265,7 +265,6 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
     @Override
     public boolean onDoubleTap(@NonNull MotionEvent e) {
-        if (immersiveMode) return true;
         Log.d(this, "onDoubleTap");
         showLikeAnimation(e.getX(), e.getY());
         if (PlayerInitializer.Player.INSTANCE.getShortShowLike() && !mBinding.playLike.isSelected()) {
@@ -273,6 +272,10 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
             if (mOnShortVideoListener != null) {
                 mOnShortVideoListener.onLike(true);
             }
+        }
+        // 沉浸态双击：退沉浸 + 重新计时（点赞动画照常显示，继续播放）
+        if (immersiveMode && mOnShortVideoListener != null) {
+            mOnShortVideoListener.onSingleTap();
         }
         return true;
     }
