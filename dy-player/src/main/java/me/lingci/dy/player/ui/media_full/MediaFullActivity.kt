@@ -108,6 +108,8 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
             mediaItemAdapter.changeCoverRatio(currentRatio!!)
         }
         mediaItemAdapter.setSourceList(LibraryCompat.loadSources(spUtil))
+        // 同步启动自动播放媒体库 id，确保从其它页面返回时角标正确
+        mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
         lastCoverRatio = currentRatio
     }
 
@@ -262,6 +264,8 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
     private fun buildMediaAdapter() {
         mediaItemAdapter = MediaItemAdapter(ArrayList(), coverRatio = spUtil.coverRatio!!)
         mediaItemAdapter.setSourceList(LibraryCompat.loadSources(spUtil))
+        // 初始化启动自动播放媒体库 id，显示角标
+        mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
         binding.recyclerView.layoutManager = GridLayoutManager(this, if (isOrientationPortraitOfSysMetrics()) 3 else 7)
         binding.recyclerView.adapter = mediaItemAdapter
         mediaItemAdapter.onItemClick { item, position ->
@@ -270,7 +274,8 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
                 MediaDetailActivity.start(this, item)
                 return@onItemClick
             }
-            val longVideoMode = (spUtil.longVideoMode && item.playMode == 0) || item.playMode == 3
+            // 修复：playMode == 2 表示长视频（原误写为 3，导致强制长视频的媒体库在全局非长视频时错误进入短视频页）
+            val longVideoMode = (spUtil.longVideoMode && item.playMode == 0) || item.playMode == 2
             if (item.type in MediaLibType.DEFAULT..MediaLibType.LOCAL) {
                 handleMediaLocal(item, longVideoMode)
             }
@@ -288,10 +293,17 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
                 } else {
                     ItemAction(5, "置顶")
                 }
+                // 启动自动播放：根据当前媒体库是否已设为自动播放，显示"设为"或"取消"
+                val autoPlayAction = if (spUtil.autoPlayMediaId == item.id) {
+                    ItemAction(6, "取消启动自动播放")
+                } else {
+                    ItemAction(6, "设为启动自动播放")
+                }
                 val itemActionDialog = ItemActionDialog(
                     mutableListOf(
                         ItemAction(1, "编辑媒体库"),
                         pinAction,
+                        autoPlayAction,
                         ItemAction(2, "批量管理"),
                         ItemAction(3, "删除媒体库", me.lingci.lib.base.R.color.red_700)
                     )
@@ -323,6 +335,20 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
                         5 -> {
                             handleTogglePin(item, position)
                         }
+                        6 -> {
+                            // 切换启动自动播放设置：已设则取消，未设则设为当前（单选覆盖）
+                            if (spUtil.autoPlayMediaId == item.id) {
+                                spUtil.autoPlayMediaId = ""
+                                ToastUtil.showToast(this, "已取消启动自动播放")
+                            } else {
+                                spUtil.autoPlayMediaId = item.id
+                                // 互斥：清空播放列表自动播放设置
+                                spUtil.autoPlayPlaylistId = ""
+                                ToastUtil.showToast(this, "已设为启动自动播放")
+                            }
+                            // 刷新列表以更新角标
+                            mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
+                        }
                         2 -> {
                             mediaItemAdapter.batchMode(position)
                             binding.layoutBatch.visibility = View.VISIBLE
@@ -331,6 +357,10 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
                             mediaItemAdapter.getItem(position)?.let { item ->
                                 val sourceList = LibraryCompat.loadSources(spUtil)
                                 fullViewModel.removeItem(fullViewModel.listMedia().indexOfFirst { LibraryCompat.sameMedia(it, item, sourceList) })
+                                // 若删除的是启动自动播放媒体库，清空设置避免启动时找不到
+                                if (spUtil.autoPlayMediaId == item.id) {
+                                    spUtil.autoPlayMediaId = ""
+                                }
                             }
                             mediaItemAdapter.removeItem(position)
                             updateMedia()

@@ -226,17 +226,25 @@ object LibraryCompat {
         sp.playlistJson = JsonUtil.toJsonString(list)
     }
 
-    fun createPlaylist(sp: SpUtil, title: String): MediaData {
+    fun createPlaylist(sp: SpUtil, title: String, playMode: Int = 0): MediaData {
         val playlist = MediaData(
             id = "playlist|${title.trim()}|${System.currentTimeMillis()}".md5(),
             title = title.trim(),
             type = MediaLibType.PLAYLIST,
-            storageType = StorageType.LOCAL_STORAGE
+            storageType = StorageType.LOCAL_STORAGE,
+            playMode = playMode
         )
         val list = loadPlaylist(sp)
         list.add(playlist)
         savePlaylist(sp, list)
         return playlist
+    }
+
+    fun updatePlaylistMode(sp: SpUtil, playlistId: String, playMode: Int) {
+        val list = loadPlaylist(sp)
+        val playlist = list.find { it.id == playlistId } ?: return
+        playlist.playMode = playMode
+        savePlaylist(sp, list)
     }
 
     fun deletePlaylist(sp: SpUtil, playlistId: String) {

@@ -126,6 +126,10 @@
     <string name="hint_lab_neural_sr_desc">实时 AI 超分，画质更好但更耗电（仅 EXO 内核有效）</string>
     <string name="hint_lab_long_video_portrait">长视频竖屏播放</string>
     <string name="hint_lab_long_video_portrait_desc">开启后长视频默认进入竖屏播放</string>
+    <string name="hint_lab_auto_play_on_launch">App启动自动播放</string>
+    <string name="hint_lab_auto_play_on_launch_desc">可指定一个媒体库或播放列表App启动时自动播放</string>
+    <string name="hint_lab_short_auto_load_progress">短视频自动加载进度</string>
+    <string name="hint_lab_short_auto_load_progress_desc">开启后切换视频时恢复播放进度，关闭后从头播放</string>
     <string name="hint_backup_data">备份数据</string>
     <string name="hint_backup_data_desc">备份媒体库、播放器记录等数据</string>
     <string name="hint_restore_data">还原数据</string>
@@ -196,6 +200,8 @@
     <string name="hint_remove_from_like">移出喜欢列表</string>
     <string name="hint_removed_from_playlist">已移出播放列表</string>
     <string name="hint_removed_from_like">已移出喜欢列表</string>
+    <string name="action_playlist_play_mode">播放类型</string>
+    <string name="hint_playlist_mode_changed">播放类型已更新</string>
 
     <string name="hint_timer_close">定时关闭</string>
     <string name="timer_off">不开启</string>

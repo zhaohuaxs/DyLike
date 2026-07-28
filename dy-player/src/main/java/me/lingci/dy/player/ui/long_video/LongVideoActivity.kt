@@ -219,6 +219,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
     }
     /** 标记 PiP 广播接收器是否已注册 */
     private var isPipReceiverRegistered = false
+    /** 标记从 PiP 退出时视频是否正在播放（用于 onResume 恢复播放） */
+    private var wasPlayingBeforePipExit = false
 
     /** 通知栏控制广播接收器(后台播放时通知按钮)。 */
     // ===== 后台播放 Service =====
@@ -327,6 +329,12 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
      */
     private var shouldPauseAfterAutoRetry = false
     // ================================
+
+    /**
+     * 标记当前起播是否由"播放完成后的重新播放"触发
+     * 用于在 onPlayStart 中跳过历史进度恢复，避免点击"重新播放"时跳到历史位置
+     */
+    private var isReplayFromCompletion = false
 
     private fun clearBackgroundRecoveryState() {
         isReturningFromBackground = false
@@ -653,10 +661,10 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                 }
                 if (playState == VideoView.STATE_PLAYBACK_COMPLETED) {
                     longDanmakuController.saveCacheInfo(0, true)
-                    // 清零 PlayHelper 的 playSeek,否则下次播放该视频会 seek 回旧位置。
-                    if (mCurPos in 0 until itemViewModel.getItemSize()) {
-                        val videoData = itemViewModel.getItem(mCurPos)
-                        PlayHelper.saveInfo(this@LongVideoActivity, lifecycleScope, videoData, 0L, mutableListOf(), null)
+                    // 同步清零 PlayInfo.playSeek，避免点击"重新播放"时 onPlayStart 又 seekTo 到历史位置
+                    // 注意：必须同步执行，不能依赖 updateInfo 的异步写入（有 6 秒节流 + 竞态）
+                    if (itemViewModel.getItemSize() > mCurPos) {
+                        PlayHelper.resetPlaySeek(this@LongVideoActivity, itemViewModel.getItem(mCurPos))
                     }
                     // 后台播放模式下播完:先释放 Service 持有的旧 player(避免双 player),
                     // 再切下一集。新视频起播后由 STATE_PLAYING 的 pendingBgSwitch 重新 detach。
@@ -669,6 +677,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                         videoView.setEnableAudioFocus(true)
                         pendingBgSwitch = true
                     }
+                    // 标记进入完成态，下一次 STATE_PREPARED 触发的 onPlayStart 视为"重新播放"，跳过历史进度恢复
+                    isReplayFromCompletion = true
                     if (spUtil.autoNext) {
                         onNextPlay()
                     }
@@ -715,6 +725,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
     }
 
     private fun startPlay(position: Int) {
+        // 切换集数时重置"重新播放"标记，避免误判为完成态重播而跳过进度恢复
+        isReplayFromCompletion = false
         mediaPlaybackRecorder.cancelLastPlayedUpdate()
         // 切换播放项前先清掉上一集弹幕列表/曲线，避免旧数据短暂残留。
         longDanmakuController.clearPanels()
@@ -791,6 +803,9 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     private fun onPlayStart() {
         val position = mCurPos
+        // 读取"重新播放"标记并立即重置（loadInfo 回调是异步的，需在同步阶段捕获）
+        val skipSeekDueToReplay = isReplayFromCompletion
+        isReplayFromCompletion = false
         /*videoView.setOnTimedTextListener(null)
         videoView.trackInfo.let {
             if (it.second.isNotEmpty()) {
@@ -811,9 +826,13 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             var unLoadDm = true
             if (info != null) {
                 // 超过片长9/10，重播
-                if (info.playSeek > 0L){
+                // 若由"播放完成 → 重新播放"触发，跳过历史进度恢复（resetPlaySeek 已清零，此处为双保险）
+                if (!skipSeekDueToReplay && info.playSeek > 0L){
                     videoView.seekTo(info.playSeek)
                     longVideoControlView.showTips("跳转上传播放的位置 ${PlayerUtils.stringForTime(info.playSeek.toInt())}")
+                } else if (skipSeekDueToReplay && info.playSeek > 0L) {
+                    // 完成态下不跳转，仅记录日志便于排查
+                    Log.d(this@LongVideoActivity, "Skip seekTo due to replay from completion, stored playSeek=${info.playSeek}")
                 }
                 info.dmTrack.let { list ->
                     // 弹幕轨道恢复细节由 controller 处理，Activity 只决定何时触发恢复。
@@ -1025,6 +1044,11 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                     videoView.seekTo(currentPos)
                     Log.d(this, "onResume - safe frame restoration via seekTo", currentPos)
                 }
+            }
+            // 从 PiP 返回全屏且之前在播放，恢复播放
+            if (wasPlayingBeforePipExit) {
+                wasPlayingBeforePipExit = false
+                videoView.start()
             }
         }
         // 注册超分开关广播接收器（让 adb 和设置页都能切换 FSR）
@@ -1499,6 +1523,13 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         unregisterPipActionReceiver()
         // 恢复控制器显示
         videoController.show()
+        // 保存退出 PiP 前的播放状态，用于 onResume 判断是否恢复播放
+        wasPlayingBeforePipExit = videoView.isPlaying
+        // 暂停视频和弹幕（关闭 PiP 场景需要；返回全屏场景由 onResume 恢复）
+        // （onStop 不会再次触发，因为 Activity 在进入 PiP 时已处于 stopped 状态）
+        rememberPlaybackPosition(videoView.currentPosition)
+        danmakuView.pause()
+        videoView.pause()
     }
 
     /**

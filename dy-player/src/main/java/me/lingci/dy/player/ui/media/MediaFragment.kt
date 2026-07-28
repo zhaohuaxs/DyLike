@@ -119,6 +119,9 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         val sourceList = LibraryCompat.loadSources(spUtil)
         mediaItemAdapter.setSourceList(sourceList)
         mediaTypeItemAdapter.setSourceList(sourceList)
+        // 同步启动自动播放媒体库 id，确保从 MediaFullActivity 返回时角标正确
+        mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
+        mediaTypeItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
         lastCoverRatio = currentRatio
         // 强制从 SharedPreferences 刷新数据，确保与 MediaFullActivity 的修改同步
         refreshDataFromSp()
@@ -295,6 +298,9 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         val sourceList = LibraryCompat.loadSources(spUtil)
         mediaItemAdapter.setSourceList(sourceList)
         mediaTypeItemAdapter.setSourceList(sourceList)
+        // 同步启动自动播放媒体库 id，刷新卡片角标
+        mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
+        mediaTypeItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
         shuffleStates = LibraryCompat.loadShuffleStates(spUtil)
         if (spUtil.newHome) {
             list.groupBy { item ->
@@ -653,10 +659,17 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
             } else {
                 ItemAction(5, "置顶")
             }
+            // 启动自动播放：根据当前媒体库是否已设为自动播放，显示"设为"或"取消"
+            val autoPlayAction = if (spUtil.autoPlayMediaId == item.id) {
+                ItemAction(6, "取消启动自动播放")
+            } else {
+                ItemAction(6, "设为启动自动播放")
+            }
             val itemActionDialog = ItemActionDialog(
                 mutableListOf(
                     ItemAction(1, "编辑媒体库"),
                     pinAction,
+                    autoPlayAction,
                     ItemAction(4, getString(R.string.hint_add_to_playlist)),
                     ItemAction(3, "删除媒体库", me.lingci.lib.base.R.color.red_700)
                 )
@@ -684,6 +697,22 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
 
                     5 -> {
                         handleTogglePin(item)
+                    }
+
+                    6 -> {
+                        // 切换启动自动播放设置：已设则取消，未设则设为当前（单选覆盖）
+                        if (spUtil.autoPlayMediaId == item.id) {
+                            spUtil.autoPlayMediaId = ""
+                            ToastUtil.showToast(requireContext(), "已取消启动自动播放")
+                        } else {
+                            spUtil.autoPlayMediaId = item.id
+                            // 互斥：清空播放列表自动播放设置
+                            spUtil.autoPlayPlaylistId = ""
+                            ToastUtil.showToast(requireContext(), "已设为启动自动播放")
+                        }
+                        // 刷新列表以更新角标
+                        mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
+                        mediaTypeItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
                     }
 
                     4 -> {
@@ -718,6 +747,10 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
             if (position != -1) {
                 list.removeAt(position)
                 LibraryCompat.saveMedia(spUtil, list)
+                // 若删除的是启动自动播放媒体库，清空设置避免启动时找不到
+                if (spUtil.autoPlayMediaId == media.id) {
+                    spUtil.autoPlayMediaId = ""
+                }
                 initData(list)
             }
         }

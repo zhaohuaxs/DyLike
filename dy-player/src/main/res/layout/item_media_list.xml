@@ -50,6 +50,24 @@
                 app:tint="#BFC4A4F2"
                 tools:visibility="visible" />
 
+            <!-- 启动自动播放角标：仅当该媒体库被设为启动自动播放时显示 -->
+            <TextView
+                android:id="@+id/tv_auto_play_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start"
+                android:background="@drawable/bg_auto_play_badge"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:text="自动"
+                android:textColor="@android:color/white"
+                android:textSize="10sp"
+                android:translationZ="1dp"
+                android:visibility="gone"
+                tools:visibility="visible" />
+
         </FrameLayout>
 
     </androidx.cardview.widget.CardView>

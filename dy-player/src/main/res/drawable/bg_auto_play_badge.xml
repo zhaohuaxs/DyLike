@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动自动播放角标背景：左下角圆角，半透明紫色（与 iv_type 风格一致） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <corners android:bottomLeftRadius="@dimen/dp8" />
+    <solid android:color="#CC9C8DF5" />
+</shape>

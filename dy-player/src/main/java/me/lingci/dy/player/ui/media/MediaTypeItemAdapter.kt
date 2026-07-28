@@ -27,6 +27,8 @@ class MediaTypeItemAdapter(
     private var orientation: Int = Configuration.ORIENTATION_UNDEFINED
     private var sourceList: List<SourceData> = emptyList()
     private var shuffleStates: Map<String, MediaShuffleState> = emptyMap()
+    // 当前启动自动播放的媒体库 id，转发给内部嵌套的 MediaItemAdapter 用于显示角标
+    private var autoPlayMediaId: String = ""
 
     override fun createBinding(
         inflater: LayoutInflater,
@@ -63,6 +65,8 @@ class MediaTypeItemAdapter(
         )
         val mediaItemAdapter = MediaItemAdapter(item.mediaList, coverRatio = coverRatio)
         mediaItemAdapter.setSourceList(sourceList)
+        // 转发启动自动播放媒体库 id，使内部卡片显示角标
+        mediaItemAdapter.setAutoPlayMediaId(autoPlayMediaId)
         binding.recyclerView.adapter = mediaItemAdapter
         mediaItemAdapter.onItemClick { media, position ->
             onMediaItemClick?.invoke(media, item.storageId, position)
@@ -109,6 +113,16 @@ class MediaTypeItemAdapter(
     fun setSourceList(sourceList: List<SourceData>) {
         this.sourceList = sourceList
         notifyAllChanged()
+    }
+
+    // 设置启动自动播放媒体库 id，刷新内部嵌套 MediaItemAdapter 的角标显示
+    // 参数允许为空（SPManager.string 返回 String?），内部归一化为非空字符串处理
+    fun setAutoPlayMediaId(autoPlayMediaId: String?) {
+        val normalized = autoPlayMediaId ?: ""
+        if (this.autoPlayMediaId != normalized) {
+            this.autoPlayMediaId = normalized
+            notifyAllChanged()
+        }
     }
 
 }
