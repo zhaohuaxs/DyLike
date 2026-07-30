@@ -47,6 +47,13 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
         this.mMediaPlayer = player;
         mHasBoundDisplay = false;
         SurfaceRenderTrace.d("SurfaceRenderView", "attachToPlayer player=" + player.getClass().getSimpleName());
+        // 修复：从后台 Service 取回 player 后，surface 已存在但回调不会重新触发，
+        // 主动把已存在的 holder 绑定到新 player。
+        SurfaceHolder holder = getHolder();
+        if (holder.getSurface() != null && holder.getSurface().isValid()) {
+            player.setDisplay(holder);
+            mHasBoundDisplay = true;
+        }
     }
 
     @Override

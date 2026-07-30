@@ -69,6 +69,18 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        jniLibs {
+            pickFirsts += setOf(
+                "lib/arm64-v8a/libc++_shared.so",
+                "lib/x86_64/libc++_shared.so",
+                "lib/armeabi-v7a/libc++_shared.so",
+                "lib/x86/libc++_shared.so"
+            )
+        }
+    }
+
+
     productFlavors {
         create("prod") {
             dimension = "mode"
@@ -199,6 +211,7 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.room.runtime)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.media)
     // bug
     implementation(libs.bugly)
 

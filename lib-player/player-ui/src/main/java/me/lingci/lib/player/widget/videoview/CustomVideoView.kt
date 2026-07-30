@@ -229,4 +229,17 @@ class CustomVideoView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 取出 player 实例供后台 Service 接管。
+     * @return 当前 player，或 null(无 player)
+     */
+    fun detachPlayer(): AbstractPlayer? = detachPlayerForBackground()
+
+    /**
+     * 从后台 Service 取回 player 恢复显示。
+     */
+    fun attachPlayer(player: AbstractPlayer?) {
+        if (player != null) attachPlayerFromBackground(player)
+    }
+
 }

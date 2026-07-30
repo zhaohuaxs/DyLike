@@ -3,6 +3,7 @@ package me.lingci.lib.player.mpv
 import android.content.Context
 import android.content.res.AssetFileDescriptor
 import android.os.Build
+import android.preference.PreferenceManager
 import android.view.Surface
 import android.view.SurfaceHolder
 import androidx.core.content.ContextCompat
@@ -126,7 +127,17 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     
     // 缓存大小（MB）
     private var cacheSize: Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) 64 else 32
-    
+
+    /**
+     * MPV 顺序读优化开关的 SharedPreferences key。
+     *
+     * ⚠️ 跨模块约定：值由 dy-player.SpUtil.labMpvSequentialRead 写入（app 默认 SharedPreferences）。
+     * player-mpv 模块不能依赖 dy-player，所以按字符串 key 读取。
+     * 默认 true：老用户升级后自动获益；如某文件出现副作用可手动关。
+     */
+    private val SP_KEY_LAB_MPV_SEQUENTIAL_READ = "labMpvSequentialRead"
+    private val SP_LAB_MPV_SEQUENTIAL_READ_DEFAULT = true
+
     // HDR模式
     enum class HdrMode {
         SDR_MAPPING,       // 稳定优先：映射到 SDR 目标显示。
@@ -1045,6 +1056,19 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
         val bytes = cacheSize * 1024 * 1024L
         mpv.setOptionString("demuxer-max-bytes", bytes.toString())
         mpv.setOptionString("demuxer-max-back-bytes", bytes.toString())
+
+        // MPV 顺序读优化：禁用 ffmpeg mov demuxer 的 interleaved_read，避免 badly-interleaved
+        // MP4 over HTTP 触发 seek 风暴。跨模块读 dy-player 写入的 labMpvSequentialRead。
+        val mpvSequentialRead = try {
+            PreferenceManager.getDefaultSharedPreferences(appContext)
+                .getBoolean(SP_KEY_LAB_MPV_SEQUENTIAL_READ, SP_LAB_MPV_SEQUENTIAL_READ_DEFAULT)
+        } catch (e: Exception) {
+            L.e("Failed to read mpv sequential read preference: ${e.message}")
+            SP_LAB_MPV_SEQUENTIAL_READ_DEFAULT
+        }
+        if (mpvSequentialRead) {
+            mpv.setOptionString("demuxer-lavf-o", "interleaved_read=0")
+        }
     }
     
     /**

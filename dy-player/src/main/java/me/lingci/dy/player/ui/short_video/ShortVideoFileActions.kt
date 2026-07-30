@@ -140,7 +140,7 @@ class ShortVideoFileActions(
             val success = try {
                 val storage = resolveStorage(videoData)
                 if (storage != null) {
-                    storage.rename(oldPath, newName)
+                    storage.rename(storage.toRelativePath(oldPath), newName)
                 } else {
                     val oldFile = File(oldPath)
                     if (oldFile.exists()) {
@@ -161,6 +161,8 @@ class ShortVideoFileActions(
 
             withContext(Dispatchers.Main) {
                 if (success) {
+                    // oldPath 对 WebDav 是完整 URL（含 https:// 前缀），这里只替换末段文件名，
+                    // 前缀保持不变，确保 videoUrl 仍是完整 URL，下次操作仍能被 toRelativePath 正确处理。
                     val newPath = oldPath.substring(0, oldPath.lastIndexOf("/") + 1) + newName
                     videoData.name = newName
                     videoData.videoUrl = newPath
@@ -187,7 +189,7 @@ class ShortVideoFileActions(
             val success = try {
                 val storage = resolveStorage(videoData)
                 if (storage != null) {
-                    storage.delete(path)
+                    storage.delete(storage.toRelativePath(path))
                 } else {
                     val file = File(path)
                     if (file.exists()) file.delete() else true
@@ -218,5 +220,24 @@ class ShortVideoFileActions(
             sourceList.find { it.type == videoData.type }
         }
         return source?.toStorage()
+    }
+
+    /**
+     * 将 videoData.videoUrl 转成 storage.delete/rename 期望的相对路径。
+     *
+     * 背景：WebDav 的 videoUrl 是完整 URL（如 https://dav.example.com/dav/movies/a.mp4），
+     * 但 WebDavStorage.delete/rename 内部又会拼一次 rootUrl，必须先剥离掉前缀。
+     * - WebDav：fullPath("") 返回 rootUrl，命中 startsWith → 剥离得到 "/movies/a.mp4"。
+     * - 本地：LocalStorage.fullPath("") 返回 ""，root 为空 → 原样返回。
+     *
+     * 同时幂等：传入已经是相对路径的字符串也能正确处理（startsWith 不命中 → 原样返回）。
+     */
+    private fun IStorage.toRelativePath(fullUrl: String): String {
+        val root = fullPath("")
+        return if (root.isNotEmpty() && fullUrl.startsWith(root)) {
+            fullUrl.removePrefix(root)
+        } else {
+            fullUrl
+        }
     }
 }

@@ -2,7 +2,10 @@ package me.lingci.dy.player.ui.short_video
 
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
+import android.os.Build
+import android.os.IBinder
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -44,6 +47,7 @@ import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.createNew
 import me.lingci.lib.base.util.isLocal
 import me.lingci.lib.base.util.logD
+import me.lingci.lib.base.util.md5
 import me.lingci.lib.base.util.safeGetParcelable
 import me.lingci.lib.base.util.safeGetParcelableArrayList
 import me.lingci.lib.player.danmaku.PlayerInitializer
@@ -165,6 +169,65 @@ class ShortVideoActivity : BaseActivity() {
     private val shortCommentDialog by lazy { ShortCommentDialog() }
     private val shortMoreDialog by lazy { ShortMoreDialog() }
     private var activeShortVideoControlView: ShortVideoControlView? = null
+
+    /** 沉浸体验定时器(Activity 级,确保操作的是活跃的 ControlView)。 */
+    private val immersiveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var immersiveScheduled = false
+    private val enterImmersiveRunnable = Runnable {
+        immersiveScheduled = false
+        activeShortVideoControlView?.enterImmersive()
+    }
+    private fun scheduleImmersive() {
+        if (!spUtil.showSysBar.not()) return
+        immersiveHandler.removeCallbacks(enterImmersiveRunnable)
+        immersiveScheduled = true
+        immersiveHandler.postDelayed(enterImmersiveRunnable, 3000)
+    }
+    private fun cancelImmersive() {
+        immersiveHandler.removeCallbacks(enterImmersiveRunnable)
+        immersiveScheduled = false
+    }
+    private fun exitAndRescheduleImmersive() {
+        activeShortVideoControlView?.exitImmersive()
+        scheduleImmersive()
+    }
+
+    // 超分开关广播接收器：仅写 SP，重播生效由短视频列表自然触发（滑到下一个再滑回来）。
+    // 短视频列表架构复杂，运行时强切 render view 风险大；简化为"下次播放时生效"。
+    private val superResolutionReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val on = intent.action == me.lingci.dy.player.ui.long_video.LongVideoActivity.ACTION_SUPER_RESOLUTION_ON
+            if (spUtil.labMpvSuperResolution == on) return
+            spUtil.labMpvSuperResolution = on
+            android.widget.Toast.makeText(
+                this@ShortVideoActivity,
+                if (on) "画质增强：已开启（切换视频后生效）" else "画质增强：已关闭（切换视频后生效）",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+    private var isSuperResReceiverRegistered = false
+
+    private fun registerSuperResolutionReceiver() {
+        if (isSuperResReceiverRegistered) return
+        val filter = android.content.IntentFilter().apply {
+            addAction(me.lingci.dy.player.ui.long_video.LongVideoActivity.ACTION_SUPER_RESOLUTION_ON)
+            addAction(me.lingci.dy.player.ui.long_video.LongVideoActivity.ACTION_SUPER_RESOLUTION_OFF)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(superResolutionReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(superResolutionReceiver, filter)
+        }
+        isSuperResReceiverRegistered = true
+    }
+
+    private fun unregisterSuperResolutionReceiver() {
+        if (isSuperResReceiverRegistered) {
+            unregisterReceiver(superResolutionReceiver)
+            isSuperResReceiverRegistered = false
+        }
+    }
     private val isUserScroll = AtomicBoolean(false)
     private val playbackLogCache = PlaybackLogCache()
     private val mediaPlaybackRecorder by lazy { MediaPlaybackRecorder(spUtil) }
@@ -203,6 +266,9 @@ class ShortVideoActivity : BaseActivity() {
     }
     // 字幕停靠几何计算较重，拆出后 Activity 只在时机点触发刷新。
     private lateinit var subtitleDockController: SubtitleDockController
+
+    /** 标记：用户主动按返回退出 */
+    private var userInitiatedExit = false
 
     private fun getExternalTrackController(): ExternalTrackController? {
         return mVideoView.getPlayerCapability(ExternalTrackController::class.java)
@@ -306,6 +372,7 @@ class ShortVideoActivity : BaseActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                userInitiatedExit = true
                 if (!::mVideoView.isInitialized || !mVideoView.onBackPressed()) {
                     finish()
                 }
@@ -358,6 +425,10 @@ class ShortVideoActivity : BaseActivity() {
             mVideoView.setLooping(PlayerInitializer.Player.shortAutoNext.not())
             mVideoView.changeSysBar(PlayerInitializer.Player.shortShowSysBar)
             mVideoView.start()
+            // 沉浸体验:开关变化时重新调度
+            cancelImmersive()
+            activeShortVideoControlView?.exitImmersive()
+            scheduleImmersive()
         }
         shortSettingsDialog.onTimerClose {
             timerCloseController.showDialog()
@@ -503,6 +574,7 @@ class ShortVideoActivity : BaseActivity() {
                 if (state == ViewPager2.SCROLL_STATE_IDLE) {
                     isUserScroll.set(false)
                     resetAllControlViewAlpha(animated = true)
+                    activeShortVideoControlView?.setAutoImmersiveEnabled(spUtil.showSysBar.not())
                 } else {
                     isUserScroll.set(true)
                 }
@@ -566,6 +638,15 @@ class ShortVideoActivity : BaseActivity() {
                 }
             }
 
+            override fun onChangeSysBar(show: Boolean) {
+                mVideoView.changeSysBar(show)
+            }
+
+            override fun onSingleTap() {
+                // 沉浸体验:点击屏幕退出沉浸并重新计时
+                exitAndRescheduleImmersive()
+            }
+
         })
 
         // ViewPage2内部是通过RecyclerView去实现的，它位于ViewPager2的第0个位置
@@ -576,7 +657,7 @@ class ShortVideoActivity : BaseActivity() {
     private fun applyPlaybackCoreFor(videoBean: VideoData) {
         if (isSmbVideo(videoBean)) {
             applyShortVideoRenderFactory()
-            DyPlayerCoreRegistry.applyCore(mVideoView, DyPlayerCore.EXO, spUtil.labMpvSpecialRender)
+            DyPlayerCoreRegistry.applyCore(mVideoView, DyPlayerCore.EXO, spUtil.labMpvSpecialRender, spUtil.labMpvSuperResolution, false)
             if (!spUtil.sortRender) {
                 mVideoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT)
             }
@@ -591,7 +672,7 @@ class ShortVideoActivity : BaseActivity() {
             if (!spUtil.labMpvSpecialRender) {
                 mVideoView.setRenderViewFactory(TextureRenderViewFactory.create())
             }
-            DyPlayerCoreRegistry.applyCore(mVideoView, spUtil.shortDyPlayerCore, spUtil.labMpvSpecialRender)
+            DyPlayerCoreRegistry.applyCore(mVideoView, spUtil.shortDyPlayerCore, spUtil.labMpvSpecialRender, spUtil.labMpvSuperResolution, false)
             // Do not replace MPV's required Surface renderer with the short-video renderer. MPV keeps
             // default scaling here until fast-swipe Surface reuse is validated across devices.
             //mVideoView.setScreenScaleType(VideoView.SCREEN_SCALE_CENTER_CROP);
@@ -601,8 +682,9 @@ class ShortVideoActivity : BaseActivity() {
         if (spUtil.sortRender) {
             applyShortVideoRenderFactory()
         }
-        DyPlayerCoreRegistry.applyCore(mVideoView, spUtil.shortDyPlayerCore, spUtil.labMpvSpecialRender)
-        if (!spUtil.sortRender) {
+        DyPlayerCoreRegistry.applyCore(mVideoView, spUtil.shortDyPlayerCore, spUtil.labMpvSpecialRender, spUtil.labMpvSuperResolution, false)
+        // 画质增强开启时保留 applyCore 设的 GlRenderViewFactory，不要被 TextureRenderView 覆盖
+        if (!spUtil.sortRender && !spUtil.labMpvSuperResolution && !false) {
             mVideoView.setRenderViewFactory(TextureRenderViewFactory.create())
             mVideoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT)
         }
@@ -632,6 +714,7 @@ class ShortVideoActivity : BaseActivity() {
             val itemView = mViewPagerImpl.getChildAt(i)
             val viewHolder = itemView.tag as ShortVideoAdapter.ViewHolder
             if (viewHolder.bindingAdapterPosition == position) {
+                // 旧 ControlView 设为非活跃
                 activeShortVideoControlView?.setOnVideoTransformChangedListener(null)
                 clearSubtitleCueListener()
                 mVideoView.release()
@@ -688,6 +771,10 @@ class ShortVideoActivity : BaseActivity() {
                     updateSubtitleDocking()
                 }
                 activeShortVideoControlView = viewHolder.shortVideoControlView
+                viewHolder.shortVideoControlView.setAutoImmersiveEnabled(spUtil.showSysBar.not())
+                // 切视频后重新调度沉浸(Activity 级定时器,确保操作的是活跃的 ControlView)
+                cancelImmersive()
+                scheduleImmersive()
                 viewHolder.playerContainer.addView(mVideoView, 0)
                 viewHolder.shortVideoControlView.resetScale(1.0f)
                 mCurPos = position
@@ -919,6 +1006,8 @@ class ShortVideoActivity : BaseActivity() {
             mVideoView.resume()
         }
         timerCloseController.onResume()
+        // 注册超分开关广播接收器（让设置页和 adb 都能在短视频页切换 FSR）
+        registerSuperResolutionReceiver()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -943,8 +1032,31 @@ class ShortVideoActivity : BaseActivity() {
         timerCloseController.onPause()
     }
 
+    override fun onStart() {
+        super.onStart()
+        // 短视频不做后台播放：回到前台时若处于暂停态，恢复播放。
+        if (::mVideoView.isInitialized && !userInitiatedExit && mVideoView.hasPlayer() && !mVideoView.isPlaying) {
+            mVideoView.start()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (userInitiatedExit) {
+            userInitiatedExit = false
+            return
+        }
+        if (isChangingConfigurations) return
+        // 短视频不做后台播放：不可见时直接暂停。
+        if (::mVideoView.isInitialized && mVideoView.hasPlayer()) {
+            mVideoView.pause()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        // 注销超分广播接收器
+        unregisterSuperResolutionReceiver()
         mediaPlaybackRecorder.release()
         timerCloseController.release()
         activeShortVideoControlView?.setOnVideoTransformChangedListener(null)

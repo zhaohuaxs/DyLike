@@ -48,4 +48,6 @@ android {
 dependencies {
     api(project(":lib-base"))
     api(libs.androidx.annotation)
+    testImplementation(libs.test.junit)
+    testImplementation(libs.test.mockk)
 }

@@ -284,27 +284,27 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void onPlaybackStateChanged(int playbackState) {
-        if (mPlayerEventListener == null) return;
         SurfaceRenderTrace.d("ExoMediaPlayer", "onPlaybackStateChanged state=" + playbackState + " preparing=" + mIsPreparing);
-        if (mIsPreparing) {
-            if (playbackState == Player.STATE_READY) {
+        if (mPlayerEventListener == null) return;
+        PlaybackStateResolver.Action action = PlaybackStateResolver.resolve(playbackState, mIsPreparing);
+        switch (action) {
+            case CALL_PREPARED:
                 mPlayerEventListener.onPrepared();
                 mPlayerEventListener.onInfo(MEDIA_INFO_RENDERING_START, 0);
                 mIsPreparing = false;
-            }
-            return;
-        }
-        switch (playbackState) {
-            case Player.STATE_BUFFERING:
-                mPlayerEventListener.onInfo(MEDIA_INFO_BUFFERING_START, getBufferedPercentage());
                 break;
-            case Player.STATE_READY:
-                mPlayerEventListener.onInfo(MEDIA_INFO_BUFFERING_END, getBufferedPercentage());
-                break;
-            case Player.STATE_ENDED:
+            case CALL_COMPLETION:
+                mIsPreparing = false;
                 mPlayerEventListener.onCompletion();
                 break;
-            case Player.STATE_IDLE:
+            case CALL_BUFFERING_START:
+                mPlayerEventListener.onInfo(MEDIA_INFO_BUFFERING_START, getBufferedPercentage());
+                break;
+            case CALL_BUFFERING_END:
+                mPlayerEventListener.onInfo(MEDIA_INFO_BUFFERING_END, getBufferedPercentage());
+                break;
+            case NONE:
+            default:
                 break;
         }
     }

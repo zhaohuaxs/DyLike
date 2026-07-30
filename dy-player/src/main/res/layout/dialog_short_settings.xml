@@ -244,7 +244,7 @@
         android:id="@+id/sw_hide_sys_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="隐藏状态栏"
+        android:text="沉浸体验"
         app:layout_constraintTop_toBottomOf="@+id/sw_show_pager"/>
 
     <com.google.android.material.switchmaterial.SwitchMaterial

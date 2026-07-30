@@ -125,8 +125,8 @@ open class ShortSettingsDialog() : BottomSheetDialogFragment(), View.OnClickList
         binding.swHideSysBar.isChecked = PlayerInitializer.Player.shortShowSysBar.not()
         binding.swHideSysBar.setOnCheckedChangeListener {  _, checked ->
             PlayerInitializer.Player.shortShowSysBar = checked.not()
-            onChange?.invoke()
             spUtil.showSysBar = checked.not()
+            onChange?.invoke()
         }
 
         changeSelectLeft(true)

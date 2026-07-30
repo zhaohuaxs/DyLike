@@ -62,6 +62,8 @@
     <string name="hint_loop_list_desc">开启后播放到列表首尾时循环，关闭则提示没有更多</string>
     <string name="hint_long_video_pip">长视频自动进入画中画</string>
     <string name="hint_long_video_pip_desc">开启后按 Home 键自动进入小窗播放（需系统支持）</string>
+    <string name="hint_long_video_bg_play">长视频后台播放</string>
+    <string name="hint_long_video_bg_play_desc">开启后退出画中画或无画中画时，按 Home 键进入后台音频播放</string>
     <string name="hint_media_add">添加媒体库</string>
     <string name="hint_media_edit">修改媒体库</string>
     <string name="hint_media_add_default">从选择文件夹开始</string>
@@ -114,6 +116,14 @@
     <string name="hint_lab_surface_z_order_desc">尝试SurfaceView层级提升，排查部分机型无画面问题</string>
     <string name="hint_lab_mpv_special_render">MPV 专用 Render</string>
     <string name="hint_lab_mpv_special_render_desc">专用Render无闪屏，关闭后同步支持Texture</string>
+    <string name="hint_lab_mpv_sequential_read">MPV 顺序读优化</string>
+    <string name="hint_lab_mpv_sequential_read_desc">缓解 MPV 拖动视频卡顿</string>
+    <string name="hint_lab_mpv_super_resolution">画质增强</string>
+    <string name="hint_lab_mpv_super_resolution_desc">提升视频清晰度，仅 EXO 内核有效</string>
+    <string name="hint_super_resolution_strength_label">锐化强度</string>
+    <string name="hint_super_resolution_strength_range">(0~3)</string>
+    <string name="hint_lab_neural_sr">神经网络超分</string>
+    <string name="hint_lab_neural_sr_desc">实时 AI 超分，画质更好但更耗电（仅 EXO 内核有效）</string>
     <string name="hint_lab_long_video_portrait">长视频竖屏播放</string>
     <string name="hint_lab_long_video_portrait_desc">开启后长视频默认进入竖屏播放</string>
     <string name="hint_lab_auto_play_on_launch">App启动自动播放</string>

@@ -165,6 +165,7 @@ class BackupSettingsFragment : BaseFragment() {
         data.putValue("labSurfaceRgba", spUtil.labSurfaceRgba)
         data.putValue("labSurfaceZOrder", spUtil.labSurfaceZOrder)
         data.putValue("labMpvSpecialRender", spUtil.labMpvSpecialRender)
+        data.putValue("labMpvSuperResolution", spUtil.labMpvSuperResolution)
         // list
         val basePath = requireContext().getExternalFilesDir("info")
         basePath?.list()?.let { list ->
@@ -279,6 +280,9 @@ class BackupSettingsFragment : BaseFragment() {
                 }
                 if (data.hasKey("labMpvSpecialRender")) {
                     spUtil.labMpvSpecialRender = data.getBoolean("labMpvSpecialRender")
+                }
+                if (data.hasKey("labMpvSuperResolution")) {
+                    spUtil.labMpvSuperResolution = data.getBoolean("labMpvSuperResolution")
                 }
                 // app
                 if (data.hasKey("isFirst")) {

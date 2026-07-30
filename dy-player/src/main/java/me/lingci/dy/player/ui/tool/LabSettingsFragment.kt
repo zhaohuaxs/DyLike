@@ -1,11 +1,14 @@
 package me.lingci.dy.player.ui.tool
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Toast
 import me.lingci.dy.player.databinding.FragmentLabSettingBinding
+import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.ui.BaseFragment
 
@@ -49,6 +52,41 @@ class LabSettingsFragment : BaseFragment() {
         binding.swLabMpvSpecialRender.isChecked = spUtil.labMpvSpecialRender
         binding.swLabMpvSpecialRender.setOnClickListener {
             spUtil.labMpvSpecialRender = binding.swLabMpvSpecialRender.isChecked
+        }
+        binding.swLabMpvSequentialRead.isChecked = spUtil.labMpvSequentialRead
+        binding.swLabMpvSequentialRead.setOnClickListener {
+            spUtil.labMpvSequentialRead = binding.swLabMpvSequentialRead.isChecked
+        }
+        binding.swLabMpvSuperResolution.isChecked = spUtil.labMpvSuperResolution
+        binding.swLabMpvSuperResolution.setOnClickListener {
+            val on = binding.swLabMpvSuperResolution.isChecked
+            spUtil.labMpvSuperResolution = on
+            // 立即对当前 ExoPlayer 实例生效（运行时切换 render view 会触发 player 重播）
+            val action = if (on) LongVideoActivity.ACTION_SUPER_RESOLUTION_ON
+                         else LongVideoActivity.ACTION_SUPER_RESOLUTION_OFF
+            requireContext().sendBroadcast(Intent(action))
+            Toast.makeText(
+                requireContext(),
+                if (on) "已开启画质增强" else "已关闭画质增强",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        // 锐化强度输入框：0.0~3.0，默认 1.0；失焦时写 SP
+        binding.etSuperResolutionStrength.setText(spUtil.labSuperResolutionStrength.toString())
+        binding.etSuperResolutionStrength.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                val raw = binding.etSuperResolutionStrength.text.toString().trim().toFloatOrNull()
+                val clamped = (raw ?: 1.0f).coerceIn(0.0f, 3.0f)
+                binding.etSuperResolutionStrength.setText(clamped.toString())
+                if (spUtil.labSuperResolutionStrength != clamped) {
+                    spUtil.labSuperResolutionStrength = clamped
+                    Toast.makeText(
+                        requireContext(),
+                        "锐化强度已更新为 $clamped（重播以生效）",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
         }
         binding.swDebugMode.isChecked = spUtil.debugMode
         binding.swDebugMode.setOnClickListener {

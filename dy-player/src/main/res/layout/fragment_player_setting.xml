@@ -484,7 +484,7 @@
             </androidx.constraintlayout.widget.ConstraintLayout>
 
             <androidx.constraintlayout.widget.ConstraintLayout
-                android:id="@+id/audio_fade"
+                android:id="@+id/long_video_bg_play"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingStart="@dimen/dp32"
@@ -493,6 +493,50 @@
                 android:paddingBottom="@dimen/dp8"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@+id/long_video_pip">
+
+                <TextView
+                    android:id="@+id/tv_long_video_bg_play"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/hint_long_video_bg_play"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="@dimen/dp18"
+                    app:layout_constraintBottom_toTopOf="@id/tv_long_video_bg_play_desc"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toTopOf="parent"
+                    tools:ignore="SpUsage" />
+
+                <TextView
+                    android:id="@+id/tv_long_video_bg_play_desc"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="12sp"
+                    android:text="@string/hint_long_video_bg_play_desc"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toBottomOf="@id/tv_long_video_bg_play" />
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/sw_long_video_bg_play"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintTop_toTopOf="parent"
+                    tools:ignore="MissingConstraints" />
+
+            </androidx.constraintlayout.widget.ConstraintLayout>
+
+            <androidx.constraintlayout.widget.ConstraintLayout
+                android:id="@+id/audio_fade"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="@dimen/dp32"
+                android:paddingTop="@dimen/dp8"
+                android:paddingEnd="@dimen/dp16"
+                android:paddingBottom="@dimen/dp8"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/long_video_bg_play">
 
                 <TextView
                     android:id="@+id/tv_audio_fade"

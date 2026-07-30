@@ -115,6 +115,18 @@ class PlayerSettingsFragment : BaseFragment() {
         binding.swLongVideoPip.setOnClickListener {
             spUtil.longVideoPip = binding.swLongVideoPip.isChecked
         }
+        binding.swLongVideoBgPlay.isChecked = spUtil.longVideoBackgroundPlay
+        binding.swLongVideoBgPlay.setOnClickListener {
+            val on = binding.swLongVideoBgPlay.isChecked
+            spUtil.longVideoBackgroundPlay = on
+            // 打开时请求通知权限(API 33+)
+            if (on && android.os.Build.VERSION.SDK_INT >= 33) {
+                val perm = android.Manifest.permission.POST_NOTIFICATIONS
+                if (requireContext().checkSelfPermission(perm) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(arrayOf(perm), 1001)
+                }
+            }
+        }
 
         // 音频渐入渐出设置
         binding.swAudioFade.isChecked = spUtil.audioFadeEnabled

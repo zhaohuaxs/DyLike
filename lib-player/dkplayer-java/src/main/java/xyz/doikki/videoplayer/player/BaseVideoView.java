@@ -425,12 +425,72 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     /**
+     * 取出当前 player 实例，供后台 Service 接管。
+     * 与 {@link #release()} 不同：不销毁 player，不 null 化 mRenderView，
+     * 只是把 player 引用拿走 + 停止视频解码（保留音频）。
+     *
+     * 调用后 BaseVideoView 处于"无 player 但有 render view"的中间态，
+     * 必须随后调用 {@link #attachPlayerFromBackground} 恢复，或 {@link #release} 清理。
+     *
+     * @return 当前的 player 实例；如果已经没有 player 返回 null
+     */
+    public AbstractPlayer detachPlayerForBackground() {
+        AbstractPlayer player = mMediaPlayer;
+        if (player == null) {
+            return null;
+        }
+        // 停止视频解码但保留音频(setVideoSurface(null) 是 Media3 标准 API)
+        // 这样后台 Service 接管后，player 继续播音频不解码视频
+        try {
+            player.setSurface(null);
+        } catch (Exception e) {
+            // 某些 backend 可能不支持，忽略
+        }
+        // 解除 player 的事件监听(避免 detach 后事件还回到 view)
+        // 注意:不 setPlayerEventListener(null),因为 AbstractPlayer 没有空 setter;
+        // 事件回调会继续触发但 view 处于中间态,回调里要判 mMediaPlayer != null
+        mMediaPlayer = null;
+        // 不动 mRenderView:保留它的 surface,等 attach 时重新绑定
+        return player;
+    }
+
+    /**
+     * 放回 player 实例，从前台 Service 取回后恢复显示。
+     *
+     * @param player 之前通过 {@link #detachPlayerForBackground} 取出的 player
+     */
+    @SuppressWarnings("unchecked")
+    public void attachPlayerFromBackground(AbstractPlayer player) {
+        if (player == null) {
+            return;
+        }
+        mMediaPlayer = (P) player;
+        // 重新绑定 surface:如果 mRenderView 存在且 surface 可用,
+        // 通过 render view 的 onSurfaceTextureAvailable 逻辑重新绑定。
+        // 但 onSurfaceTextureAvailable 只在 surface 首次创建时触发,
+        // 这里需要主动调 setSurface。
+        if (mRenderView != null) {
+            // mRenderView 持有的 surface 可能已失效(TextureView 仍 attached 时 surface 应该还在)
+            // 重新 attach 会触发 onSurfaceTextureAvailable → setSurface
+            // 但如果 surface 已经 available(没销毁过),需要手动调一次
+            // 安全做法:让 render view 重新走一遍 attach 流程
+            mRenderView.attachToPlayer(mMediaPlayer);
+        }
+        // 恢复 keep screen on(如果正在播放)
+        if (mMediaPlayer != null && mMediaPlayer.isPlaying()) {
+            mPlayerContainer.setKeepScreenOn(true);
+        }
+    }
+
+    /**
      * 保存播放进度
      */
     protected void saveProgress() {
         if (mProgressManager != null && mCurrentPosition > 0) {
-            L.d("saveProgress: " + mCurrentPosition);
-            mProgressManager.saveProgress(mUrl, mCurrentPosition);
+            long duration = getDuration();
+            long saved = xyz.doikki.videoplayer.util.ProgressUtils.computeSavedProgress(mCurrentPosition, duration);
+            L.d("saveProgress: pos=" + mCurrentPosition + " dur=" + duration + " saved=" + saved);
+            mProgressManager.saveProgress(mUrl, saved);
         }
     }
 
@@ -557,7 +617,16 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
             mAudioFocusHelper.requestFocus();
         }
         if (mCurrentPosition > 0) {
-            seekTo(mCurrentPosition);
+            long duration = getDuration();
+            if (xyz.doikki.videoplayer.util.ProgressUtils.isNearEnd(mCurrentPosition, duration)) {
+                L.d("onPrepared: near end, restart from beginning (pos=" + mCurrentPosition + ", dur=" + duration + ")");
+                mCurrentPosition = 0;
+                if (mProgressManager != null) {
+                    mProgressManager.saveProgress(mUrl, 0);
+                }
+            } else {
+                seekTo(mCurrentPosition);
+            }
         }
         // 音频渐入
         if (mAudioFadeHelper != null) {

@@ -34,6 +34,13 @@ public class TextureRenderView extends TextureView implements IRenderView, Textu
     @Override
     public void attachToPlayer(@NonNull AbstractPlayer player) {
         this.mMediaPlayer = player;
+        // 修复：从后台 Service 取回 player 后，render view 的 surface 已存在，
+        // 但 onSurfaceTextureAvailable 不会重新触发（surface 一直 available），
+        // 导致 player 拿不到 surface → 视频不渲染。
+        // 这里主动把已存在的 surface 绑定到新 player。
+        if (mSurface != null) {
+            player.setSurface(mSurface);
+        }
     }
 
     @Override

@@ -15,6 +15,13 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+
+        externalNativeBuild {
+            cmake {
+                cppFlags("-std=c++14", "-fexceptions", "-frtti")
+                arguments("-DANDROID_STL=c++_static")
+            }
+        }
     }
 
     buildTypes {
@@ -36,6 +43,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
@@ -45,10 +59,12 @@ dependencies {
     //api(libs.dkplayer.java)
     api(libs.bundles.media3.exo)
     api(libs.media3.inspector)
+    api(libs.media3.effect)
     api(libs.media3.ffmpeg) {
         exclude(group = "androidx.media3")
         exclude(group = "org.jetbrains.kotlin")
         exclude(group = "androidx.lifecycle")
     }
-
+    testImplementation(libs.test.junit)
+    testImplementation(libs.test.mockk)
 }

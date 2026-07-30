@@ -1,6 +1,7 @@
 package me.lingci.dy.player.core
 
 import me.lingci.lib.player.exo.CustomExoMediaPlayerFactory
+import me.lingci.lib.player.exo.render.GlRenderViewFactory
 import me.lingci.lib.player.mpv.MpvMediaPlayerFactory
 import me.lingci.lib.player.mpv.render.MpvSurfaceRenderViewFactory
 import me.lingci.lib.player.widget.videoview.CustomVideoView
@@ -11,12 +12,21 @@ import me.lingci.lib.player.widget.videoview.CustomVideoView
  */
 object DyPlayerCoreRegistry {
 
-    fun applyCore(videoView: CustomVideoView, core: DyPlayerCore, useMpvSpecialRender: Boolean = true) {
-        // Core injection lives in dy-player after player-ui stopped depending on concrete backends.
-        // MPV may also replace the render factory, so callers should apply generic render choices
-        // before this method and gate short-video overrides with resolveCore().
+    fun applyCore(
+        videoView: CustomVideoView,
+        core: DyPlayerCore,
+        useMpvSpecialRender: Boolean = true,
+        useSuperResolution: Boolean = false,
+        useNeuralSr: Boolean = false
+    ) {
         when (resolveCore(core)) {
-            DyPlayerCore.EXO -> videoView.setPlayerFactory(CustomExoMediaPlayerFactory.create())
+            DyPlayerCore.EXO -> {
+                videoView.setPlayerFactory(CustomExoMediaPlayerFactory.create())
+                // 画质增强（SGSR1）或神经网络超分（NCNN）：任一开启都用 GlRenderView
+                if (useSuperResolution || useNeuralSr) {
+                    videoView.setRenderViewFactory(GlRenderViewFactory.create())
+                }
+            }
             DyPlayerCore.MPV -> {
                 videoView.setPlayerFactory(MpvMediaPlayerFactory.create())
                 if (useMpvSpecialRender) {

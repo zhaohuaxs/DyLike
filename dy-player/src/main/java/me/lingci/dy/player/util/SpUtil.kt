@@ -172,11 +172,51 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var labMpvSpecialRender by SPManager.boolean(true)
 
+    /**
+     * MPV 顺序读优化（禁用 ffmpeg mov demuxer 的 interleaved_read，避免 badly-interleaved
+     * MP4 over HTTP 触发 seek 风暴，缓解拖动进度条卡顿）。
+     *
+     * ⚠️ 跨模块约定：此 key 由 lib-player/player-mpv/MpvMediaPlayer 在 init 时直接读取
+     * （app 默认 SharedPreferences）。重命名属性会破坏 MPV 端读取。
+     */
+    var labMpvSequentialRead by SPManager.boolean(true)
+
+    /**
+     * 画质增强：开启后给 ExoPlayer 内核挂 GLSurfaceView 渲染管线 + 锐化 shader，
+     * 实时锐化视频画面。仅 ExoPlayer 内核生效。
+     *
+     * 历史命名：曾经是 MPV FSR 试用键（labMpvSuperResolution），后续路线均废弃
+     * （MPV shader hook 输出不生效；Media3 setVideoEffects 1.9.0 有 output surface bug），
+     * 但 SP 键名保留以兼容备份文件和已开过该开关的用户。
+     *
+     * ⚠️ 跨模块约定：此 key 由 dy-player/SpUtil 定义，dy-player/DyPlayerCoreRegistry
+     * 在 applyCore 时读取以决定是否用 GlRenderView。重命名属性会破坏 Exo 端读取。
+     */
+    var labMpvSuperResolution by SPManager.boolean(false)
+
+    /**
+     * 画质增强锐化强度，0.0-3.0，默认 1.0。
+     * 0 = 关闭锐化（但仍走 GlRenderView）；3 = 极强（可能过锐/噪点放大）。
+     * 1.0 = 温和；2.0 = 明显锐利。
+     *
+     * ⚠️ 跨模块约定：此 key 由 lib-player/player-exo/SharpenVideoRenderer 在构造时读取。
+     */
+    var labSuperResolutionStrength by SPManager.float(1.0f)
+
+    /**
+     * 神经网络超分：开启后用 NCNN + Real-ESRGANv3 做实时 AI 超分。
+     * 与 labMpvSuperResolution（SGSR1）互斥。仅 ExoPlayer 内核生效。
+     */
+    var labNeuralSuperResolution by SPManager.boolean(false)
+
     // 长视频竖屏播放：开启后长视频默认竖屏，点击旋转按钮可切换横屏全屏
     var labLongVideoPortrait by SPManager.boolean(false)
 
     // 长视频画中画：开启后按 Home 键自动进入 PiP 小窗（需系统支持）
     var longVideoPip by SPManager.boolean(true)
+
+    // 长视频后台播放：开启后 PiP 关闭/无 PiP 时按 Home 进入后台音频播放
+    var longVideoBackgroundPlay by SPManager.boolean(false)
 
     // 实验室开关：App 启动时自动播放指定媒体库的上次视频
     var autoPlayOnLaunch by SPManager.boolean(false)
