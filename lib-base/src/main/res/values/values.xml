@@ -16,6 +16,10 @@
     <string name="hint_name">名称</string>
     <string name="hint_image_quality">图片质量，推荐80–100，当前 %d</string>
 
+    <!-- BaseAdapter 加载更多 Footer -->
+    <string name="base_load_more_loading">正在加载更多…</string>
+    <string name="base_load_more_end">没有更多数据</string>
+
     <string name="action_confirmed">确认</string>
     <string name="action_cancel">取消</string>
     <string name="action_settings">设置</string>

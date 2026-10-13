@@ -477,7 +477,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         // 滑动控制视图
         videoController.addControlComponent(GestureView(this))
         // 竖屏手势
-        videoController.setEnableInNormal(false)
+        videoController.setEnableInNormal(true)
         // 自动完成播放界面
         videoController.addControlComponent(CompleteView(this))
         // 剧集选择

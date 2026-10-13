@@ -91,7 +91,8 @@ class SmbStorage(
         return@withContext try {
             val smbFile = SmbFile(rootPath, cifsContext)
             smbFile.exists()
-        } catch (_: SmbAuthException) {
+        } catch (ex: SmbAuthException) {
+            ex.printStackTrace()
             false
         } catch (e: Exception) {
             e.printStackTrace()

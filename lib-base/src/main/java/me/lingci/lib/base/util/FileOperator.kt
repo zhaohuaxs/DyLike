@@ -13,6 +13,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStreamWriter
+import java.math.BigInteger
 import java.nio.charset.Charset
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -250,6 +251,55 @@ object FileOperator {
         }
     }
 
+    /**
+     * 文件名自然排序片段（修复 TimSort 合同违反）：
+     * 数字片段携带 BigInteger 数值（消除 toLong 溢出回退路径），
+     * 非数字片段按文本比较。预切分后统一单一序关系，严格满足排序合同。
+     */
+    private class FileNameSegment(val isDigit: Boolean, val text: String, val num: BigInteger)
+
+    /** 将文件名预切分为数字/非数字片段列表，不再依赖 Matcher 有状态的 find() 做比较终止判据。 */
+    private fun splitFileNameSegments(pattern: Pattern, name: String): List<FileNameSegment> {
+        val segments = mutableListOf<FileNameSegment>()
+        val matcher = pattern.matcher(name)
+        while (matcher.find()) {
+            val segment = matcher.group()
+            if (segment[0].isDigit()) {
+                // 正则 \d 仅匹配 ASCII 数字，BigInteger 解析不会失败
+                segments.add(FileNameSegment(true, segment, BigInteger(segment)))
+            } else {
+                segments.add(FileNameSegment(false, segment, BigInteger.ZERO))
+            }
+        }
+        return segments
+    }
+
+    /** 逐段比较：规则全局一致，保证反对称性与传递性。 */
+    private fun compareFileNameSegments(
+        segment1: FileNameSegment,
+        segment2: FileNameSegment,
+        collator: Collator
+    ): Int {
+        return when {
+            segment1.isDigit && segment2.isDigit -> {
+                // 都是数字，按数值大小比较（统一数值序）
+                val comparison = segment1.num.compareTo(segment2.num)
+                // 数值相等但文本不同（前导零，如 "02" 与 "2"）时按字典序 tie-break，保证结果确定
+                if (comparison != 0) comparison else segment1.text.compareTo(segment2.text)
+            }
+            // 数字片段与非数字片段比较：约定数字片段恒小于非数字片段（全局一致，避免序混用破坏传递性）
+            segment1.isDigit -> -1
+            segment2.isDigit -> 1
+            else -> {
+                // 非数字，按文字规则比较
+                val comparison = collator.compare(segment1.text, segment2.text)
+                // Collator PRIMARY 可能把不同字符串判等（如仅大小写差异），
+                // 此时回退字典序 tie-break，保证"不同字符串比较结果非零"
+                if (comparison != 0) comparison else segment1.text.compareTo(segment2.text)
+            }
+        }
+    }
+
     @JvmStatic
     fun fileNameComparator(): Comparator<File> {
         @Suppress("RegExpSimplifiable")
@@ -259,36 +309,20 @@ object FileOperator {
             strength = Collator.PRIMARY
         }
         return Comparator{file1, file2 ->
-            // 分割两个文件名成数字和非数字片段
-            val matcher1 = pattern.matcher(file1.name)
-            val matcher2 = pattern.matcher(file2.name)
+            // 预切分文件名为数字/非数字片段，逐段比较（file.name 为 null 时按空串防御）
+            val segments1 = splitFileNameSegments(pattern, file1.name ?: "")
+            val segments2 = splitFileNameSegments(pattern, file2.name ?: "")
 
-            while (matcher1.find() && matcher2.find()) {
-                val segment1 = matcher1.group()
-                val segment2 = matcher2.group()
-
-                // 比较当前片段
-                val comparison = if (segment1[0].isDigit() && segment2[0].isDigit()) {
-                    // 都是数字，按数值大小比较
-                    try {
-                        segment1.toLong().compareTo(segment2.toLong())
-                    } catch (e: Exception) {
-                        // 超过数字长度，用文字匹配
-                        collator.compare(segment1, segment2)
-                    }
-                } else {
-                    // 非数字，按文字规则比较
-                    collator.compare(segment1, segment2)
-                }
-
+            val size = minOf(segments1.size, segments2.size)
+            for (i in 0 until size) {
+                val comparison = compareFileNameSegments(segments1[i], segments2[i], collator)
                 if (comparison != 0) {
                     return@Comparator comparison
                 }
             }
 
-            // 处理一个字符串是另一个字符串前缀的情况
-            matcher1.find().compareTo(matcher2.find())
-            //collator.compare(file1.name, file2.name)
+            // 处理一个字符串是另一个字符串前缀的情况：按剩余片段数比较
+            segments1.size.compareTo(segments2.size)
         }
     }
 

@@ -85,6 +85,13 @@ class EmptyDecoration(
 /**
  * 扩展函数：设置空布局
  * 只有调用此方法才会启用功能
+ *
+ * 使用要求：
+ * 1. 必须在 `recyclerView.adapter` 赋值之后调用，否则数据观察者无法注册
+ * 2. 触发条件为 `adapter.itemCount == 0`，因此不能再同时使用适配器内的空视图逻辑
+ *    （BaseAdapter 的 `setEmptyView` 已移除）
+ * 3. 空布局会被按 RecyclerView 的宽高精确测量并绘制在 (0,0)，内部只需写 `gravity="center"` 即可全屏居中
+ * 4. [onEmptyClick] 目前不会生效：空视图是绘制在 Canvas 上的，没有挂载进视图层级，收不到触摸事件
  */
 fun RecyclerView.setEmptyView(
     @LayoutRes emptyLayoutRes: Int = 0,

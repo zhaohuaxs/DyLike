@@ -178,7 +178,7 @@ class ShortVideoActivity : BaseActivity() {
         activeShortVideoControlView?.enterImmersive()
     }
     private fun scheduleImmersive() {
-        if (!spUtil.showSysBar.not()) return
+        if (spUtil.showSysBar) return
         immersiveHandler.removeCallbacks(enterImmersiveRunnable)
         immersiveScheduled = true
         immersiveHandler.postDelayed(enterImmersiveRunnable, 3000)
@@ -283,6 +283,9 @@ class ShortVideoActivity : BaseActivity() {
         AppUtil.setStatusBarTransparent(this)
         mBinding = ActivityShortVideoBinding.inflate(layoutInflater)
         setContentView(mBinding.root)
+        // 播放器视图必须在任何生命周期回调与用户交互回调之前完成构造，
+        // 消除异步 initData（KEY_TEMP 路径）未完成时 onPause 等回调访问 mVideoView 的 lateinit 竞态
+        ensureVideoViewConstructed()
         init()
     }
 
@@ -408,8 +411,8 @@ class ShortVideoActivity : BaseActivity() {
             MediaManger.scanVideoThumb(baseContext, mVideoList.toList())
         }
 
+        // 播放器视图已在 onCreate 同步构造（ensureVideoViewConstructed），此处仅初始化列表
         initViewPager()
-        initVideoView()
 
         mBinding.viewpage2.post {
             logD("currentIndex", currentIndex)
@@ -449,7 +452,16 @@ class ShortVideoActivity : BaseActivity() {
         }
     }
 
-    private fun initVideoView() {
+    /**
+     * 播放器视图同步构造与基础配置（幂等）。
+     * 在 onCreate 调用，构造期不依赖 mVideoList（applyConfiguredPlaybackCore/ShortVideoController
+     * 均只读 spUtil 与 context）；依赖数据项的挂载（addView/setUrl/start）保留在 startPlay。
+     * 状态监听器内引用的 mViewPagerImpl 仅在播放开始后才会被回调触发（startPlay 晚于
+     * initViewPager 同步执行），无早期回调风险。
+     */
+    private fun ensureVideoViewConstructed() {
+        // 幂等守卫：防止 initData 多路径触发重复构造
+        if (::mVideoView.isInitialized) return
         mVideoView = CustomVideoView(this)
         applyConfiguredPlaybackCore()
         mVideoView.setLooping(PlayerInitializer.Player.shortAutoNext.not())
@@ -1068,7 +1080,9 @@ class ShortVideoActivity : BaseActivity() {
     }
 
     private fun closeApp() {
-        mVideoView.release()
+        if (::mVideoView.isInitialized) {
+            mVideoView.release()
+        }
         finishAffinity()
     }
 
