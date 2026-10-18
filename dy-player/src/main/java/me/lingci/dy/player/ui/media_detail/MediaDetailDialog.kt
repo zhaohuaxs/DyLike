@@ -11,12 +11,16 @@ import androidx.appcompat.widget.PopupMenu
 import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.FragmentTransaction
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.DialogMediaDetailBinding
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.media.MediaHelper
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
@@ -24,7 +28,6 @@ import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.setCover
 import me.lingci.lib.base.util.FileOperator
-import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.base.util.logD
 import me.lingci.lib.base.util.safeGetParcelable
@@ -94,7 +97,10 @@ class MediaDetailDialog : DialogFragment() {
             mediaData.opOffset = op
             mediaData.edOffset = ed
             binding.tvOffset.text = getString(R.string.hint_media_op_ed_offset, mediaData.opValue(), mediaData.edValue())
-            MediaHelper.updateMedia(spUtil, mediaData)
+            // updateMedia 已改 suspend（Room DAO 写入），fire-and-forget 落库
+            lifecycleScope.launch {
+                runCatching { MediaHelper.updateMedia(spUtil, mediaData) }
+            }
         }
 
         binding.tvOffset.setOnClickListener {
@@ -120,6 +126,8 @@ class MediaDetailDialog : DialogFragment() {
                     add(1, 2, 2, "清除全部")
                 }
                 popupMenu.setOnMenuItemClickListener {
+                    // 「删除当前/清除全部」改删 play_history（原 SP historyJson 整列表回写已废弃）
+                    val removed = if (it.itemId == 1) mediaDetailAdapter.getData().getOrNull(position) else null
                     if (it.itemId == 1) {
                         mediaDetailAdapter.removeItem(position)
                     } else {
@@ -127,10 +135,15 @@ class MediaDetailDialog : DialogFragment() {
                     }
                     binding.tvInfo.text = "包含 ${mediaDetailAdapter.itemCount} 条历史记录"
                     binding.playButton.visibility = if (mediaDetailAdapter.itemCount  == 0) View.GONE else View.VISIBLE
-                    val historyArray = mutableListOf<VideoData>()
-                    historyArray.addAll(mediaDetailAdapter.getData())
-                    historyArray.reverse()
-                    spUtil.historyJson = JsonUtil.toJsonString(historyArray)
+                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            if (removed != null) {
+                                DatabaseManager.playHistoryDao.deleteByVideoId(removed.beanId())
+                            } else {
+                                DatabaseManager.playHistoryDao.deleteAll()
+                            }
+                        }
+                    }
                     return@setOnMenuItemClickListener true
                 }
                 popupMenu.show()
@@ -154,14 +167,12 @@ class MediaDetailDialog : DialogFragment() {
         binding.tvOffset.text = getString(R.string.hint_media_op_ed_offset, mediaData.opValue(), mediaData.edValue())
         when(mediaData.type) {
             MediaLibType.HISTORY -> {
-                spUtil.historyJson?.let { historyJson ->
-                    logD("historyJson $historyJson")
-                    JsonUtil.toList<VideoData>(historyJson).toMutableList().let { videoData ->
-                        binding.tvInfo.text = "包含 ${videoData.size} 条历史记录"
-                        binding.playButton.visibility = if (videoData.isEmpty()) View.GONE else View.VISIBLE
-                        videoData.reverse()
-                        mediaDetailAdapter.updateData(videoData)
-                    }
+                // 历史改从 play_history 联查 video_data（结果已按最近播放倒序，替代 SP historyJson 读取）
+                lifecycleScope.launch {
+                    val videoData = DatabaseManager.playHistoryDao.listHistoryVideos()
+                    binding.tvInfo.text = "包含 ${videoData.size} 条历史记录"
+                    binding.playButton.visibility = if (videoData.isEmpty()) View.GONE else View.VISIBLE
+                    mediaDetailAdapter.updateData(videoData.toMutableList())
                 }
             }
             MediaLibType.DEFAULT, MediaLibType.LOCAL -> {
@@ -176,9 +187,13 @@ class MediaDetailDialog : DialogFragment() {
                 }
             }
             MediaLibType.ONLINE -> {
-                binding.tvInfo.text = "${mediaData.playType} \n包含 ${mediaData.items.size} 条媒体"
-                mediaDetailAdapter.updateData(mediaData.items)
-                Log.d(this@MediaDetailDialog, mediaData.items)
+                // items 为 @Ignore 字段（Room 读出恒为空）：剧集改从 video_data 子表加载
+                lifecycleScope.launch {
+                    val videoData = DatabaseManager.videoDataDao.listByMedia(mediaData.id)
+                    binding.tvInfo.text = "${mediaData.playType} \n包含 ${videoData.size} 条媒体"
+                    mediaDetailAdapter.updateData(videoData.toMutableList())
+                    Log.d(this@MediaDetailDialog, videoData.size)
+                }
             }
             else -> {
 

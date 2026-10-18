@@ -41,6 +41,7 @@ import me.lingci.dy.player.util.MediaPlaybackRecorder
 import me.lingci.dy.player.util.PlaybackTraceHelper
 import me.lingci.dy.player.util.PlaybackLogCache
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.dy.player.util.VideoDataBinder
 import me.lingci.dy.player.util.VideoListTempStore
 import me.lingci.dy.player.view.LongVideoControlView
 import me.lingci.lib.base.entity.TitleItem
@@ -192,7 +193,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                 if (itemViewModel.getItemSize() > mCurPos) itemViewModel.getItem(mCurPos).name else ""
             },
             isMerge = itemViewModel::isMerge,
-            setMergeState = itemViewModel::setMergeState
+            setMergeState = itemViewModel::setMergeState,
+            historySource = { HistorySource.fromMediaData(itemViewModel.getMediaData()) }
         )
     }
     private var hasPausedForBackgroundRecovery = false
@@ -664,7 +666,12 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                     // 同步清零 PlayInfo.playSeek，避免点击"重新播放"时 onPlayStart 又 seekTo 到历史位置
                     // 注意：必须同步执行，不能依赖 updateInfo 的异步写入（有 6 秒节流 + 竞态）
                     if (itemViewModel.getItemSize() > mCurPos) {
-                        PlayHelper.resetPlaySeek(this@LongVideoActivity, itemViewModel.getItem(mCurPos))
+                        // 同步清零文件 playSeek + 异步清零 play_history 进度
+                        PlayHelper.resetPlaySeek(
+                            this@LongVideoActivity,
+                            itemViewModel.getItem(mCurPos),
+                            HistorySource.fromMediaData(itemViewModel.getMediaData())
+                        )
                     }
                     // 后台播放模式下播完:先释放 Service 持有的旧 player(避免双 player),
                     // 再切下一集。新视频起播后由 STATE_PLAYING 的 pendingBgSwitch 重新 detach。
@@ -734,6 +741,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         Log.d(this, "startPlay", position, videoBean.name)
         logAndCache("LongVideoActivity", "D", "startPlay position=$position name=${videoBean.name} url=${videoBean.videoUrl}")
         lifecycleScope.launch(Dispatchers.IO) {
+            // 决策8：headers 不落库，播放前从 source_data 现算凭据回填（DB 加载的视频无凭据）
+            VideoDataBinder.bindTokens(videoBean, itemViewModel.getMediaData())
             videoBean.playUrl().let { playUrl ->
                 lifecycleScope.launch(Dispatchers.Main) {
                     // 新视频起播前统一重置 controller 持有的弹幕 UI 状态。
@@ -767,6 +776,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         val retryPosition = lastKnownPlaybackPosition
         val videoBean = itemViewModel.getItem(position)
         lifecycleScope.launch(Dispatchers.IO) {
+            // 决策8：重试路径同样先现算凭据回填 headers，再解析播放地址
+            VideoDataBinder.bindTokens(videoBean, itemViewModel.getMediaData())
             val playUrl = videoBean.playUrl()
             withContext(Dispatchers.Main) {
                 if (position != mCurPos || itemViewModel.getItemSize() <= position) {
@@ -875,8 +886,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             if (onHistory) {
                 return@post
             }
-            // 保存历史
-            PlayHelper.saveHistory(spUtil, videoData)
+            // 保存历史（sourceType/sourceKey 按进入来源派生，写入 play_history）
+            PlayHelper.saveHistory(videoData, HistorySource.fromMediaData(itemViewModel.getMediaData()))
         }
         binding.root.postDelayed({
             if (position != mCurPos) {

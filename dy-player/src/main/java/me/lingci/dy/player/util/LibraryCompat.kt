@@ -6,10 +6,21 @@ import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.MediaShuffleState
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.room.dao.MediaDataDao
+import me.lingci.dy.player.room.entity.MediaShuffleStateEntity
+import me.lingci.dy.player.room.entity.Playlist
+import me.lingci.dy.player.room.entity.PlaylistItem
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.md5
 
+/**
+ * 媒体库兼容门面。
+ *
+ * Room3 改造（v3 §4.0）：废弃「loadAll → 内存改 → saveAll」整 list 模式，
+ * 业务函数改为 suspend + DAO 单条操作；纯函数（id 生成/排序/匹配）保持同步。
+ */
 object LibraryCompat {
 
     const val SCHEMA_VERSION = 3
@@ -24,6 +35,10 @@ object LibraryCompat {
 
     fun builtinStreamId(): String = BUILTIN_STREAM_ID
 
+    /**
+     * SP 数据归一化（v2→v3）。仅在旧备份恢复（写回 SP 后重迁移）与迁移执行器预读时调用；
+     * 迁移完成后 SP 的 6 个 JSON 不再读写。
+     */
     fun migrateIfNeeded(sp: SpUtil) {
         if (sp.dataSchemaVersion >= SCHEMA_VERSION) {
             return
@@ -34,29 +49,6 @@ object LibraryCompat {
         val migratedMedia = migrateMedia(mediaList, migratedSources)
         sp.sourceJson = JsonUtil.toJsonString(migratedSources)
         sp.mediaJson = JsonUtil.toJsonString(migratedMedia)
-        sp.dataSchemaVersion = SCHEMA_VERSION
-    }
-
-    fun loadSources(sp: SpUtil): MutableList<SourceData> {
-        migrateIfNeeded(sp)
-        return JsonUtil.toList<SourceData>(sp.sourceJson!!).toMutableList()
-    }
-
-    fun saveSources(sp: SpUtil, list: List<SourceData>) {
-        val normalized = migrateSources(list.toMutableList())
-        sp.sourceJson = JsonUtil.toJsonString(normalized)
-        sp.dataSchemaVersion = SCHEMA_VERSION
-    }
-
-    fun loadMedia(sp: SpUtil): MutableList<MediaData> {
-        migrateIfNeeded(sp)
-        return JsonUtil.toList<MediaData>(sp.mediaJson!!).toMutableList()
-    }
-
-    fun saveMedia(sp: SpUtil, list: List<MediaData>) {
-        val sources = loadSources(sp)
-        val normalized = migrateMedia(list.toMutableList(), sources)
-        sp.mediaJson = JsonUtil.toJsonString(normalized)
         sp.dataSchemaVersion = SCHEMA_VERSION
     }
 
@@ -77,7 +69,7 @@ object LibraryCompat {
     }
 
     fun effectiveStorageId(media: MediaData, sources: List<SourceData>): String? {
-        if (media.storageId.isNotBlank()) {
+        if (!media.storageId.isNullOrBlank()) {
             return media.storageId
         }
         if (media.type != MediaLibType.WEBDAV) {
@@ -140,8 +132,9 @@ object LibraryCompat {
     ): MutableList<MediaData> {
         val usedIds = mutableSetOf<String>()
         return list.map { media ->
-            if (media.type == MediaLibType.WEBDAV && media.storageId.isBlank()) {
-                media.storageId = resolveLegacyStorageId(media, sources).orEmpty()
+            // 解析不到保持 null（空串会让 FK(storage_id→source_data) 在落库时违约）
+            if (media.type == MediaLibType.WEBDAV && media.storageId.isNullOrBlank()) {
+                media.storageId = resolveLegacyStorageId(media, sources)
             }
             if (media.id.isBlank()) {
                 media.id = buildStableMediaId(media, sources)
@@ -218,78 +211,200 @@ object LibraryCompat {
         return type == MediaLibType.WEBDAV || type == MediaLibType.SMB
     }
 
-    fun loadPlaylist(sp: SpUtil): MutableList<MediaData> {
-        return JsonUtil.toList<MediaData>(sp.playlistJson!!).toMutableList()
+    // ---- 视频落库（video_data.media_id 是 FK → media_data，写入前必须兜底）----
+
+    /**
+     * 确保视频可安全落库（video_data 的 media_id 是 FK → media_data）：
+     * 父行已存在则以库内 media_id 为权威值回填内存对象；mediaId 无效（空或不存在）时归入
+     * 按存储类型分桶的虚拟宿主媒体（与迁移 §1.5 规则 4 同公式，跨会话复用同一桶，不展示在媒体库列表）
+     *
+     * 写入方（播放历史 / 收藏 / 播放列表条目）共用本方法，保证：
+     * ① video.id 归一为 beanId()，与 playlist_item.video_id 等外键取值同源；
+     * ② 调用方拿到的 videoData.mediaId 绝不写空串/悬空 id
+     *
+     * 注意（短视频「添加喜欢」静默失败根因）：方法返回后调用方会把 videoData.mediaId 直接
+     * 写进 favorite.media_id 等带 FK 的列，因此**早退分支同样必须回填**——文件扫描出来的
+     * 视频 mediaId 恒为空串（VideoData(file) 构造器不设该字段），若库内已有该行而直接 return，
+     * 调用方就会拿空串去撞 media_data 外键，抛 FOREIGN KEY constraint failed。
+     */
+    suspend fun ensureVideoParent(videoData: VideoData) {
+        videoData.id = videoData.beanId()
+        val videoDao = DatabaseManager.videoDataDao
+        val mediaDao = DatabaseManager.mediaDataDao
+        val existing = videoDao.getById(videoData.id)
+        if (existing != null) {
+            // 父行已存在：以库内 media_id 为权威值回填内存对象
+            val resolved = resolveMediaId(mediaDao, existing.mediaId, videoData.mediaId, videoData.type)
+            if (resolved != existing.mediaId) {
+                // 库内 media_id 本身为空/悬空（历史脏数据）：纠正并回写
+                videoDao.updateMediaId(videoData.id, resolved)
+            }
+            videoData.mediaId = resolved
+            return
+        }
+        val mediaId = videoData.mediaId
+        if (mediaId.isNotBlank() && mediaDao.getById(mediaId) != null) {
+            videoDao.upsert(videoData)
+            return
+        }
+        // mediaId 无效 → 归入虚拟宿主（迁移器用相同 id 公式，保证跨会话复用同一桶）
+        videoData.mediaId = ensureVirtualMedia(mediaDao, videoData.type)
+        videoDao.upsert(videoData)
     }
 
-    fun savePlaylist(sp: SpUtil, list: List<MediaData>) {
-        sp.playlistJson = JsonUtil.toJsonString(list)
+    /**
+     * 解析 video_data.media_id 的权威值：优先库内值（库内行才是权威），
+     * 其次内存对象带的有效值，最后兜底虚拟宿主。
+     * 返回值必定是 media_data 中真实存在的主键——**绝不会返回空串**（空串去撞外键必违约）。
+     */
+    private suspend fun resolveMediaId(
+        mediaDao: MediaDataDao,
+        dbMediaId: String,
+        memoryMediaId: String,
+        storageType: StorageType
+    ): String {
+        if (dbMediaId.isNotBlank() && mediaDao.getById(dbMediaId) != null) {
+            return dbMediaId
+        }
+        if (memoryMediaId.isNotBlank() && mediaDao.getById(memoryMediaId) != null) {
+            return memoryMediaId
+        }
+        return ensureVirtualMedia(mediaDao, storageType)
     }
 
-    fun createPlaylist(sp: SpUtil, title: String, playMode: Int = 0): MediaData {
-        val playlist = MediaData(
+    /** 找/建按存储类型分桶的虚拟宿主媒体，返回其 id（与迁移 §1.5 规则 4 同公式） */
+    private suspend fun ensureVirtualMedia(mediaDao: MediaDataDao, storageType: StorageType): String {
+        val virtualId = "virtual|${storageType.name}|0".md5()
+        if (mediaDao.getById(virtualId) == null) {
+            mediaDao.insert(
+                MediaData(
+                    id = virtualId,
+                    title = "未归类",
+                    type = MediaLibType.fromStorage(storageType),
+                    storageType = storageType,
+                    isVirtual = true
+                )
+            )
+        }
+        return virtualId
+    }
+
+    // ---- 播放列表（suspend + DAO 单条操作，替代 SP 整 list 模式）----
+
+    /** 新建播放列表 */
+    suspend fun createPlaylist(title: String, playMode: Int = 0): Playlist {
+        val playlist = Playlist(
             id = "playlist|${title.trim()}|${System.currentTimeMillis()}".md5(),
             title = title.trim(),
-            type = MediaLibType.PLAYLIST,
-            storageType = StorageType.LOCAL_STORAGE,
             playMode = playMode
         )
-        val list = loadPlaylist(sp)
-        list.add(playlist)
-        savePlaylist(sp, list)
+        DatabaseManager.playlistDao.insert(playlist)
         return playlist
     }
 
-    fun updatePlaylistMode(sp: SpUtil, playlistId: String, playMode: Int) {
-        val list = loadPlaylist(sp)
-        val playlist = list.find { it.id == playlistId } ?: return
-        playlist.playMode = playMode
-        savePlaylist(sp, list)
+    /** 更新播放列表播放模式 */
+    suspend fun updatePlaylistMode(playlistId: String, playMode: Int) {
+        DatabaseManager.playlistDao.updatePlayMode(playlistId, playMode, System.currentTimeMillis())
     }
 
-    fun deletePlaylist(sp: SpUtil, playlistId: String) {
-        val list = loadPlaylist(sp)
-        list.removeAll { it.id == playlistId }
-        savePlaylist(sp, list)
+    /** 删除播放列表（playlist_item 由 FK CASCADE 级联清理） */
+    suspend fun deletePlaylist(playlistId: String) {
+        val playlist = DatabaseManager.playlistDao.getById(playlistId) ?: return
+        DatabaseManager.playlistDao.delete(playlist)
     }
 
-    fun addToPlaylist(sp: SpUtil, playlistId: String, videos: List<VideoData>) {
-        val list = loadPlaylist(sp)
-        val playlist = list.find { it.id == playlistId } ?: return
-        val existingIds = playlist.items.map { it.beanId() }.toSet()
-        videos.forEach { video ->
-            if (video.beanId() !in existingIds) {
-                playlist.items.add(video)
+    /**
+     * 向播放列表添加视频（按 beanId 查重；PlaylistItem.video_id 是 FK → video_data，
+     * 故插入条目前先 ensureVideoParent 兜底 media 父行并 upsert video_data）
+     */
+    suspend fun addToPlaylist(playlistId: String, videos: List<VideoData>) {
+        val playlistDao = DatabaseManager.playlistDao
+        if (playlistDao.getById(playlistId) == null) {
+            return
+        }
+        val itemDao = DatabaseManager.playlistItemDao
+        val existingIds = itemDao.listByPlaylist(playlistId).map { it.videoId }.toMutableSet()
+        var order = itemDao.countByPlaylist(playlistId)
+        DatabaseManager.inTransaction {
+            videos.forEach { video ->
+                val vid = video.beanId()
+                if (vid !in existingIds) {
+                    // mediaId 为空/悬空时兜底虚拟宿主，并把 video.id 归一为 vid
+                    ensureVideoParent(video)
+                    itemDao.insert(
+                        PlaylistItem(
+                            playlistId = playlistId,
+                            mediaId = video.mediaId.ifBlank { null },
+                            videoId = vid,
+                            sortOrder = order
+                        )
+                    )
+                    existingIds.add(vid)
+                    order++
+                }
             }
         }
-        savePlaylist(sp, list)
     }
 
-    fun removeFromPlaylist(sp: SpUtil, playlistId: String, videoIds: List<String>) {
-        val list = loadPlaylist(sp)
-        val playlist = list.find { it.id == playlistId } ?: return
-        playlist.items.removeAll { it.beanId() in videoIds }
-        savePlaylist(sp, list)
-    }
-
-    fun syncPlaylistVideos(sp: SpUtil, playlistId: String): MediaData? {
-        val list = loadPlaylist(sp)
-        val playlist = list.find { it.id == playlistId } ?: return null
-        val before = playlist.items.size
-        playlist.items.removeAll { video ->
-            video.type == StorageType.LOCAL_STORAGE && !java.io.File(video.videoUrl).exists()
+    /** 从播放列表移除指定视频条目 */
+    suspend fun removeFromPlaylist(playlistId: String, videoIds: List<String>) {
+        val itemDao = DatabaseManager.playlistItemDao
+        DatabaseManager.inTransaction {
+            videoIds.forEach { itemDao.deleteByPlaylistAndVideo(playlistId, it) }
         }
-        if (playlist.items.size != before) {
-            savePlaylist(sp, list)
-        }
-        return playlist
     }
 
-    fun renamePlaylist(sp: SpUtil, playlistId: String, newTitle: String) {
-        val list = loadPlaylist(sp)
-        val playlist = list.find { it.id == playlistId } ?: return
-        playlist.title = newTitle.trim()
-        savePlaylist(sp, list)
+    /**
+     * 同步播放列表：清理 LOCAL_STORAGE 类型但本地文件已不存在的条目。
+     * 返回删除的条目数（0 表示列表已干净，无需刷新）。
+     */
+    suspend fun syncPlaylistVideos(playlistId: String): Int {
+        val itemDao = DatabaseManager.playlistItemDao
+        val videoDao = DatabaseManager.videoDataDao
+        val items = itemDao.listByPlaylist(playlistId)
+        val staleIds = items.filter { item ->
+            // 条目对应视频为本地存储且文件不存在才清理（类型取自视频父行）
+            val video = videoDao.getById(item.videoId)
+            video != null && video.type == StorageType.LOCAL_STORAGE &&
+                    !java.io.File(video.videoUrl).exists()
+        }.map { it.videoId }
+        if (staleIds.isEmpty()) {
+            return 0
+        }
+        DatabaseManager.inTransaction {
+            staleIds.forEach { itemDao.deleteByPlaylistAndVideo(playlistId, it) }
+        }
+        return staleIds.size
+    }
+
+    /** 播放列表重命名 */
+    suspend fun renamePlaylist(playlistId: String, newTitle: String) {
+        DatabaseManager.playlistDao.updateTitle(playlistId, newTitle.trim(), System.currentTimeMillis())
+    }
+
+    // ---- 随机播放状态（suspend + DAO，替代 SP 的 mediaShuffleJson）----
+
+    /** 读取全部随机播放状态（entity 的 JSON 列 → 业务模型） */
+    suspend fun loadShuffleStates(): MutableMap<String, MediaShuffleState> {
+        return DatabaseManager.shuffleStateDao.list().mapNotNull { entity ->
+            runCatching {
+                val selected = JsonUtil.toEntity<Set<String>>(entity.selectedIds).orEmpty()
+                val display = JsonUtil.toEntity<List<String>>(entity.currentDisplayIds).orEmpty()
+                entity.mediaId to MediaShuffleState(selected, display)
+            }.getOrNull()
+        }.toMap().toMutableMap()
+    }
+
+    /** 批量保存随机播放状态（@Upsert 覆盖同 mediaId；残留行由媒体删除时 FK CASCADE 清理） */
+    suspend fun saveShuffleStates(states: Map<String, MediaShuffleState>) {
+        val entities = states.map { (mediaId, state) ->
+            MediaShuffleStateEntity(
+                mediaId = mediaId,
+                selectedIds = JsonUtil.toJsonString(state.selectedIds),
+                currentDisplayIds = JsonUtil.toJsonString(state.currentDisplayIds)
+            )
+        }
+        DatabaseManager.shuffleStateDao.upsertAll(entities)
     }
 
     fun sortByParentPath(videoData: MutableList<VideoData>): MutableList<VideoData> {
@@ -328,19 +443,6 @@ object LibraryCompat {
         return matcher1.find().compareTo(matcher2.find())
     }
 
-    fun loadShuffleStates(sp: SpUtil): MutableMap<String, MediaShuffleState> {
-        val json = sp.mediaShuffleJson ?: "{}"
-        return try {
-            JsonUtil.toEntity<Map<String, MediaShuffleState>>(json).toMutableMap()
-        } catch (e: Exception) {
-            mutableMapOf()
-        }
-    }
-
-    fun saveShuffleStates(sp: SpUtil, states: Map<String, MediaShuffleState>) {
-        sp.mediaShuffleJson = JsonUtil.toJsonString(states)
-    }
-
     fun selectRandomMedia(
         allMedia: List<MediaData>,
         categoryKey: String,
@@ -377,12 +479,12 @@ object LibraryCompat {
         )
     }
 
-    fun togglePin(sp: SpUtil, mediaId: String): Boolean {
-        val list = loadMedia(sp)
-        val media = list.find { it.id == mediaId } ?: return false
-        media.pinned = !media.pinned
-        media.pinnedAt = if (media.pinned) System.currentTimeMillis() else 0L
-        saveMedia(sp, list)
-        return media.pinned
+    /** 置顶切换（单条读取 + 字段级更新，替代 loadAll→改→saveAll） */
+    suspend fun togglePin(mediaId: String): Boolean {
+        val dao = DatabaseManager.mediaDataDao
+        val media = dao.getById(mediaId) ?: return false
+        val newPinned = !media.pinned
+        dao.updatePinned(mediaId, newPinned, if (newPinned) System.currentTimeMillis() else 0L)
+        return newPinned
     }
 }

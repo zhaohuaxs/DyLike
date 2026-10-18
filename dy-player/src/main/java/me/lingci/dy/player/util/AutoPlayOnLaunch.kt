@@ -4,9 +4,11 @@ import android.content.Context
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
 import me.lingci.lib.base.storage.IStorage
+import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.base.util.isVideo
@@ -74,12 +76,12 @@ object AutoPlayOnLaunch {
      * 媒体库路径：查找媒体库 → 加载视频列表 → 启动播放页。
      */
     private suspend fun triggerMedia(
-        context: Context, spUtil: SpUtil, mediaId: String?
+        context: Context, spUtil: SpUtil, mediaId: String
     ) {
         val media = withContext(Dispatchers.IO) {
-            // 从 SP 查找目标媒体库
+            // Room3：从 media_data 按 id 单条读取（原 loadMedia 整表查找废弃）
             runCatching {
-                LibraryCompat.loadMedia(spUtil).find { it.id == mediaId }
+                DatabaseManager.mediaDataDao.getById(mediaId)
             }.getOrNull()
         }
         if (media == null) {
@@ -118,21 +120,36 @@ object AutoPlayOnLaunch {
     }
 
     /**
-     * 播放列表路径：同步清理无效项 → 直接使用 items 作为视频列表 → 启动播放页。
+     * 播放列表路径：同步清理无效项 → 经 playlist_item/video_data 还原视频列表 → 启动播放页。
      *
-     * 与媒体库路径的区别：播放列表的 [MediaData.items] 直接存储 VideoData，无需扫描；
-     * 调用 [LibraryCompat.syncPlaylistVideos] 清理 LOCAL_STORAGE 类型但文件不存在的项，
-     * 与 PlaylistActivity 点击进入详情页的行为对齐。
+     * 与媒体库路径的区别：播放列表数据来自 playlist/playlist_item 表（Playlist 实体无 items 字段，
+     * 需还原为 PLAYLIST 类型的 MediaData 供播放页使用）；调用 [LibraryCompat.syncPlaylistVideos]
+     * 清理 LOCAL_STORAGE 类型但文件不存在的项，与 PlaylistActivity 点击进入详情页的行为对齐。
      */
     private suspend fun triggerPlaylist(
         context: Context, spUtil: SpUtil, playlistId: String?
     ) {
-        val playlist = withContext(Dispatchers.IO) {
+        val mediaData = withContext(Dispatchers.IO) {
             runCatching {
-                LibraryCompat.syncPlaylistVideos(spUtil, playlistId.orEmpty())
+                val pid = playlistId.orEmpty()
+                val playlist = DatabaseManager.playlistDao.getById(pid) ?: return@runCatching null
+                // 同步清理失效条目（返回清理数，无需关心具体值）
+                LibraryCompat.syncPlaylistVideos(pid)
+                // 条目 → 视频还原（playlist_item.video_id FK → video_data）
+                val videos = DatabaseManager.playlistItemDao.listByPlaylist(pid)
+                    .mapNotNull { DatabaseManager.videoDataDao.getById(it.videoId) }
+                // 构建 PLAYLIST 类型 MediaData 供播放页使用（与 PlaylistActivity 入口行为一致）
+                MediaData(
+                    id = playlist.id,
+                    title = playlist.title,
+                    type = MediaLibType.PLAYLIST,
+                    storageType = StorageType.LOCAL_STORAGE,
+                    playMode = playlist.playMode,
+                    items = videos.toMutableList()
+                )
             }.getOrNull()
         }
-        if (playlist == null) {
+        if (mediaData == null) {
             // 播放列表已被删除，清空无效设置
             spUtil.autoPlayPlaylistId = ""
             Log.d(TAG, "autoPlayPlaylistId not found, cleared")
@@ -140,26 +157,26 @@ object AutoPlayOnLaunch {
         }
 
         val longVideoMode =
-            (spUtil.longVideoMode && playlist.playMode == 0) || playlist.playMode == 2
+            (spUtil.longVideoMode && mediaData.playMode == 0) || mediaData.playMode == 2
 
-        val videos = playlist.items
+        val videos = mediaData.items
         if (videos.isNullOrEmpty()) {
-            Log.d(TAG, "playlist has no videos: ${playlist.title}")
+            Log.d(TAG, "playlist has no videos: ${mediaData.title}")
             return
         }
 
         // 定位上次播放的视频索引（根据 playLast URL 匹配）
-        val lastIndex = playlist.playLast.takeIf { it.isNotBlank() }?.let { url ->
+        val lastIndex = mediaData.playLast.takeIf { it.isNotBlank() }?.let { url ->
             videos.indexOfFirst { it.videoUrl == url }
         } ?: -1
         val index = if (lastIndex in videos.indices) lastIndex else 0
 
         // 拉起对应播放页；长视频内部会通过 PlayHelper.loadInfo 自动恢复 playSeek
         if (longVideoMode) {
-            LongVideoActivity.start(context, playlist, ArrayList(videos), index, false)
+            LongVideoActivity.start(context, mediaData, ArrayList(videos), index, false)
         } else {
             // 短视频显式传递 shortRandom，使随机开关明确作用于自动播放（播放列表路径）
-            ShortVideoActivity.start(context, playlist, ArrayList(videos), index, false, spUtil.shortRandom)
+            ShortVideoActivity.start(context, mediaData, ArrayList(videos), index, false, spUtil.shortRandom)
         }
     }
 
@@ -177,8 +194,8 @@ object AutoPlayOnLaunch {
                 .map { VideoData(it) }
         }
         MediaLibType.ONLINE -> {
-            // 在线：直接使用媒体库内置的 items
-            media.items
+            // 在线：剧集从 video_data 读取（Room3：MediaData.items 为 @Ignore 字段，Room 读出恒为空）
+            DatabaseManager.videoDataDao.listByMedia(media.id)
         }
         MediaLibType.WEBDAV, MediaLibType.SMB -> {
             // 远程：连接资源源并列举视频文件
@@ -191,7 +208,8 @@ object AutoPlayOnLaunch {
      * 加载远程媒体库（WebDAV/SMB）的视频列表，与 MediaFragment.loadRemoteVideos 逻辑一致。
      */
     private suspend fun loadRemoteVideos(spUtil: SpUtil, item: MediaData): List<VideoData> {
-        val sourceList = LibraryCompat.loadSources(spUtil)
+        // Room3：源列表改为 source_data DAO 读取
+        val sourceList = DatabaseManager.sourceDataDao.list()
         val storageId = LibraryCompat.effectiveStorageId(item, sourceList) ?: return emptyList()
         val source = sourceList.find { it.id == storageId } ?: return emptyList()
         val storage: IStorage = source.toStorage() ?: return emptyList()

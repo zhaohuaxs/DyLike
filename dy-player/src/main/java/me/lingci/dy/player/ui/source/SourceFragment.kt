@@ -5,11 +5,16 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.FragmentSourceBinding
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.file_browser.FileBrowserActivity
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.main.BaseTransitionFragment
@@ -17,7 +22,6 @@ import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.crash.CrashToFile
 import me.lingci.lib.base.storage.entity.StorageType
-import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.Log
 
 class SourceFragment : BaseTransitionFragment() {
@@ -45,7 +49,13 @@ class SourceFragment : BaseTransitionFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         initViewModel()
-        initView()
+        // Room3：源列表改为 source_data DAO 异步加载，加载完成后再初始化列表 UI
+        viewLifecycleOwner.lifecycleScope.launch {
+            val sourceList = withContext(Dispatchers.IO) {
+                DatabaseManager.sourceDataDao.list().toMutableList()
+            }
+            initView(sourceList)
+        }
     }
 
     private fun initViewModel() {
@@ -76,7 +86,7 @@ class SourceFragment : BaseTransitionFragment() {
         }
     }
 
-    private fun initView() {
+    private fun initView(sourceList: MutableList<SourceData>) {
         streamLinkDialog = StreamLinkDialog()
         streamLinkDialog.onValueListener { value, header ->
             LongVideoActivity.start(
@@ -93,7 +103,6 @@ class SourceFragment : BaseTransitionFragment() {
                 false
             )
         }
-        val sourceList = LibraryCompat.loadSources(spUtil)
         sourceList.add(0, SourceData().apply {
             id = LibraryCompat.builtinStreamId()
             type = StorageType.STREAM_LINK
@@ -157,7 +166,13 @@ class SourceFragment : BaseTransitionFragment() {
                     }
                     2 -> {
                         mSourceItemAdapter.removeItem(position)
-                        LibraryCompat.saveSources(spUtil, mSourceItemAdapter.getCustomData())
+                        // Room3：删除资源库改为删 source_data 单行；
+                        // 关联媒体由 FK SET_NULL 保留（storage_id 置空），不做整表写回
+                        viewLifecycleOwner.lifecycleScope.launch {
+                            withContext(Dispatchers.IO) {
+                                DatabaseManager.sourceDataDao.delete(item)
+                            }
+                        }
                         removeHistory(item)
                     }
                 }
@@ -192,7 +207,17 @@ class SourceFragment : BaseTransitionFragment() {
             } else {
                 mSourceItemAdapter.addItem(it)
             }
-            LibraryCompat.saveSources(spUtil, mSourceItemAdapter.getCustomData())
+            // Room3：新增/编辑改为单条落库（id 已由对话框生成：不存在则 insert，存在则 update）
+            viewLifecycleOwner.lifecycleScope.launch {
+                withContext(Dispatchers.IO) {
+                    val dao = DatabaseManager.sourceDataDao
+                    if (dao.getById(it.id) == null) {
+                        dao.insert(it)
+                    } else {
+                        dao.update(it)
+                    }
+                }
+            }
         }
         if (type == StorageType.SMB) {
             val dialog = SmbManagerDialog.newInstance(source, onSave)
@@ -204,12 +229,13 @@ class SourceFragment : BaseTransitionFragment() {
     }
 
     private fun removeHistory(item: SourceData) {
-        JsonUtil.toList<VideoData>(spUtil.historyJson!!)
-            .toMutableList().filter {
-                !it.videoUrl.startsWith(item.siteUrl)
-            }.toList().let {
-                spUtil.historyJson = JsonUtil.toJsonString(it)
+        // 删除资源库时清理其站点 URL 前缀下的播放历史（play_history 联查 video_data 前缀匹配，
+        // 替代 SP historyJson 过滤回写）
+        viewLifecycleOwner.lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { DatabaseManager.playHistoryDao.deleteByVideoUrlPrefix("${item.siteUrl}%") }
             }
+        }
     }
 
     override fun onDestroyView() {

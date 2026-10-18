@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -25,6 +26,9 @@ import me.lingci.dy.player.core.DyPlayerCore
 import me.lingci.dy.player.core.DyPlayerCoreRegistry
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.room.entity.Favorite
+import me.lingci.dy.player.ui.long_video.HistorySource
 import me.lingci.dy.player.ui.long_video.PlayHelper
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.AppUtil.removeViewFormParent
@@ -36,6 +40,7 @@ import me.lingci.dy.player.util.PlaybackLogCache
 import me.lingci.dy.player.util.PlaybackTraceHelper
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.ShortTitleFormatter
+import me.lingci.dy.player.util.VideoDataBinder
 import me.lingci.dy.player.util.VideoListTempStore
 import me.lingci.dy.player.view.ShortVideoControlView
 import me.lingci.dy.player.view.ShortVideoController
@@ -43,13 +48,13 @@ import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.ui.BaseActivity
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.HttpUtil
-import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.createNew
 import me.lingci.lib.base.util.isLocal
 import me.lingci.lib.base.util.logD
 import me.lingci.lib.base.util.md5
 import me.lingci.lib.base.util.safeGetParcelable
 import me.lingci.lib.base.util.safeGetParcelableArrayList
+import me.lingci.lib.base.util.ToastUtil
 import me.lingci.lib.player.danmaku.PlayerInitializer
 import me.lingci.lib.player.subtitle.SubtitleCueProvider
 import me.lingci.lib.player.track.ExternalTrackController
@@ -87,6 +92,8 @@ class ShortVideoActivity : BaseActivity() {
         private const val CONTROL_ALPHA_RESTORE_DURATION = 160L
         // 播放完成判定阈值：剩余时间小于此值视为播放完成（毫秒）
         private const val COMPLETION_THRESHOLD = 1000L
+        // 播放进度落库心跳：略短于 PlayHelper 的 6 秒节流窗口，保证每个窗口至少落一次
+        private const val PROGRESS_TICK_MS = 5000L
 
         fun start(context: Context, list: ArrayList<VideoData>, index: Int, history: Boolean) {
             val i = Intent(context, ShortVideoActivity::class.java)
@@ -335,7 +342,8 @@ class ShortVideoActivity : BaseActivity() {
         }
         onHistory = true
         mVideoList.clear()
-        initData(0, false, false, list)
+        // initData 内部含挂起 DAO 调用（收藏状态读取），协程内执行
+        lifecycleScope.launch { initData(0, false, false, list) }
     }
 
     private fun init() {
@@ -362,7 +370,8 @@ class ShortVideoActivity : BaseActivity() {
         onHistory = intent.getBooleanExtra(KEY_HISTORY, false)
         mediaData = intent.safeGetParcelable(KEY_MEDIA)
         intent.safeGetParcelableArrayList<VideoData>(KEY_LIST)?.let {
-            initData(index, customRandom, random, it)
+            // initData 内部含挂起 DAO 调用（收藏状态读取），协程内执行
+            lifecycleScope.launch { initData(index, customRandom, random, it) }
         }
         intent.getStringExtra(KEY_TEMP)?.let { path ->
             lifecycleScope.launch(Dispatchers.IO) {
@@ -384,14 +393,15 @@ class ShortVideoActivity : BaseActivity() {
         fromOpen()
     }
 
-    private fun initData(
+    // suspend：收藏状态从 favorite 表异步读取（原 SP likeJson 同步读取已废弃）
+    private suspend fun initData(
         index: Int,
         customRandom: Boolean,
         random: Boolean,
         list: MutableList<VideoData>
     ) {
-        //val map = JsonUtil.toList<VideoData>(spUtil.likeJson!!).associateBy { it.id }
-        val ids = JsonUtil.toList<VideoData>(spUtil.likeJson!!).map { it.md5() }
+        // 收藏状态改查 favorite 表（video_id 与 VideoData.md5() 规则一致）
+        val ids = DatabaseManager.favoriteDao.listVideoIds().toSet()
         logD("likes ${ids.joinToString(",")}")
         list.forEach {
             it.id = it.md5()
@@ -521,6 +531,22 @@ class ShortVideoActivity : BaseActivity() {
                     onPlayStart()
                     scheduleMediaLastPlayedUpdate(mCurPos)
                 }
+                if (playState == VideoView.STATE_PAUSED) {
+                    logAndCache(TAG, "D", "STATE_PAUSED: pos=$mCurPos")
+                    stopProgressTicker()
+                    saveProgress(force = true)
+                }
+                if (playState == VideoView.STATE_PLAYBACK_COMPLETED) {
+                    logAndCache(TAG, "D", "STATE_PLAYBACK_COMPLETED: pos=$mCurPos")
+                    stopProgressTicker()
+                    // 与长视频一致：看完清零进度，避免下一次进入被 seek 回结尾
+                    val position = mCurPos
+                    if (position in mVideoList.indices) {
+                        PlayHelper.resetPlaySeek(
+                            this@ShortVideoActivity, mVideoList[position], historySource()
+                        )
+                    }
+                }
                 if (playState == VideoView.STATE_ERROR) {
                     logAndCache(TAG, "E", "STATE_ERROR: pos=$mCurPos")
                     subtitleControlView.clearSubtitleLayoutBounds()
@@ -595,18 +621,52 @@ class ShortVideoActivity : BaseActivity() {
         mShortVideoAdapter.setOnShortVideoListener(object : ShortVideoControlView.OnShortVideoListener {
 
             override fun onLike(like: Boolean) {
-                val videoData = mVideoList[mCurPos]
+                // onLike 在 adapter 层对所有页共用，理论上只在当前页触发；仍做下标防御避免越界
+                val position = mCurPos
+                if (position !in mVideoList.indices) {
+                    return
+                }
+                val videoData = mVideoList[position]
                 videoData.id = videoData.md5()
-                val list = JsonUtil.toList<VideoData>(spUtil.likeJson!!).toMutableList()
-                val index = list.indexOfFirst { it.id == videoData.id }
-                if (index > -1) {
-                    list.removeAt(index)
+                // 收藏写入 favorite 表：
+                // ① 先确保 video_data 父行存在，并把内存 mediaId 补成库内权威值（否则撞 media_data 外键）
+                // ② 用 insertIgnore 去重——@Upsert 只按自增主键判定，id 恒为 0 会撞 video_id 唯一索引
+                lifecycleScope.launch(Dispatchers.IO) {
+                    var failure: Throwable? = null
+                    try {
+                        PlayHelper.ensureVideoParent(videoData)
+                        val dao = DatabaseManager.favoriteDao
+                        if (like) {
+                            // media_id 是 FK → media_data，空串必然违约，无媒体上下文时降为 NULL
+                            dao.insertIgnore(
+                                Favorite(mediaId = videoData.mediaId.ifBlank { null }, videoId = videoData.id)
+                            )
+                        } else {
+                            dao.deleteByVideoId(videoData.id)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        failure = e
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (failure == null) {
+                            // 回写内存 like，避免 RecyclerView 重新 bind 时用旧值覆盖心形
+                            videoData.like = like
+                            if (mCurPos == position) {
+                                activeShortVideoControlView?.setLike(like)
+                            }
+                        } else {
+                            // 写库失败必须可见：心形已先翻转，这里回滚避免 UI 与 DB 不一致
+                            Log.e(TAG, "onLike failed: ${videoData.videoUrl}", failure)
+                            if (mCurPos == position) {
+                                activeShortVideoControlView?.setLike(!like)
+                            }
+                            ToastUtil.showToast(this@ShortVideoActivity, getString(R.string.favorite_failed))
+                        }
+                    }
                 }
-                if (like) {
-                    list.add(videoData)
-                }
-                spUtil.likeJson = JsonUtil.toJsonString(list)
-                logD(list)
+                logD("like", like)
             }
 
             override fun onComment() {
@@ -714,6 +774,26 @@ class ShortVideoActivity : BaseActivity() {
         return videoBean.type == StorageType.SMB || videoBean.videoUrl.startsWith("smb://", ignoreCase = true)
     }
 
+    /**
+     * 播放带凭据的远程视频（WebDAV/SMB 共用）。
+     * 决策8：headers 不落库——调用方列表准备时已填 token 则立即起播；
+     * 缺 token（如播放列表/历史等 DB 加载路径）先从 source_data 现算回填再起播。
+     */
+    private fun playRemoteWithToken(videoBean: VideoData) {
+        if (!videoBean.getToken().isNullOrBlank()) {
+            mVideoView.setUrl(videoBean.videoUrl, videoBean.headers)
+            mVideoView.start()
+            return
+        }
+        lifecycleScope.launch(Dispatchers.IO) {
+            VideoDataBinder.bindTokens(videoBean, mediaData)
+            withContext(Dispatchers.Main) {
+                mVideoView.setUrl(videoBean.videoUrl, videoBean.headers)
+                mVideoView.start()
+            }
+        }
+    }
+
     private fun startPlay(position: Int) {
         mediaPlaybackRecorder.cancelLastPlayedUpdate()
         // 记录上一个视频的播放状态，用于切换时判断是否需要清除进度
@@ -721,6 +801,10 @@ class ShortVideoActivity : BaseActivity() {
         val previousUrl = if (mCurPos in mVideoList.indices) mVideoList[mCurPos].videoUrl else null
         val previousPosition = if (::mVideoView.isInitialized) mVideoView.currentPosition else 0L
         val previousDuration = if (::mVideoView.isInitialized) mVideoView.duration else 0L
+        // 切集前把上一集的进度强制落库（心跳尚未到点时，避免上一集进度停在 5 秒前）
+        if (previousUrl != null) {
+            saveProgress(force = true)
+        }
         val count = mViewPagerImpl.childCount
         for (i in 0 until count) {
             val itemView = mViewPagerImpl.getChildAt(i)
@@ -752,8 +836,7 @@ class ShortVideoActivity : BaseActivity() {
                 logAndCache(TAG, "D", "开始播放: pos=$position, url=${videoBean.videoUrl}, type=${videoBean.type}")
                 if (videoBean.type == StorageType.WEBDAV) {
                     logAndCache(TAG, "D", "URL类型: webdav, url=${videoBean.videoUrl}")
-                    mVideoView.setUrl(videoBean.videoUrl, videoBean.headers)
-                    mVideoView.start()
+                    playRemoteWithToken(videoBean)
                 } else {
                     if (videoBean.videoUrl.startsWith("http")) {
                         logAndCache(TAG, "D", "URL类型: http(302重定向), url=${videoBean.videoUrl}")
@@ -766,8 +849,7 @@ class ShortVideoActivity : BaseActivity() {
                         }
                     } else if (videoBean.videoUrl.startsWith("smb")) {
                         logAndCache(TAG, "D", "URL类型: smb, url=${videoBean.videoUrl}")
-                        mVideoView.setUrl(videoBean.videoUrl, videoBean.headers)
-                        mVideoView.start()
+                        playRemoteWithToken(videoBean)
                     } else {
                         logAndCache(TAG, "D", "URL类型: local, url=${videoBean.videoUrl}")
                         mVideoView.setUrl(videoBean.videoUrl)
@@ -963,9 +1045,60 @@ class ShortVideoActivity : BaseActivity() {
                 return@post
             }
             val videoBean = mVideoList[position]
-            PlayHelper.saveHistory(spUtil, videoBean)
+            PlayHelper.saveHistory(videoBean, historySource())
         }
+        startProgressTicker()
         doScreenShot(position)
+    }
+
+    /**
+     * 历史来源按进入本页的媒体上下文派生：
+     * 媒体库进入 → lib:{mediaId}（归入历史页对应分组）；播放列表 → pl:{id}；
+     * 文件浏览/喜欢聚合等无 mediaData 的入口 → standalone。
+     * 与 LongVideoActivity 的 HistorySource.fromMediaData 取值同源，
+     * 保证同一视频在长/短视频页之间切换播放写的是同一条 (video_id, source_key)。
+     */
+    private fun historySource(): HistorySource = HistorySource.fromMediaData(mediaData)
+
+    // ---- 播放进度落盘 ----
+    // 短视频页没有弹幕控制器，永远走不到 saveInfo/updateInfo，
+    // 若不单独落库 play_history 进度/时长将恒为 0（长视频有真实进度，两侧表现不一致）。
+    // 这里用独立 ticker 周期写入：与长视频一致受 PlayHelper 的 6 秒节流约束。
+
+    private val progressHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var progressTicking = false
+
+    private val progressTicker = object : Runnable {
+        override fun run() {
+            saveProgress(force = false)
+            progressHandler.postDelayed(this, PROGRESS_TICK_MS)
+        }
+    }
+
+    private fun startProgressTicker() {
+        if (progressTicking) return
+        progressTicking = true
+        progressHandler.removeCallbacks(progressTicker)
+        progressHandler.postDelayed(progressTicker, PROGRESS_TICK_MS)
+    }
+
+    private fun stopProgressTicker() {
+        progressHandler.removeCallbacks(progressTicker)
+        progressTicking = false
+    }
+
+    /** 把当前播放位置/时长写入 play_history（不写 PlayInfo 文件，避免覆盖长视频的弹幕轨道） */
+    private fun saveProgress(force: Boolean) {
+        if (onHistory || !::mVideoView.isInitialized) return
+        val position = mCurPos
+        if (position !in mVideoList.indices) return
+        PlayHelper.updateHistoryProgress(
+            mVideoList[position],
+            historySource(),
+            mVideoView.currentPosition,
+            mVideoView.duration.takeIf { it > 0 } ?: 0L,
+            force
+        )
     }
 
     fun doScreenShot(position: Int) {
@@ -1063,12 +1196,17 @@ class ShortVideoActivity : BaseActivity() {
         if (::mVideoView.isInitialized && mVideoView.hasPlayer()) {
             mVideoView.pause()
         }
+        // 不可见即视为本次播放结束：停心跳并强制落一次进度（绕过节流）
+        stopProgressTicker()
+        saveProgress(force = true)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         // 注销超分广播接收器
         unregisterSuperResolutionReceiver()
+        stopProgressTicker()
+        saveProgress(force = true)
         mediaPlaybackRecorder.release()
         timerCloseController.release()
         activeShortVideoControlView?.setOnVideoTransformChangedListener(null)

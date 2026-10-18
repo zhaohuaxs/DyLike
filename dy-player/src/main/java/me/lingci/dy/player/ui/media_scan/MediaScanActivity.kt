@@ -16,12 +16,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.ActivityMediaScanBinding
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.StorageType
@@ -315,9 +317,10 @@ class MediaScanActivity : BaseActivity() {
         return ScanSummary(totalVideoCount, folderCounter.toFolderResults())
     }
 
-    private fun diffWithLibrary(scannedFolders: List<ScanFolderResult>): List<ScanFolderResult> {
-        val sourceList = LibraryCompat.loadSources(spUtil)
-        val mediaList = LibraryCompat.loadMedia(spUtil)
+    private suspend fun diffWithLibrary(scannedFolders: List<ScanFolderResult>): List<ScanFolderResult> {
+        // Room3：sources/media 改为 DAO 异步读取
+        val sourceList = DatabaseManager.sourceDataDao.list()
+        val mediaList = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first()
         return scannedFolders.map { folder ->
             val media = MediaData().apply {
                 title = folder.name
@@ -343,30 +346,35 @@ class MediaScanActivity : BaseActivity() {
             ToastUtil.showToast(this, "未选择新增目录")
             return
         }
-        val sourceList = LibraryCompat.loadSources(spUtil)
-        val mediaList = LibraryCompat.loadMedia(spUtil)
-        var addedCount = 0
-        selected.forEach { folder ->
-            val media = MediaData().apply {
-                title = folder.name
-                path = folder.path
-                type = MediaLibType.LOCAL
-                storageType = StorageType.LOCAL_STORAGE
+        lifecycleScope.launch(Dispatchers.IO) {
+            // Room3：sources/media 改为 DAO 异步读取，逐条查重后单条落库
+            val sourceList = DatabaseManager.sourceDataDao.list()
+            val mediaList = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first()
+            var addedCount = 0
+            selected.forEach { folder ->
+                val media = MediaData().apply {
+                    title = folder.name
+                    path = folder.path
+                    type = MediaLibType.LOCAL
+                    storageType = StorageType.LOCAL_STORAGE
+                }
+                media.id = LibraryCompat.mediaId(media, sourceList)
+                if (mediaList.none { LibraryCompat.sameMedia(it, media, sourceList) }) {
+                    // 单条新增（本地媒体库无 items，播放时按目录实时枚举）
+                    DatabaseManager.mediaDataDao.insert(media)
+                    addedCount++
+                }
             }
-            media.id = LibraryCompat.mediaId(media, sourceList)
-            if (mediaList.none { LibraryCompat.sameMedia(it, media, sourceList) }) {
-                mediaList.add(media)
-                addedCount++
+            withContext(Dispatchers.Main) {
+                if (addedCount == 0) {
+                    ToastUtil.showToast(this@MediaScanActivity, "没有新增媒体库")
+                    return@withContext
+                }
+                setResult(RESULT_OK)
+                ToastUtil.showToast(this@MediaScanActivity, "已加入 $addedCount 个媒体库")
+                finish()
             }
         }
-        if (addedCount == 0) {
-            ToastUtil.showToast(this, "没有新增媒体库")
-            return
-        }
-        LibraryCompat.saveMedia(spUtil, mediaList)
-        setResult(RESULT_OK)
-        ToastUtil.showToast(this, "已加入 $addedCount 个媒体库")
-        finish()
     }
 
     @SuppressLint("SetTextI18n")

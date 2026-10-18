@@ -8,6 +8,12 @@ plugins {
     alias(libs.plugins.kotlin.parcelize)
     id("kotlinx-serialization")
     id("com.google.devtools.ksp")
+    alias(libs.plugins.room3)
+}
+
+// Room 3 Gradle 插件：schema 输出目录（必填），schema JSON 需签入仓库
+room3 {
+    schemaDirectory("$projectDir/schemas")
 }
 
 val buglyAppId = project.localBuildConfigString("BUGLY_APP_ID")
@@ -209,8 +215,9 @@ dependencies {
     implementation(libs.androidx.viewpager2)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)
-    implementation(libs.androidx.room.runtime)
-    ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.room3.runtime)
+    ksp(libs.androidx.room3.compiler)
+    implementation(libs.androidx.sqlite)
     implementation(libs.androidx.media)
     // bug
     implementation(libs.bugly)

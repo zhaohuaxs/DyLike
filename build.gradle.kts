@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.kotlinx.serialization) apply false
     alias(libs.plugins.kotlin.ksp) apply false
     alias(libs.plugins.kotlin.parcelize) apply false
+    alias(libs.plugins.room3) apply false
 }
 
 tasks.register<Delete>("clean") {

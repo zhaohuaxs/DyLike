@@ -1,11 +1,13 @@
 package me.lingci.dy.player.entity
 
-import androidx.room.Entity
-import androidx.room.PrimaryKey
+import androidx.room3.Entity
+import androidx.room3.ForeignKey
+import androidx.room3.Index
+import androidx.room3.PrimaryKey
 import android.os.Parcelable
-import androidx.room.ColumnInfo
-import androidx.room.Ignore
-import androidx.room.TypeConverters
+import androidx.room3.ColumnInfo
+import androidx.room3.Ignore
+import androidx.room3.ColumnTypeConverters
 import kotlinx.parcelize.Parcelize
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
@@ -32,8 +34,18 @@ import java.util.Locale
 @OptIn(InternalSerializationApi::class)
 @Serializable
 @Parcelize
-@Entity(tableName = "media_data")
-@TypeConverters(MediaLibTypeConverter::class, StorageTypeConverter::class, CoverTypeConverter::class)
+@Entity(
+    tableName = "media_data",
+    // 删除存储源时媒体保留，storage_id 置空（SET_NULL）
+    foreignKeys = [ForeignKey(
+        entity = SourceData::class,
+        parentColumns = ["id"],
+        childColumns = ["storage_id"],
+        onDelete = ForeignKey.SET_NULL
+    )],
+    indices = [Index("storage_id"), Index("media_type")]
+)
+@ColumnTypeConverters(MediaLibTypeConverter::class, StorageTypeConverter::class, CoverTypeConverter::class)
 data class MediaData(
 
     @PrimaryKey
@@ -67,8 +79,10 @@ data class MediaData(
     var selected: Boolean = false,
     @ColumnInfo(name = "play_last")
     var playLast: String = "",
+    // 可空：无存储上下文的媒体（本地/在线）必须存 NULL 而非空串，
+    // 否则 FK(storage_id→source_data, SET_NULL) 会因找不到父行而在插入时违约
     @ColumnInfo(name = "storage_id")
-    var storageId: String = "",
+    var storageId: String? = null,
     @Ignore
     var dmFolder: String = "",
     @ColumnInfo(name = "pinned")
@@ -76,7 +90,10 @@ data class MediaData(
     @ColumnInfo(name = "pinned_at")
     var pinnedAt: Long = 0L,
     @ColumnInfo(name = "last_played_at")
-    var lastPlayedAt: Long = 0L
+    var lastPlayedAt: Long = 0L,
+    // 孤儿视频归并产生的虚拟媒体（不独立展示在媒体库列表，仅作历史/收藏关联宿主）
+    @ColumnInfo(name = "is_virtual")
+    var isVirtual: Boolean = false
 
 ) : Parcelable {
 
@@ -146,6 +163,12 @@ data class MediaShuffleState(
     val currentDisplayIds: List<String> = emptyList()
 )
 
+/**
+ * 媒体库类型
+ *
+ * HISTORY/LIKE/PLAYLIST 三个值仅作为「视图模式」在 UI 层使用（虚拟页），
+ * 不作为存储类型落库；可落库的媒体库类型为 DEFAULT/LOCAL/ONLINE/WEBDAV/SMB。
+ */
 @Serializable(with = MediaLibTypeSerializer::class) // 指定自定义序列化器
 enum class MediaLibType(val value: Int) {
 
@@ -157,6 +180,10 @@ enum class MediaLibType(val value: Int) {
     LIKE(5),
     PLAYLIST(6),
     SMB(7);
+
+    /** 是否为可落库的媒体库类型（排除 HISTORY/LIKE/PLAYLIST 三个视图模式） */
+    val isLibraryType: Boolean
+        get() = this != HISTORY && this != LIKE && this != PLAYLIST
 
     companion object {
         fun fromValue(value: Int): MediaLibType {

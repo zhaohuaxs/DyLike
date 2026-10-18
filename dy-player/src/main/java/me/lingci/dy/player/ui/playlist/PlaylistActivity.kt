@@ -8,14 +8,22 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.MenuProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.ActivityPlaylistBinding
 import me.lingci.dy.player.databinding.DialogPlaylistCreateBinding
 import me.lingci.dy.player.entity.MediaData
+import me.lingci.dy.player.entity.MediaLibType
+import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.room.entity.Playlist
 import me.lingci.dy.player.ui.media_detail.MediaDetailActivity
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.ui.BaseActivity
 import me.lingci.lib.base.ui.setEmptyView
 import me.lingci.lib.base.util.ToastUtil
@@ -55,14 +63,50 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
         binding.recyclerView.setEmptyView(emptyText = getString(R.string.hint_playlist_empty))
 
         playlistAdapter.onItemClick { item, _ ->
-            val synced = LibraryCompat.syncPlaylistVideos(spUtil, item.id) ?: item
-            MediaDetailActivity.start(this@PlaylistActivity, synced)
+            openPlaylist(item)
         }
         playlistAdapter.onItemLongClick { item, position ->
             showItemMenu(item, position)
         }
 
         loadPlaylists()
+    }
+
+    /**
+     * 打开播放列表：先同步清理失效条目（返回清理数，>0 表示列表有变化需刷新角标），
+     * 再由 Playlist 实体 + 条目还原 PLAYLIST 类型 MediaData 进入详情页。
+     */
+    private fun openPlaylist(item: Playlist) {
+        lifecycleScope.launch {
+            val removed = withContext(Dispatchers.IO) {
+                runCatching { LibraryCompat.syncPlaylistVideos(item.id) }.getOrDefault(0)
+            }
+            if (removed > 0) {
+                loadPlaylists()
+            }
+            val mediaData = withContext(Dispatchers.IO) { buildPlaylistMediaData(item.id) }
+            if (mediaData != null) {
+                MediaDetailActivity.start(this@PlaylistActivity, mediaData)
+            }
+        }
+    }
+
+    /**
+     * 由 Playlist 实体 + playlist_item/video_data 还原详情页所需的 PLAYLIST 类型 MediaData。
+     * （Playlist 实体无 items 字段；MediaData.items 为 @Ignore 字段，需手动填充）
+     */
+    private suspend fun buildPlaylistMediaData(playlistId: String): MediaData? {
+        val playlist = DatabaseManager.playlistDao.getById(playlistId) ?: return null
+        val videos = DatabaseManager.playlistItemDao.listByPlaylist(playlistId)
+            .mapNotNull { DatabaseManager.videoDataDao.getById(it.videoId) }
+        return MediaData(
+            id = playlist.id,
+            title = playlist.title,
+            type = MediaLibType.PLAYLIST,
+            storageType = StorageType.LOCAL_STORAGE,
+            playMode = playlist.playMode,
+            items = videos.toMutableList()
+        )
     }
 
     override fun onStart() {
@@ -95,8 +139,16 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
     }
 
     private fun loadPlaylists() {
-        val playlists = LibraryCompat.loadPlaylist(spUtil)
-        playlistAdapter.updateData(playlists)
+        // Room3：播放列表改为 Room 异步加载；条目数经 playlist_item 异步计数后注入适配器
+        // （Playlist 实体无 items 字段，适配器展示条目数依赖注入的计数缓存）
+        lifecycleScope.launch {
+            val playlists = withContext(Dispatchers.IO) { DatabaseManager.playlistDao.list() }
+            val counts = withContext(Dispatchers.IO) {
+                playlists.associate { it.id to DatabaseManager.playlistItemDao.countByPlaylist(it.id) }
+            }
+            playlistAdapter.setItemCounts(counts)
+            playlistAdapter.updateData(playlists)
+        }
     }
 
     private fun showCreateDialog() {
@@ -112,16 +164,19 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
                         R.id.radio_long -> 2
                         else -> 0
                     }
-                    LibraryCompat.createPlaylist(spUtil, name, playMode)
-                    ToastUtil.showToast(this, getString(R.string.hint_playlist_created))
-                    loadPlaylists()
+                    // Room3：新建改为 suspend 调用，完成后重新加载列表
+                    lifecycleScope.launch {
+                        LibraryCompat.createPlaylist(name, playMode)
+                        ToastUtil.showToast(this@PlaylistActivity, getString(R.string.hint_playlist_created))
+                        loadPlaylists()
+                    }
                 }
             }
             .setNegativeButton(R.string.action_cancel, null)
             .show()
     }
 
-    private fun showItemMenu(item: MediaData, position: Int) {
+    private fun showItemMenu(item: Playlist, position: Int) {
         // 第三项动态显示：已设为自动播放则显示"取消"，未设则显示"设为"
         val isAutoPlay = spUtil.autoPlayPlaylistId == item.id
         val menuItems = arrayOf(
@@ -147,7 +202,7 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
      * 切换播放列表的播放类型（全局/短视频/长视频）。
      * 与媒体库 playMode 取值一致：0=全局，1=短视频，2=长视频。
      */
-    private fun showPlayModeDialog(item: MediaData, position: Int) {
+    private fun showPlayModeDialog(item: Playlist, position: Int) {
         val labels = arrayOf(
             getString(R.string.action_model_global),
             getString(R.string.action_model_short),
@@ -167,7 +222,10 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
                     else -> 0
                 }
                 if (newMode != item.playMode) {
-                    LibraryCompat.updatePlaylistMode(spUtil, item.id, newMode)
+                    // Room3：播放模式改为 DAO 字段级更新，UI 先行刷新
+                    lifecycleScope.launch {
+                        LibraryCompat.updatePlaylistMode(item.id, newMode)
+                    }
                     item.playMode = newMode
                     playlistAdapter.notifyItemChanged(position)
                     ToastUtil.showToast(this, getString(R.string.hint_playlist_mode_changed))
@@ -182,7 +240,7 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
      * 切换播放列表的启动自动播放设置。
      * 与媒体库自动播放互斥：设为播放列表时清空媒体库设置，反向亦然。
      */
-    private fun toggleAutoPlay(item: MediaData) {
+    private fun toggleAutoPlay(item: Playlist) {
         if (spUtil.autoPlayPlaylistId == item.id) {
             spUtil.autoPlayPlaylistId = ""
             ToastUtil.showToast(this, "已取消启动自动播放")
@@ -195,7 +253,7 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
         playlistAdapter.setAutoPlayPlaylistId(spUtil.autoPlayPlaylistId)
     }
 
-    private fun renamePlaylist(playlist: MediaData) {
+    private fun renamePlaylist(playlist: Playlist) {
         val editText = android.widget.EditText(this).apply {
             setText(playlist.title)
             setSelection(text.length)
@@ -207,27 +265,33 @@ class PlaylistActivity : BaseActivity(), MenuProvider {
             .setPositiveButton(R.string.action_confirmed) { dialog, _ ->
                 val name = (editText.text?.toString()?.trim().orEmpty())
                 if (name.isNotBlank()) {
-                    LibraryCompat.renamePlaylist(spUtil, playlist.id, name)
-                    ToastUtil.showToast(this, getString(R.string.hint_playlist_renamed))
-                    loadPlaylists()
+                    // Room3：重命名改为 DAO 更新，完成后重新加载列表
+                    lifecycleScope.launch {
+                        LibraryCompat.renamePlaylist(playlist.id, name)
+                        ToastUtil.showToast(this@PlaylistActivity, getString(R.string.hint_playlist_renamed))
+                        loadPlaylists()
+                    }
                 }
             }
             .setNegativeButton(R.string.action_cancel, null)
             .show()
     }
 
-    private fun deletePlaylist(playlist: MediaData, position: Int) {
+    private fun deletePlaylist(playlist: Playlist, position: Int) {
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.action_delete))
             .setMessage("确定删除播放列表「${playlist.title}」？")
             .setPositiveButton(R.string.action_confirmed) { _, _ ->
-                LibraryCompat.deletePlaylist(spUtil, playlist.id)
-                // 删除的播放列表若被设为启动自动播放，清空设置避免指向无效 id
-                if (spUtil.autoPlayPlaylistId == playlist.id) {
-                    spUtil.autoPlayPlaylistId = ""
+                // Room3：删除改为 suspend 调用（playlist_item 由 FK CASCADE 级联清理）
+                lifecycleScope.launch {
+                    LibraryCompat.deletePlaylist(playlist.id)
+                    // 删除的播放列表若被设为启动自动播放，清空设置避免指向无效 id
+                    if (spUtil.autoPlayPlaylistId == playlist.id) {
+                        spUtil.autoPlayPlaylistId = ""
+                    }
+                    ToastUtil.showToast(this@PlaylistActivity, getString(R.string.hint_playlist_deleted))
+                    playlistAdapter.removeItem(position)
                 }
-                ToastUtil.showToast(this, getString(R.string.hint_playlist_deleted))
-                playlistAdapter.removeItem(position)
             }
             .setNegativeButton(R.string.action_cancel, null)
             .show()

@@ -37,6 +37,7 @@ import me.lingci.dy.player.ui.short_video.ShortVideoActivity
 import me.lingci.dy.player.ui.source.ItemAction
 import me.lingci.dy.player.ui.source.ItemActionDialog
 import me.lingci.dy.player.util.AppUtil
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.MediaManger
 import me.lingci.dy.player.util.SpUtil
@@ -46,7 +47,6 @@ import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.ui.BaseActivity
 import me.lingci.lib.base.ui.setEmptyView
 import me.lingci.lib.base.util.FileOperator
-import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.base.util.ToastUtil
 import me.lingci.lib.base.util.isVideo
@@ -92,6 +92,7 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
     private var emptyTips = "没有媒体，下载再用吧" // 空数据提示
     private var originalVideoData: MutableList<VideoData> = mutableListOf() // 原始完整数据，用于搜索过滤时恢复
     private var currentKeyword = "" // 当前搜索关键词
+    private var wasPaused = false // 是否曾离开过页面（区分 onCreate 后的首个 onResume，用于返回时重查收藏）
 
     /**
      * 瀑布流布局滚动监听器，防止滚动停止时重新排列
@@ -135,12 +136,38 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
         super.onStop()
     }
 
+    override fun onPause() {
+        super.onPause()
+        wasPaused = true
+    }
+
     override fun onResume() {
         super.onResume()
-        // 非历史和收藏类型的媒体库，刷新最后播放记录和弹幕数量
-        if (::mediaData.isInitialized && mediaData.type != MediaLibType.HISTORY && mediaData.type != MediaLibType.LIKE && mediaData.type != MediaLibType.PLAYLIST) {
+        if (!::mediaData.isInitialized) return
+        if (mediaData.type == MediaLibType.LIKE) {
+            // 收藏列表是单次快照查询，播放页取消喜欢仅写 favorite 表；
+            // 从播放页返回（页面曾暂停）时重查 DB 增量刷新，避免列表残留已移除条目
+            if (wasPaused) {
+                refreshLikeList()
+            }
+        } else if (mediaData.type != MediaLibType.HISTORY && mediaData.type != MediaLibType.PLAYLIST) {
+            // 非历史/收藏/播放列表类型的媒体库，刷新最后播放记录和弹幕数量
             refreshLastPlay()
             refreshDanmakuCount()
+        }
+    }
+
+    /**
+     * 重查 favorite 表并刷新收藏列表（保留当前搜索关键词，DiffUtil 增量更新避免瀑布流位置跳动）
+     */
+    @SuppressLint("SetTextI18n")
+    private fun refreshLikeList() {
+        lifecycleScope.launch {
+            val videoData = DatabaseManager.favoriteDao.listFavoriteVideos()
+            binding.tvInfo.text = "包含 ${videoData.size} 条喜欢"
+            binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
+            originalVideoData = videoData.toMutableList()
+            filterVideoData(currentKeyword)
         }
     }
 
@@ -149,8 +176,9 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
      * 使用精确刷新，只更新 lastPlay 标记变化的 item，避免全量 notifyDataSetChanged 导致瀑布流位置跳动
      */
     private fun refreshLastPlay() {
-        val sourceList = LibraryCompat.loadSources(spUtil)
-        LibraryCompat.loadMedia(spUtil).firstOrNull { LibraryCompat.sameMedia(it, mediaData, sourceList) }?.let { updatedMedia ->
+        // 挂起调用：协程内按 id 读取最新媒体数据（Room3 DAO 为 suspend，替代 loadMedia 全量扫描）
+        lifecycleScope.launch {
+            val updatedMedia = DatabaseManager.mediaDataDao.getById(mediaData.id) ?: return@launch
             mediaData.playLast = updatedMedia.playLast
             if (shortMode) {
                 val (oldPos, newPos) = videoShortItemAdapter.updateLastPlayPrecise(mediaData.playLast)
@@ -243,6 +271,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                 if (videos.isEmpty()) {
                     ToastUtil.showToast(this, "没有可添加的视频")
                 } else {
+                    // video_data.media_id 是 FK → media_data：临时构造的视频补所属媒体
+                    videos.forEach { if (it.mediaId.isBlank()) it.mediaId = mediaData.id }
                     PlaylistSelectDialog.show(this, videos)
                 }
                 return true
@@ -373,7 +403,10 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
             mediaData.opOffset = op
             mediaData.edOffset = ed
             binding.tvOffset.text = getString(R.string.hint_media_op_ed_offset, mediaData.opValue(), mediaData.edValue())
-            MediaHelper.updateMedia(spUtil, mediaData)
+            // MediaHelper.updateMedia 已改为 suspend（Room3 改造），协程内执行落库
+            lifecycleScope.launch {
+                MediaHelper.updateMedia(spUtil, mediaData)
+            }
         }
 
         binding.tvOffset.setOnClickListener {
@@ -410,6 +443,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                     add(1, 2, 2, "清除全部")
                 }
                 popupMenu.setOnMenuItemClickListener {
+                    // 「删除当前/清除全部」改删 play_history（原 SP historyJson 整列表回写已废弃）
+                    val removed = if (it.itemId == 1) mediaDetailAdapter.getData().getOrNull(position) else null
                     if (it.itemId == 1) {
                         mediaDetailAdapter.removeItem(position)
                     } else {
@@ -417,10 +452,15 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                     }
                     binding.tvInfo.text = "包含 ${mediaDetailAdapter.itemCount} 条历史记录"
                     binding.playButton.visibility = if (shortMode || mediaDetailAdapter.itemCount  == 0) View.GONE else View.VISIBLE
-                    val historyArray = mutableListOf<VideoData>()
-                    historyArray.addAll(mediaDetailAdapter.getData())
-                    historyArray.reverse()
-                    spUtil.historyJson = JsonUtil.toJsonString(historyArray)
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            if (removed != null) {
+                                DatabaseManager.playHistoryDao.deleteByVideoId(removed.beanId())
+                            } else {
+                                DatabaseManager.playHistoryDao.deleteAll()
+                            }
+                        }
+                    }
                     return@setOnMenuItemClickListener true
                 }
                 popupMenu.show()
@@ -455,6 +495,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                 }
                 popupMenu.setOnMenuItemClickListener {
                     if (it.itemId == 10) {
+                        // video_data.media_id 是 FK → media_data：补所属媒体后再加入
+                        if (item.mediaId.isBlank()) item.mediaId = mediaData.id
                         PlaylistSelectDialog.show(this@MediaDetailActivity, listOf(item))
                     }
                     return@setOnMenuItemClickListener true
@@ -572,25 +614,26 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
 
     @SuppressLint("SetTextI18n")
     private fun removeFromPlaylist(item: VideoData, position: Int) {
-        LibraryCompat.removeFromPlaylist(spUtil, mediaData.id, listOf(item.beanId()))
-        if (shortMode) {
-            videoShortItemAdapter.removeItem(position)
-        } else {
-            mediaDetailAdapter.removeItem(position)
+        // 挂起调用：协程内移除播放列表条目（Room3 业务函数为 suspend，写入用 runCatching 包裹）
+        lifecycleScope.launch {
+            runCatching { LibraryCompat.removeFromPlaylist(mediaData.id, listOf(item.beanId())) }
+            if (shortMode) {
+                videoShortItemAdapter.removeItem(position)
+            } else {
+                mediaDetailAdapter.removeItem(position)
+            }
+            val count = if (shortMode) videoShortItemAdapter.itemCount else mediaDetailAdapter.itemCount
+            binding.tvInfo.text = "包含 $count 条媒体"
+            binding.playButton.visibility = if (shortMode || count == 0) View.GONE else View.VISIBLE
+            ToastUtil.showToast(this@MediaDetailActivity, getString(R.string.hint_removed_from_playlist))
         }
-        val count = if (shortMode) videoShortItemAdapter.itemCount else mediaDetailAdapter.itemCount
-        binding.tvInfo.text = "包含 $count 条媒体"
-        binding.playButton.visibility = if (shortMode || count == 0) View.GONE else View.VISIBLE
-        ToastUtil.showToast(this, getString(R.string.hint_removed_from_playlist))
     }
 
     @SuppressLint("SetTextI18n")
     private fun removeFromLike(item: VideoData, position: Int) {
-        val list = JsonUtil.toList<VideoData>(spUtil.likeJson!!).toMutableList()
-        val index = list.indexOfFirst { it.md5() == item.md5() || it.beanId() == item.beanId() }
-        if (index > -1) {
-            list.removeAt(index)
-            spUtil.likeJson = JsonUtil.toJsonString(list)
+        // 取消收藏改删 favorite 表（按 video_id 唯一键，原 SP likeJson 整列表回写已废弃）
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { DatabaseManager.favoriteDao.deleteByVideoId(item.beanId()) }
         }
         if (shortMode) {
             videoShortItemAdapter.removeItem(position)
@@ -643,10 +686,12 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
         }
     }
 
-    private fun getStorageForItem(item: VideoData): IStorage? {
-        val sourceList = LibraryCompat.loadSources(spUtil)
+    // 挂起函数：调用方（renameFile/deleteSelectedFiles）均已处于协程内（Room3 DAO 为 suspend）
+    private suspend fun getStorageForItem(item: VideoData): IStorage? {
+        val sourceList = DatabaseManager.sourceDataDao.list()
+        // 按 id 找单个媒体：替代 loadMedia 全量扫描（Room3 DAO 为 suspend）
         val storageId = if (item.mediaId.isNotBlank()) {
-            LibraryCompat.loadMedia(spUtil).firstOrNull { it.id == item.mediaId }?.storageId
+            DatabaseManager.mediaDataDao.getById(item.mediaId)?.storageId
         } else {
             LibraryCompat.effectiveStorageId(mediaData, sourceList)
         }
@@ -725,27 +770,24 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                 // 历史记录类型
                 emptyTips = "没有记录，先去播放吧"
                 binding.toolbar.title = "播放记录"
-                spUtil.historyJson?.let { historyJson ->
-                    logD("historyJson $historyJson")
-                    JsonUtil.toList<VideoData>(historyJson).toMutableList().let { videoData ->
-                        binding.tvInfo.text = "包含 ${videoData.size} 条历史记录"
-                        binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
-                        videoData.reverse()
-                        changeRecycler(videoData)
-                    }
+                // 历史改从 play_history 联查 video_data（结果已按最近播放倒序，替代 SP historyJson 读取）
+                lifecycleScope.launch {
+                    val videoData = DatabaseManager.playHistoryDao.listHistoryVideos()
+                    binding.tvInfo.text = "包含 ${videoData.size} 条历史记录"
+                    binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
+                    changeRecycler(videoData.toMutableList())
                 }
             }
             MediaLibType.LIKE -> {
                 // 收藏类型
                 emptyTips = "先去短视频模式添加喜欢吧"
                 binding.toolbar.title = "我的喜欢"
-                spUtil.likeJson?.let { likeJson ->
-                    logD("likeJson $likeJson")
-                    JsonUtil.toList<VideoData>(likeJson).toMutableList().let { videoData ->
-                        binding.tvInfo.text = "包含 ${videoData.size} 条喜欢"
-                        binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
-                        changeRecycler(videoData)
-                    }
+                // 收藏列表改从 favorite 联查 video_data（替代 SP likeJson 读取）
+                lifecycleScope.launch {
+                    val videoData = DatabaseManager.favoriteDao.listFavoriteVideos()
+                    binding.tvInfo.text = "包含 ${videoData.size} 条喜欢"
+                    binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
+                    changeRecycler(videoData.toMutableList())
                 }
             }
             MediaLibType.DEFAULT, MediaLibType.LOCAL -> {
@@ -772,16 +814,19 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                 // 在线类型
                 binding.toolbar.title = "${mediaData.title}详情"
                 binding.btnDanmakuBinding.visibility = if (shortMode) View.GONE else View.VISIBLE
-                binding.tvInfo.text = "${mediaData.playType} \n包含 ${mediaData.items.size} 条媒体"
-                val videoData = mediaData.items
-                logD("lastPlay", mediaData)
-                if (mediaData.playLast.isNotBlank()) {
-                    videoData.forEach {
-                        it.lastPlay = mediaData.playLast == it.videoUrl
+                // items 为 @Ignore 字段（Room 读出恒为空）：剧集改从 video_data 子表加载
+                lifecycleScope.launch {
+                    val videoData = DatabaseManager.videoDataDao.listByMedia(mediaData.id)
+                    binding.tvInfo.text = "${mediaData.playType} \n包含 ${videoData.size} 条媒体"
+                    logD("lastPlay", mediaData)
+                    if (mediaData.playLast.isNotBlank()) {
+                        videoData.forEach {
+                            it.lastPlay = mediaData.playLast == it.videoUrl
+                        }
                     }
+                    changeRecycler(videoData.toMutableList())
+                    Log.d(this@MediaDetailActivity, videoData.size)
                 }
-                changeRecycler(videoData)
-                Log.d(this@MediaDetailActivity, videoData.size)
             }
             MediaLibType.WEBDAV, MediaLibType.SMB -> {
                 binding.toolbar.title = "${mediaData.title}详情"
@@ -790,15 +835,21 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
             }
             MediaLibType.PLAYLIST -> {
                 binding.toolbar.title = mediaData.title
-                val videoData = LibraryCompat.sortByParentPath(mediaData.items.toMutableList())
-                binding.tvInfo.text = "包含 ${videoData.size} 条媒体"
-                binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
-                if (mediaData.playLast.isNotBlank()) {
-                    videoData.forEach {
-                        it.lastPlay = mediaData.playLast == it.videoUrl
+                // items 为 @Ignore 字段：经 PlaylistActivity 还原时已填充；为空时从 playlist_item/video_data 兜底加载
+                lifecycleScope.launch {
+                    val items = if (mediaData.items.isNotEmpty()) mediaData.items
+                    else DatabaseManager.playlistItemDao.listByPlaylist(mediaData.id)
+                        .mapNotNull { DatabaseManager.videoDataDao.getById(it.videoId) }
+                    val videoData = LibraryCompat.sortByParentPath(items.toMutableList())
+                    binding.tvInfo.text = "包含 ${videoData.size} 条媒体"
+                    binding.playButton.visibility = if (shortMode || videoData.isEmpty()) View.GONE else View.VISIBLE
+                    if (mediaData.playLast.isNotBlank()) {
+                        videoData.forEach {
+                            it.lastPlay = mediaData.playLast == it.videoUrl
+                        }
                     }
+                    changeRecycler(videoData)
                 }
-                changeRecycler(videoData)
             }
         }
         binding.ivThumb.setCover(mediaData)
@@ -856,21 +907,23 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
      * 处理远程存储类型媒体库
      */
     private fun handleRemoteStorage() {
-        val sourceList = LibraryCompat.loadSources(spUtil)
-        val storageId = LibraryCompat.effectiveStorageId(mediaData, sourceList)
-        if (storageId == null) {
-            ToastUtil.showToast(this, "该媒体库来自旧数据，尚未绑定具体资源源")
-            return
-        }
-        val source = sourceList.find { it.id == storageId }
-        if (source == null) {
-            ToastUtil.showToast(this, "资源源不存在")
-            return
-        }
-        val storage = source.toStorage() ?: return
-        changeRecycler(mutableListOf())
-        showLoading()
-        lifecycleScope.launch(Dispatchers.IO) {
+        // 挂起调用：协程内读取存储源列表并解析存储（Room3 DAO 为 suspend）
+        lifecycleScope.launch {
+            val sourceList = DatabaseManager.sourceDataDao.list()
+            val storageId = LibraryCompat.effectiveStorageId(mediaData, sourceList)
+            if (storageId == null) {
+                ToastUtil.showToast(this@MediaDetailActivity, "该媒体库来自旧数据，尚未绑定具体资源源")
+                return@launch
+            }
+            val source = sourceList.find { it.id == storageId }
+            if (source == null) {
+                ToastUtil.showToast(this@MediaDetailActivity, "资源源不存在")
+                return@launch
+            }
+            val storage = source.toStorage() ?: return@launch
+            changeRecycler(mutableListOf())
+            showLoading()
+            lifecycleScope.launch(Dispatchers.IO) {
             val testConnect = storage.testConnect()
             withContext(Dispatchers.Main) {
                 hideLoading()
@@ -926,6 +979,7 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
                         }.collect {}
                 }
             }
+        }
         }
     }
 

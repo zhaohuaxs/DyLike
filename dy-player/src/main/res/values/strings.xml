@@ -180,18 +180,35 @@
     <string name="hint_rename_video">重命名视频</string>
     <string name="hint_delete_video">确定删除该视频？</string>
     <string name="hint_delete_video_desc">视频文件删除后无法恢复，是否继续</string>
+    <string name="hint_delete_media">确定删除该媒体库？</string>
+    <!-- §8.4 级联删除提示：删媒体会连带清空其播放历史/收藏/播放列表项（FK CASCADE） -->
+    <string name="hint_delete_media_cascade">删除该媒体将同时清空其播放历史、收藏及播放列表中的相关项，确定删除？</string>
     <string name="hint_show_more">显示更多按钮</string>
     <string name="hint_share_video">分享视频</string>
+    <!-- 短视频「添加喜欢」写库失败提示（favorite.media_id FK 违约等），失败时同时回滚心形 -->
+    <string name="favorite_failed">收藏失败，请重试</string>
 
     <string name="title_playlist">播放列表</string>
     <string name="hint_playlist_add">新建播放列表</string>
     <string name="hint_playlist_name">播放列表名称</string>
     <string name="hint_playlist_empty">暂无播放列表，点击右上角创建</string>
+    <string name="title_history">播放历史</string>
+    <string name="hint_history_empty">暂无播放记录</string>
+    <string name="history_deleted">已删除</string>
+    <string name="history_finished">已看完</string>
+    <string name="history_watched_count">已播 %1$d 集</string>
+    <string name="hint_history_delete_group">删除该组全部播放记录？</string>
+    <string name="hint_history_delete_single">删除该播放记录？</string>
+    <string name="menu_history_clear_all">清空播放历史</string>
+    <string name="hint_history_clear_all">清空全部播放记录？该操作不可恢复。</string>
+    <string name="hint_history_delete_tip">长按可删除单条记录</string>
+    <string name="dialog_delete_title">删除提醒</string>
     <string name="hint_add_to_playlist">添加到播放列表</string>
     <string name="hint_playlist_created">播放列表创建成功</string>
     <string name="hint_playlist_deleted">播放列表已删除</string>
     <string name="hint_playlist_renamed">播放列表已重命名</string>
     <string name="hint_playlist_video_added">已添加到播放列表</string>
+    <string name="hint_playlist_video_add_failed">添加到播放列表失败</string>
     <string name="hint_playlist_video_exists">视频已在播放列表中</string>
     <string name="hint_playlist_select">选择播放列表</string>
     <string name="hint_playlist_create_new">新建播放列表</string>
@@ -213,5 +230,30 @@
     <string name="timer_custom">自定义</string>
     <string name="hint_timer_custom_input">输入定时关闭分钟数</string>
     <string name="hint_timer_custom_invalid">请输入1~999之间的整数</string>
+
+    <!-- 数据迁移（SP → Room） -->
+    <string name="migration_title">数据迁移</string>
+    <string name="migration_desc">检测到旧版本本地数据，需要迁移到新数据库</string>
+    <string name="migration_will_migrate">将迁移以下内容：</string>
+    <string name="migration_progress_restore_hint">✓ 播放进度将从播放记录文件中恢复</string>
+    <string name="migration_notes">⚠ 注意：\n· 原有数据将保留，不会删除\n· 迁移期间请勿关闭应用</string>
+    <string name="migration_later">稍后再说</string>
+    <string name="migration_start">开始迁移</string>
+    <string name="migration_running">正在迁移…</string>
+    <string name="migration_success">迁移完成</string>
+    <string name="migration_failed">迁移失败：%1$s</string>
+    <string name="migration_done">完成</string>
+    <string name="migration_retry">重试</string>
+    <string name="migration_skip_shuffle_note">%1$d 条随机播放状态因关联媒体不存在已跳过</string>
+    <string name="migration_merge_note">%1$d 条数据在库中已存在，已保留库内版本</string>
+    <string name="migration_stat_sources">存储源</string>
+    <string name="migration_stat_media">媒体库</string>
+    <string name="migration_stat_videos">视频文件</string>
+    <string name="migration_stat_history">播放记录</string>
+    <string name="migration_stat_favorites">收藏</string>
+    <string name="migration_stat_playlists">播放列表</string>
+    <string name="migration_stat_shuffles">随机播放状态</string>
+    <string name="migration_entry">数据迁移（旧版数据）</string>
+    <string name="migration_entry_desc">将旧版本本地数据迁移到新数据库</string>
 
 </resources>

@@ -26,7 +26,8 @@ import me.lingci.dy.player.databinding.ActivityDamakuBindingBinding
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.ui.long_video.PlayHelper
 import me.lingci.dy.player.ui.long_video.PlayInfo
-import me.lingci.dy.player.util.LibraryCompat
+import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.room.entity.AppMeta
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.ui.BaseActivity
@@ -659,18 +660,21 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
     private fun saveDmFolderToMedia(folderPath: String) {
         if (mediaId.isBlank()) return
         lifecycleScope.launch(Dispatchers.IO) {
-            val mediaList = LibraryCompat.loadMedia(spUtil)
-            val media = mediaList.firstOrNull { it.id == mediaId } ?: return@launch
-            if (media.dmFolder == folderPath) return@launch
-            media.dmFolder = folderPath
-            LibraryCompat.saveMedia(spUtil, mediaList)
+            runCatching {
+                // MediaData.dmFolder 为 @Ignore 字段不落库，改用 app_meta 键值对按媒体 id 持久化，
+                // 保持「记住上次弹幕目录」的原有行为（fire-and-forget 写入用 runCatching 包裹）
+                DatabaseManager.appMetaDao.put(
+                    AppMeta(key = "dm_folder|$mediaId", value = folderPath)
+                )
+            }
         }
     }
 
-    private fun loadDmFolderFromMedia(): String {
+    // 挂起函数：调用方（initData）已处于协程内（Room3 DAO 为 suspend）
+    private suspend fun loadDmFolderFromMedia(): String {
         if (mediaId.isBlank()) return ""
-        val mediaList = LibraryCompat.loadMedia(spUtil)
-        return mediaList.firstOrNull { it.id == mediaId }?.dmFolder.orEmpty()
+        // 读取 saveDmFolderToMedia 持久化的弹幕目录（app_meta 键值对）
+        return DatabaseManager.appMetaDao.get("dm_folder|$mediaId").orEmpty()
     }
 
     private fun refreshAll() {

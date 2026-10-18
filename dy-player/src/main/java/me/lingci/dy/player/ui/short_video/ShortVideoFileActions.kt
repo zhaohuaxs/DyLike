@@ -13,6 +13,7 @@ import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.ui.media_detail.RenameDialog
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.ShortTitleFormatter
 import me.lingci.dy.player.util.SpUtil
@@ -211,8 +212,10 @@ class ShortVideoFileActions(
     }
 
     /** 根据媒体库记录优先解析 storageId，兼容旧数据只按视频类型匹配存储源。 */
-    private fun resolveStorage(videoData: VideoData): IStorage? {
-        val sourceList = LibraryCompat.loadSources(spUtil)
+    // 挂起函数：调用方（shareVideo/renameVideo/deleteVideo）均已处于协程内（Room3 DAO 为 suspend）
+    private suspend fun resolveStorage(videoData: VideoData): IStorage? {
+        // 挂起读取存储源列表（替代 LibraryCompat.loadSources）
+        val sourceList = DatabaseManager.sourceDataDao.list()
         val storageId = mediaData()?.let { LibraryCompat.effectiveStorageId(it, sourceList) }
         val source = if (storageId != null) {
             sourceList.find { it.id == storageId }

@@ -19,12 +19,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.widget.SearchView
 import androidx.core.view.MenuProvider
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.isActive
@@ -39,6 +42,7 @@ import me.lingci.dy.player.entity.MediaShuffleState
 import me.lingci.dy.player.entity.MediaTypeEntity
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.ui.history.HistoryActivity
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.main.BaseTransitionFragment
 import me.lingci.dy.player.ui.media_add.MediaLinkAddDialog
@@ -54,11 +58,13 @@ import me.lingci.dy.player.ui.playlist.PlaylistSelectDialog
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
 import me.lingci.dy.player.ui.source.ItemAction
 import me.lingci.dy.player.ui.source.ItemActionDialog
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.MediaManger
 import me.lingci.dy.player.util.AppUtil
 import java.io.FileOutputStream
+import me.lingci.lib.base.dailog.DialogHelper
 import me.lingci.lib.base.dailog.ValueSetDialog
 import me.lingci.lib.base.okhttp.httpGet
 import me.lingci.lib.base.ui.file_select.FileSelectorActivity
@@ -107,6 +113,28 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         init()
+        // Room3 Flow 化：媒体库列表响应式刷新（DB 写入后自动重发最新值），
+        // 替代原「快照 .first() 读取 + 各处手动 refreshDataFromSp/initData 刷新」链路
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).collect { list ->
+                    // DAO 已过滤 DEFAULT 与虚拟媒体，仅再排除历史/收藏等入口类型
+                    val filteredList = list.filter { it.type > MediaLibType.DEFAULT }.toMutableList()
+                    mediaViewModel.setMediaList(filteredList)
+                    if (filteredList.isNotEmpty()) {
+                        processMediaData(filteredList)
+                        processCovers(filteredList)
+                    } else {
+                        // 清空 UI
+                        if (spUtil.newHome) {
+                            mediaTypeItemAdapter.updateData(mutableListOf())
+                        } else {
+                            mediaItemAdapter.updateData(mutableListOf())
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -116,15 +144,12 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
             mediaItemAdapter.changeCoverRatio(currentRatio!!)
             mediaTypeItemAdapter.changeCoverRatio(currentRatio)
         }
-        val sourceList = LibraryCompat.loadSources(spUtil)
-        mediaItemAdapter.setSourceList(sourceList)
-        mediaTypeItemAdapter.setSourceList(sourceList)
-        // 同步启动自动播放媒体库 id，确保从 MediaFullActivity 返回时角标正确
-        mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
-        mediaTypeItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
         lastCoverRatio = currentRatio
-        // 强制从 SharedPreferences 刷新数据，确保与 MediaFullActivity 的修改同步
-        refreshDataFromSp()
+        lifecycleScope.launch {
+            // Room3 Flow 化：媒体列表由 observeLibraryPage Flow 驱动（写入后自动重发），
+            // 返回本页时仅需重处理存储源变更（源标题/桶归属变化不触发媒体 Flow）
+            processMediaData(mediaViewModel.listMedia())
+        }
     }
 
     private fun init() {
@@ -152,16 +177,12 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         mediaFullLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
-            if (result.resultCode == Activity.RESULT_OK) {
-                refreshDataFromSp()
-            }
+            // Room3 Flow 化：MediaFullActivity 的 DB 写入已由 observeLibraryPage Flow 自动触发刷新
         }
         mediaScanLauncher = registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
-            if (result.resultCode == Activity.RESULT_OK) {
-                refreshDataFromSp()
-            }
+            // Room3 Flow 化：MediaScanActivity 的 DB 写入已由 observeLibraryPage Flow 自动触发刷新
         }
     }
 
@@ -174,7 +195,9 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     override fun onStart() {
         super.onStart()
         requireActivity().addMenuProvider(this, viewLifecycleOwner)
-        initData(null)
+        // Room3 Flow 化：数据加载由 onViewCreated 的 Flow 集合驱动（STARTED 时自动重发最新值），
+        // 此处仅保留首次扫描入口
+        scanMedia()
     }
 
     override fun onStop() {
@@ -251,35 +274,12 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     }
 
     private fun searchData(keyword: String) {
-        processMediaData(mediaViewModel.listMedia(keyword))
+        lifecycleScope.launch {
+            processMediaData(mediaViewModel.listMedia(keyword))
+        }
     }
 
-    private fun initData(dataSet: MutableList<MediaData>?) {
-        var list = dataSet
-        if (list == null) {
-            list = LibraryCompat.loadMedia(spUtil)
-            val beforeNum = list.size
-            list = list.filter { it.type > MediaLibType.DEFAULT }.toMutableList()
-            if (list.size != beforeNum) {
-                LibraryCompat.saveMedia(spUtil, list)
-            }
-        }
-        // 修复：无论列表是否为空，都更新 ViewModel 和 UI，确保数据同步
-        mediaViewModel.setMediaList(list)
-        if (list.isNotEmpty()) {
-            processMediaData(list)
-            processCovers(list)
-        } else {
-            // 清空 UI
-            if (spUtil.newHome) {
-                mediaTypeItemAdapter.updateData(mutableListOf())
-            } else {
-                mediaItemAdapter.updateData(mutableListOf())
-            }
-        }
-
-        scanMedia()
-    }
+    // Room3 Flow 化：原 initData 快照加载已由 onViewCreated 的 observeLibraryPage Flow 集合替代
 
     private fun scanMedia() {
         if (spUtil.firstScanMovie) {
@@ -294,14 +294,15 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         }
     }
 
-    private fun processMediaData(list: MutableList<MediaData>) {
-        val sourceList = LibraryCompat.loadSources(spUtil)
+    private suspend fun processMediaData(list: MutableList<MediaData>) {
+        // Room3：sources 改为 DAO 异步读取
+        val sourceList = DatabaseManager.sourceDataDao.list()
         mediaItemAdapter.setSourceList(sourceList)
         mediaTypeItemAdapter.setSourceList(sourceList)
         // 同步启动自动播放媒体库 id，刷新卡片角标
         mediaItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
         mediaTypeItemAdapter.setAutoPlayMediaId(spUtil.autoPlayMediaId)
-        shuffleStates = LibraryCompat.loadShuffleStates(spUtil)
+        shuffleStates = LibraryCompat.loadShuffleStates()
         if (spUtil.newHome) {
             list.groupBy { item ->
                 if (isRemoteMedia(item.type)) {
@@ -434,24 +435,21 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
                 }
             }
 
-            // 如果有更新，基于最新 SP 数据按 id 合并，避免旧快照回写已删除媒体库
+            // 如果有更新，按 id 单条更新封面，避免旧快照整表回写已删除媒体库
             if (coverUpdates.isNotEmpty()) {
                 withContext(Dispatchers.Main) {
                     if (!isAdded || !isActive) return@withContext
-                    val latest = LibraryCompat.loadMedia(spUtil)
-                    var changed = false
-                    latest.forEach { media ->
-                        val showFile = coverUpdates[media.id] ?: return@forEach
+                    // Room3：按 id 单条读取 + 字段更新后 upsert（封面不落子表，直接更新主行）
+                    // Room3 Flow 化：封面落库后 observeLibraryPage Flow 自动触发 UI 刷新
+                    coverUpdates.forEach { (mediaId, showFile) ->
+                        val media = DatabaseManager.mediaDataDao.getById(mediaId)
+                            ?: return@forEach
                         if (media.showFile != showFile || media.coverType != CoverType.AUTO) {
                             media.showFile = showFile
                             media.coverType = CoverType.AUTO
-                            changed = true
+                            DatabaseManager.mediaDataDao.upsert(media)
                         }
                     }
-                    if (changed) {
-                        LibraryCompat.saveMedia(spUtil, latest)
-                    }
-                    refreshDataFromSp()
                 }
             }
         }
@@ -508,11 +506,10 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     private fun initView() {
         binding.cardMediaHistory.setOnClickListener {
             if (spUtil.videoDetailMode) {
-                //mediaDetailDialog.setMedia(MediaData(title = "播放历史", type = MediaLibType.HISTORY))
-                //mediaDetailDialog.show(childFragmentManager, mediaManagerDialog.tag)
-                MediaDetailActivity.start(requireContext(), MediaData(title = "播放历史", type = MediaLibType.HISTORY))
+                // Room3：播放历史改为独立历史页（双视图聚合，替代 HISTORY 类型 MediaData 详情）
+                HistoryActivity.start(requireContext())
             } else {
-                handleHistory(spUtil.longVideoMode)
+                handleHistory()
             }
         }
         binding.cardMediaLike.setOnClickListener {
@@ -533,22 +530,26 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
                 ToastUtil.showToast(requireContext(), "媒体库已存在")
                 return@newInstance
             }*/
-            val sourceList = LibraryCompat.loadSources(spUtil)
-            LibraryCompat.loadMedia(spUtil).let { list ->
+            lifecycleScope.launch {
+                // Room3：sources/media 改为 DAO 异步读取
+                val sourceList = DatabaseManager.sourceDataDao.list()
                 if (media.id.isBlank()) {
                     media.id = LibraryCompat.mediaId(media, sourceList)
                 }
+                // sameMedia 语义查重：命中时按 update 语义覆盖，否则提示已存在
+                val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
                 val index = list.indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
                 if (index != -1 && update.not()) {
                     ToastUtil.showToast(requireContext(), "媒体库已存在")
-                    return@newInstance
+                    return@launch
                 }
                 if (index != -1 && update) {
-                    list.removeAt(index)
+                    // 先删旧行再落库，避免同语义不同 id 重复（items 子表随 FK 级联清理）
+                    DatabaseManager.mediaDataDao.delete(list[index])
                 }
-                list.add(media)
-                LibraryCompat.saveMedia(spUtil, list)
-                initData(list)
+                DatabaseManager.mediaDataDao.insert(media)
+                persistMediaItems(media)
+                // Room3 Flow 化：落库后 observeLibraryPage Flow 自动触发 UI 刷新
             }
         }
         // 媒体库详情
@@ -591,7 +592,6 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         }
         // 旧UI
         mediaItemAdapter = MediaItemAdapter(mutableListOf(), true, spUtil.coverRatio!!)
-        mediaItemAdapter.setSourceList(LibraryCompat.loadSources(spUtil))
         mediaItemAdapter.onItemClick { item, position ->
             onMediaItemClick(item, position, "")
         }
@@ -600,7 +600,12 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         }
         // 新分类UI
         mediaTypeItemAdapter = MediaTypeItemAdapter(mutableListOf(), spUtil.coverRatio!!)
-        mediaTypeItemAdapter.setSourceList(LibraryCompat.loadSources(spUtil))
+        // Room3：sources 改为 DAO 异步读取后统一回填两个适配器
+        lifecycleScope.launch {
+            val sources = DatabaseManager.sourceDataDao.list()
+            mediaItemAdapter.setSourceList(sources)
+            mediaTypeItemAdapter.setSourceList(sources)
+        }
         mediaTypeItemAdapter.resetLayout(
             if (isOrientationPortraitOfSysMetrics())
                 Configuration.ORIENTATION_UNDEFINED else Configuration.ORIENTATION_LANDSCAPE
@@ -639,13 +644,21 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         }
         val longVideoMode = (spUtil.longVideoMode && item.playMode == 0) || item.playMode == 2
         if (item.type == MediaLibType.HISTORY) {
-            handleHistory(longVideoMode)
+            handleHistory()
         }
         if (item.type in MediaLibType.DEFAULT..MediaLibType.LOCAL) {
             handleMediaLocal(item, longVideoMode)
         }
         if (item.type == MediaLibType.ONLINE) {
-            startPlayer(item, item.items, longVideoMode)
+            // items 为 @Ignore 字段（Room 读出恒为空）：剧集改从 video_data 子表加载后再起播
+            lifecycleScope.launch {
+                val videos = DatabaseManager.videoDataDao.listByMedia(item.id)
+                if (videos.isEmpty()) {
+                    ToastUtil.showToast(requireContext(), "媒体库为空")
+                } else {
+                    startPlayer(item, videos, longVideoMode)
+                }
+            }
         }
         if (isRemoteMedia(item.type)) {
             handleMediaRemote(item, longVideoMode)
@@ -739,21 +752,29 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     }
 
     private fun deleteMediaData(media: MediaData) {
-        lifecycleScope.launch(Dispatchers.Main) {
-            val sourceList = LibraryCompat.loadSources(spUtil)
-            val list = LibraryCompat.loadMedia(spUtil)
-            val position = list.indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
-            Log.d(this@MediaFragment, "deleteMediaData", "position", position)
-            if (position != -1) {
-                list.removeAt(position)
-                LibraryCompat.saveMedia(spUtil, list)
-                // 若删除的是启动自动播放媒体库，清空设置避免启动时找不到
-                if (spUtil.autoPlayMediaId == media.id) {
-                    spUtil.autoPlayMediaId = ""
+        // §8.4 级联删除提示：删除媒体会经 FK CASCADE 连带清空其播放历史/收藏/播放列表项，确认后才执行
+        DialogHelper.createAction(
+            requireContext(),
+            getString(R.string.hint_delete_media),
+            getString(R.string.hint_delete_media_cascade)
+        ) {
+            lifecycleScope.launch(Dispatchers.Main) {
+                // Room3：sources/media 改为 DAO 异步读取
+                val sourceList = DatabaseManager.sourceDataDao.list()
+                val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
+                val position = list.indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
+                Log.d(this@MediaFragment, "deleteMediaData", "position", position)
+                if (position != -1) {
+                    // 单条删除（items 子表随 FK 级联清理）
+                    DatabaseManager.mediaDataDao.delete(list[position])
+                    // 若删除的是启动自动播放媒体库，清空设置避免启动时找不到
+                    if (spUtil.autoPlayMediaId == media.id) {
+                        spUtil.autoPlayMediaId = ""
+                    }
+                    // Room3 Flow 化：删除后 observeLibraryPage Flow 自动触发 UI 刷新
                 }
-                initData(list)
             }
-        }
+        }.show()
     }
 
     private fun addMediaToPlaylist(media: MediaData) {
@@ -765,11 +786,15 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
                     FileOperator.getSortedFiles(File(path), FileOperator.VIDEO_EXTENSIONS).map { VideoData(it) }
                 }
                 MediaLibType.ONLINE -> {
-                    media.items
+                    // items 为 @Ignore 字段（Room 读出恒为空）：剧集从 video_data 子表读取
+                    DatabaseManager.videoDataDao.listByMedia(media.id)
                 }
                 MediaLibType.WEBDAV, MediaLibType.SMB -> loadRemoteVideos(media)
                 else -> emptyList()
             }
+            // 临时构造的视频没有 mediaId（video_data.media_id 是 FK → media_data），
+            // 统一打上所属媒体，避免落库时落进虚拟宿主
+            videos.forEach { if (it.mediaId.isBlank()) it.mediaId = media.id }
             withContext(Dispatchers.Main) {
                 if (videos.isEmpty()) {
                     ToastUtil.showToast(requireContext(), "该媒体库没有视频")
@@ -783,11 +808,12 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     // 保存在线媒体库
     private fun saveOnlineMediaData(media: MediaData, updated: Boolean) {
         lifecycleScope.launch(Dispatchers.Main) {
-            val sourceList = LibraryCompat.loadSources(spUtil)
-            val list = LibraryCompat.loadMedia(spUtil)
+            // Room3：sources/media 改为 DAO 异步读取
+            val sourceList = DatabaseManager.sourceDataDao.list()
             if (media.id.isBlank()) {
                 media.id = LibraryCompat.mediaId(media, sourceList)
             }
+            val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
             val position = list.indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
             Log.d(
                 this@MediaFragment, "saveOnlineMediaData", "position", position, "updated", updated
@@ -796,45 +822,52 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
                 ToastUtil.showToast(requireContext(), "媒体库已存在")
             } else {
                 if (updated) {
-                    list.removeAt(position)
+                    // 先删旧行再落库，避免同语义不同 id 重复（items 子表随 FK 级联清理）
+                    DatabaseManager.mediaDataDao.delete(list[position])
                 }
-                list.add(media)
-                LibraryCompat.saveMedia(spUtil, list)
-                initData(list)
+                DatabaseManager.mediaDataDao.insert(media)
+                persistMediaItems(media)
+                // Room3 Flow 化：落库后 observeLibraryPage Flow 自动触发 UI 刷新
             }
         }
     }
 
-    // 处理历史记录
-    private fun handleHistory(longVideoMode: Boolean) {
-        spUtil.historyJson?.let { historyJson ->
-            JsonUtil.toList<VideoData>(historyJson).toMutableList().let {
-                if (it.isEmpty()) {
-                    ToastUtil.showToast(requireContext(), "暂无历史记录")
-                } else {
-                    it.reverse()
-                    if (longVideoMode) {
-                        LongVideoActivity.start(requireContext(), ArrayList(it), 0, true)
-                    } else {
-                        ShortVideoActivity.start(requireContext(), ArrayList(it), 0, true)
-                    }
-                }
+    /**
+     * 媒体落库后重建剧集子表（MediaData.items 为 @Ignore 字段，Room 不会自动保存）
+     */
+    private suspend fun persistMediaItems(media: MediaData) {
+        if (media.items.isEmpty()) return
+        // 子表按 parentPath 排序写入 sort_index，与扫描/迁移的落库规则一致
+        val videos = LibraryCompat.sortByParentPath(media.items).mapIndexed { idx, v ->
+            v.apply {
+                sortIndex = idx
+                if (id.isBlank()) id = beanId()
+                if (mediaId.isBlank()) mediaId = media.id
             }
         }
+        DatabaseManager.inTransaction {
+            DatabaseManager.videoDataDao.deleteByMedia(media.id)
+            DatabaseManager.videoDataDao.insertAll(videos)
+        }
+    }
+
+    // 处理历史记录（Room3：改为跳转历史页双视图，扁平起播模式废弃）
+    private fun handleHistory() {
+        HistoryActivity.start(requireContext())
     }
 
     // 处理喜欢
     private fun handleLike(longVideoMode: Boolean) {
-        spUtil.likeJson?.let { historyJson ->
-            JsonUtil.toList<VideoData>(historyJson).toMutableList().let {
-                if (it.isEmpty()) {
-                    ToastUtil.showToast(requireContext(), "暂无喜欢")
+        lifecycleScope.launch {
+            // 收藏改从 favorite 联查 video_data（替代 SP likeJson 读取）
+            val it = DatabaseManager.favoriteDao.listFavoriteVideos()
+            if (it.isEmpty()) {
+                ToastUtil.showToast(requireContext(), "暂无喜欢")
+            } else {
+                if (longVideoMode) {
+                    LongVideoActivity.start(requireContext(), ArrayList(it), 0, false)
                 } else {
-                    if (longVideoMode) {
-                        LongVideoActivity.start(requireContext(), ArrayList(it), 0, false)
-                    } else {
-                        ShortVideoActivity.start(requireContext(), ArrayList(it), 0, false)
-                    }
+                    ShortVideoActivity.start(requireContext(), ArrayList(it), 0, false)
                 }
             }
         }
@@ -876,38 +909,38 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
 
     // 处理远程存储媒体库
     private fun handleMediaRemote(item: MediaData, longVideoMode: Boolean) {
-        val sourceList = LibraryCompat.loadSources(spUtil)
-        val storageId = LibraryCompat.effectiveStorageId(item, sourceList)
-        if (storageId == null) {
-            ToastUtil.showToast(requireContext(), "该媒体库来自旧数据，尚未绑定具体资源源")
-            return
-        }
-        val source = sourceList.find { it.id == storageId }
-        if (source == null) {
-            ToastUtil.showToast(requireContext(), "资源源不存在")
-            return
-        }
-        val storage = source.toStorage() ?: return
-        showLoading()
-        lifecycleScope.launch(Dispatchers.IO) {
-            val testConnect = storage.testConnect()
+        lifecycleScope.launch {
+            // Room3：sources 改为 DAO 异步读取
+            val sourceList = DatabaseManager.sourceDataDao.list()
+            val storageId = LibraryCompat.effectiveStorageId(item, sourceList)
+            if (storageId == null) {
+                ToastUtil.showToast(requireContext(), "该媒体库来自旧数据，尚未绑定具体资源源")
+                return@launch
+            }
+            val source = sourceList.find { it.id == storageId }
+            if (source == null) {
+                ToastUtil.showToast(requireContext(), "资源源不存在")
+                return@launch
+            }
+            val storage = source.toStorage() ?: return@launch
+            showLoading()
+            val testConnect = withContext(Dispatchers.IO) { storage.testConnect() }
             val videos = if (testConnect) loadRemoteVideos(item) else emptyList()
-            withContext(Dispatchers.Main) {
-                if (!isAdded) return@withContext
-                hideLoading()
-                if (testConnect.not()) {
-                    ToastUtil.showToast(requireContext(), "资源库连接失败")
-                } else if (videos.isEmpty()) {
-                    ToastUtil.showToast(requireContext(), "资源库为空")
-                } else {
-                    startPlayer(item, videos, longVideoMode)
-                }
+            if (!isAdded) return@launch
+            hideLoading()
+            if (testConnect.not()) {
+                ToastUtil.showToast(requireContext(), "资源库连接失败")
+            } else if (videos.isEmpty()) {
+                ToastUtil.showToast(requireContext(), "资源库为空")
+            } else {
+                startPlayer(item, videos, longVideoMode)
             }
         }
     }
 
     private suspend fun loadRemoteVideos(item: MediaData): List<VideoData> {
-        val sourceList = LibraryCompat.loadSources(spUtil)
+        // Room3：sources 改为 DAO 异步读取
+        val sourceList = DatabaseManager.sourceDataDao.list()
         val storageId = LibraryCompat.effectiveStorageId(item, sourceList) ?: return emptyList()
         val source = sourceList.find { it.id == storageId } ?: return emptyList()
         val storage = source.toStorage() ?: return emptyList()
@@ -950,51 +983,46 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         _binding = null
     }
 
-    fun refresh() {
-        refreshDataFromSp()
-        mediaViewModel.setText("")
-    }
-
-    /**
-     * 从 SharedPreferences 强制刷新数据
-     * 用于与 MediaFullActivity 的数据修改保持同步
-     */
-    private fun refreshDataFromSp() {
-        val list = LibraryCompat.loadMedia(spUtil)
-        val filteredList = list.filter { it.type > MediaLibType.DEFAULT }.toMutableList()
-        mediaViewModel.setMediaList(filteredList)
-        processMediaData(filteredList)
-    }
+    // Room3 Flow 化：原 refresh()/refreshDataFromSp() 快照刷新已由
+    // onViewCreated 的 observeLibraryPage Flow 集合替代（DB 写入自动重发，无需手动刷新）
 
     private fun handleRefreshMedia(item: MediaTypeEntity, position: Int) {
-        val categoryKey = "${item.type.value}:${item.storageId}"
-        val currentState = shuffleStates[categoryKey] ?: MediaShuffleState()
-        val (selected, newState) = LibraryCompat.selectRandomMedia(
-            item.allMediaList, categoryKey, currentState
-        )
-        shuffleStates[categoryKey] = newState
-        LibraryCompat.saveShuffleStates(spUtil, shuffleStates)
-        item.mediaList.clear()
-        item.mediaList.addAll(selected)
-        mediaTypeItemAdapter.setShuffleStates(shuffleStates)
-        mediaTypeItemAdapter.updateItem(item, position)
+        lifecycleScope.launch {
+            val categoryKey = "${item.type.value}:${item.storageId}"
+            val currentState = shuffleStates[categoryKey] ?: MediaShuffleState()
+            val (selected, newState) = LibraryCompat.selectRandomMedia(
+                item.allMediaList, categoryKey, currentState
+            )
+            shuffleStates[categoryKey] = newState
+            // Room3：随机播放状态异步落库（fire-and-forget）
+            runCatching { LibraryCompat.saveShuffleStates(shuffleStates) }
+            item.mediaList.clear()
+            item.mediaList.addAll(selected)
+            mediaTypeItemAdapter.setShuffleStates(shuffleStates)
+            mediaTypeItemAdapter.updateItem(item, position)
+        }
     }
 
     private fun handleResetMedia(item: MediaTypeEntity, position: Int) {
-        val categoryKey = "${item.type.value}:${item.storageId}"
-        shuffleStates.remove(categoryKey)
-        LibraryCompat.saveShuffleStates(spUtil, shuffleStates)
-        val defaultList = LibraryCompat.sortMediaByDefault(item.allMediaList).take(6).toMutableList()
-        item.mediaList.clear()
-        item.mediaList.addAll(defaultList)
-        mediaTypeItemAdapter.setShuffleStates(shuffleStates)
-        mediaTypeItemAdapter.updateItem(item, position)
+        lifecycleScope.launch {
+            val categoryKey = "${item.type.value}:${item.storageId}"
+            shuffleStates.remove(categoryKey)
+            // Room3：随机播放状态异步落库（fire-and-forget）
+            runCatching { LibraryCompat.saveShuffleStates(shuffleStates) }
+            val defaultList = LibraryCompat.sortMediaByDefault(item.allMediaList).take(6).toMutableList()
+            item.mediaList.clear()
+            item.mediaList.addAll(defaultList)
+            mediaTypeItemAdapter.setShuffleStates(shuffleStates)
+            mediaTypeItemAdapter.updateItem(item, position)
+        }
     }
 
     private fun handleTogglePin(item: MediaData) {
-        val newPinnedState = LibraryCompat.togglePin(spUtil, item.id)
-        ToastUtil.showToast(requireContext(), if (newPinnedState) "已置顶" else "已取消置顶")
-        refreshDataFromSp()
+        lifecycleScope.launch {
+            // Room3：置顶切换走 DAO 字段级更新；Room3 Flow 化：更新后 Flow 自动触发 UI 刷新
+            val newPinnedState = LibraryCompat.togglePin(item.id)
+            ToastUtil.showToast(requireContext(), if (newPinnedState) "已置顶" else "已取消置顶")
+        }
     }
 
     fun clearCache() {

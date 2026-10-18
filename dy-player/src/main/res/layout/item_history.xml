@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 历史条目单布局双形态：组项（媒体库/播放列表聚合）与文件项（单文件历史）
+     内容结构一致，仅副标题文案与封面来源不同，由适配器按数据类型切换 -->
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="@dimen/dp4"
+    android:layout_marginTop="@dimen/dp4"
+    android:layout_marginEnd="@dimen/dp4"
+    app:cardCornerRadius="@dimen/dp8">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="@dimen/dp12">
+
+        <ImageView
+            android:id="@+id/iv_thumb"
+            android:layout_width="@dimen/dp96"
+            android:layout_height="@dimen/dp64"
+            android:scaleType="centerCrop"
+            android:src="@drawable/ic_video_default"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:ignore="ContentDescription" />
+
+        <TextView
+            android:id="@+id/tv_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/dp12"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@+id/iv_thumb"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="媒体标题（已播 N 集 · 集名）" />
+
+        <TextView
+            android:id="@+id/tv_subtitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/dp12"
+            android:layout_marginTop="@dimen/dp4"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="13sp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@+id/iv_thumb"
+            app:layout_constraintTop_toBottomOf="@+id/tv_title"
+            tools:text="已播 3 集 · 第 04 集" />
+
+        <!-- 观看进度条：已播完隐藏（tv_progress_text 标"已看完"），未播完按百分比显示 -->
+        <ProgressBar
+            android:id="@+id/progress_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/dp12"
+            android:layout_marginTop="@dimen/dp4"
+            android:max="100"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@+id/iv_thumb"
+            app:layout_constraintTop_toBottomOf="@+id/tv_subtitle"
+            tools:progress="40" />
+
+        <TextView
+            android:id="@+id/tv_progress_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/dp12"
+            android:layout_marginTop="@dimen/dp4"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="12sp"
+            app:layout_constraintStart_toEndOf="@+id/iv_thumb"
+            app:layout_constraintTop_toBottomOf="@+id/progress_bar"
+            tools:text="12:30/24:00" />
+
+        <TextView
+            android:id="@+id/tv_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/dp4"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="12sp"
+            app:layout_constraintBaseline_toBaselineOf="@+id/tv_progress_text"
+            app:layout_constraintEnd_toEndOf="parent"
+            tools:text="2026-10-15 08:30" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+</com.google.android.material.card.MaterialCardView>

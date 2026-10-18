@@ -2,11 +2,13 @@ package me.lingci.dy.player.entity
 
 import android.os.Parcelable
 import androidx.core.net.toUri
-import androidx.room.ColumnInfo
-import androidx.room.Entity
-import androidx.room.Ignore
-import androidx.room.PrimaryKey
-import androidx.room.TypeConverters
+import androidx.room3.ColumnInfo
+import androidx.room3.Entity
+import androidx.room3.ForeignKey
+import androidx.room3.Index
+import androidx.room3.Ignore
+import androidx.room3.PrimaryKey
+import androidx.room3.ColumnTypeConverters
 import kotlinx.parcelize.Parcelize
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
@@ -27,8 +29,18 @@ import java.io.File
 @OptIn(InternalSerializationApi::class)
 @Serializable
 @Parcelize
-@Entity(tableName = "video_data")
-@TypeConverters(StorageTypeConverter::class)
+@Entity(
+    tableName = "video_data",
+    // 删除媒体时级联删除其全部剧集
+    foreignKeys = [ForeignKey(
+        entity = MediaData::class,
+        parentColumns = ["id"],
+        childColumns = ["media_id"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("media_id"), Index("sort_index")]
+)
+@ColumnTypeConverters(StorageTypeConverter::class)
 data class VideoData(
 
     @PrimaryKey
@@ -44,14 +56,18 @@ data class VideoData(
     var preview: String = "",
     @ColumnInfo(name = "storage_type", typeAffinity = ColumnInfo.INTEGER)
     var type: StorageType = StorageType.WEBDAV,
-    @ColumnInfo(name = "last_play")
+    // 上次播放标记：不落库，运行时由 mediaData.playLast == videoUrl 派生
+    @Ignore
     var lastPlay: Boolean = false,
     @Ignore
-    var like: Boolean = false,
+    var like: Boolean = false,   // 收藏状态移到 favorite 表，此字段仅运行时使用
     @Ignore
     var selected: Boolean = false,
     @ColumnInfo(name = "parent_path")
     var parentPath: String = "",
+    // 同媒体内的排序序号（扫描时按 parentPath 排序写入，查询 ORDER BY sort_index）
+    @ColumnInfo(name = "sort_index")
+    var sortIndex: Int = 0,
 
     ) : Parcelable {
 

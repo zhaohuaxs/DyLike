@@ -1,10 +1,12 @@
 package me.lingci.dy.player.ui.media
 
 import android.app.Activity
+import kotlinx.coroutines.flow.first
 import me.lingci.dy.player.entity.CoverType
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.StorageType
@@ -88,35 +90,65 @@ object MediaHelper {
         return mediaData
     }
 
-    fun addMedia(spUtil: SpUtil, mediaData: MediaData): Boolean {
-        val sources = LibraryCompat.loadSources(spUtil)
+    suspend fun addMedia(spUtil: SpUtil, mediaData: MediaData): Boolean {
+        // Room3：sources/media 改为 DAO 异步读取（spUtil 参数保留以兼容既有调用点）
+        val sources = DatabaseManager.sourceDataDao.list()
         if (mediaData.id.isBlank()) {
             mediaData.id = LibraryCompat.mediaId(mediaData, sources)
         }
-        val list = LibraryCompat.loadMedia(spUtil)
+        val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
         val index = list.indexOfFirst { media ->
             LibraryCompat.sameMedia(media, mediaData, sources)
         }
         if (index == -1) {
-            list.add(mediaData)
-            LibraryCompat.saveMedia(spUtil, list)
+            // 单条落库，items 非空时重建剧集子表
+            DatabaseManager.mediaDataDao.insert(mediaData)
+            saveMediaVideos(mediaData)
             return true
         }
         return false
     }
 
-    fun updateMedia(spUtil: SpUtil, mediaData: MediaData) {
-        val sources = LibraryCompat.loadSources(spUtil)
+    suspend fun updateMedia(spUtil: SpUtil, mediaData: MediaData) {
+        // Room3：sources/media 改为 DAO 异步读取
+        val sources = DatabaseManager.sourceDataDao.list()
         if (mediaData.id.isBlank()) {
             mediaData.id = LibraryCompat.mediaId(mediaData, sources)
         }
-        val list = LibraryCompat.loadMedia(spUtil)
+        val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
         val index = list.indexOfFirst { media ->
             LibraryCompat.sameMedia(media, mediaData, sources)
         }
         if (index != -1) {
-            list[index] = mediaData
-            LibraryCompat.saveMedia(spUtil, list)
+            val old = list[index]
+            DatabaseManager.inTransaction {
+                // id 不同时先删旧行，避免同语义不同 id 产生重复（旧 items 子表随 FK 级联清理）
+                if (old.id != mediaData.id) {
+                    DatabaseManager.mediaDataDao.delete(old)
+                }
+                DatabaseManager.mediaDataDao.upsert(mediaData)
+            }
+            // items 非空时重建剧集子表
+            saveMediaVideos(mediaData)
+        }
+    }
+
+    /**
+     * 媒体落库后重建剧集子表（MediaData.items 为 @Ignore 字段，Room 不会自动保存）
+     */
+    private suspend fun saveMediaVideos(media: MediaData) {
+        if (media.items.isEmpty()) return
+        // 子表按 parentPath 排序写入 sort_index，与扫描/迁移的落库规则一致
+        val videos = LibraryCompat.sortByParentPath(media.items).mapIndexed { idx, v ->
+            v.apply {
+                sortIndex = idx
+                if (id.isBlank()) id = beanId()
+                if (mediaId.isBlank()) mediaId = media.id
+            }
+        }
+        DatabaseManager.inTransaction {
+            DatabaseManager.videoDataDao.deleteByMedia(media.id)
+            DatabaseManager.videoDataDao.insertAll(videos)
         }
     }
 

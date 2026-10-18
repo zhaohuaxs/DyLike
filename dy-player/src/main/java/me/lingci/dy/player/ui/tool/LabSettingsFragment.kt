@@ -7,7 +7,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import me.lingci.dy.player.databinding.FragmentLabSettingBinding
+import me.lingci.dy.player.migrate.MigrationActivity
+import me.lingci.dy.player.migrate.MigrationChecker
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.ui.BaseFragment
@@ -105,6 +109,22 @@ class LabSettingsFragment : BaseFragment() {
         binding.swLabShortAutoLoadProgress.isChecked = spUtil.shortAutoLoadProgress
         binding.swLabShortAutoLoadProgress.setOnClickListener {
             spUtil.shortAutoLoadProgress = binding.swLabShortAutoLoadProgress.isChecked
+        }
+
+        // 数据迁移入口（§5.1）：仅当 app_meta 无迁移完成标记时显示，点击进入迁移页
+        initMigrationEntry()
+    }
+
+    /** 查询迁移状态控制入口显隐；迁移完成后条目不再出现 */
+    private fun initMigrationEntry() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val pending = runCatching { MigrationChecker.isMigrationPending() }.getOrDefault(false)
+            binding.labMigration.visibility = if (pending) View.VISIBLE else View.GONE
+            if (pending) {
+                binding.labMigration.setOnClickListener {
+                    startActivity(Intent(requireContext(), MigrationActivity::class.java))
+                }
+            }
         }
     }
 

@@ -6,10 +6,13 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.widget.PopupMenu
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import kotlinx.coroutines.launch
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.DialogMediaLinkAddBinding
 import me.lingci.dy.player.entity.MediaData
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.media.MediaHelper
 import me.lingci.dy.player.ui.media_detail.MediaDetailAdapter
 import me.lingci.dy.player.util.AppUtil
@@ -44,7 +47,12 @@ class MediaLinkAddDialog : BaseBottomDialog<DialogMediaLinkAddBinding>() {
         arguments?.let { bundle ->
             bundle.safeGetParcelable<MediaData>(TYPE_MEDIA)?.let { mediaData ->
                 binding.toolbar.title = "在线媒体库修改"
-                initData(mediaData)
+                // Room3：编辑既有媒体库时 items 为 @Ignore 字段（Room 读出恒为空），从 video_data 子表回填
+                viewLifecycleOwner.lifecycleScope.launch {
+                    mediaData.items =
+                        DatabaseManager.videoDataDao.listByMedia(mediaData.id).toMutableList()
+                    initData(mediaData)
+                }
             }
             bundle.getBoolean(TYPE_UPDATED).let {
                 updated = it

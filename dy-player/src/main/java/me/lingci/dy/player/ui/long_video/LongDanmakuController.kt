@@ -52,7 +52,9 @@ class LongDanmakuController(
     private val currentVideoData: () -> VideoData?,
     private val currentVideoName: () -> String,
     private val isMerge: () -> Boolean,
-    private val setMergeState: (Boolean) -> Unit
+    private val setMergeState: (Boolean) -> Unit,
+    // 播放历史来源上下文（play_history 进度同步用，由 Activity 按进入来源派生）
+    private val historySource: () -> HistorySource
 ) {
 
     /** 应用进入播放页时的全局弹幕样式、性能和过滤配置。 */
@@ -265,6 +267,9 @@ class LongDanmakuController(
     /** 保存当前播放进度、弹幕轨道列表和最后使用的轨道到播放信息文件。 */
     fun saveCacheInfo(process: Long, update: Boolean = true, track: DmTrack? = null) {
         val videoData = currentVideoData() ?: return
+        val source = historySource()
+        // 总时长用于 play_history 的"已看完"判断；无效时传 0（保留 DAO 中原值）
+        val duration = videoView.duration.takeIf { it > 0 } ?: 0L
         if (update) {
             PlayHelper.updateInfo(
                 context,
@@ -272,7 +277,9 @@ class LongDanmakuController(
                 videoData,
                 process,
                 dmTrackView.allTrack(),
-                track ?: dmTrackView.allTrack().lastOrNull()
+                track ?: dmTrackView.allTrack().lastOrNull(),
+                source,
+                duration
             )
         } else {
             PlayHelper.saveInfo(
@@ -281,7 +288,8 @@ class LongDanmakuController(
                 videoData,
                 process,
                 dmTrackView.allTrack(),
-                track ?: dmTrackView.allTrack().lastOrNull()
+                track ?: dmTrackView.allTrack().lastOrNull(),
+                source
             )
         }
     }

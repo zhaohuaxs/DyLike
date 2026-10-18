@@ -4,12 +4,17 @@ import android.widget.ImageView
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.model.GlideUrl
 import com.bumptech.glide.load.model.LazyHeaders
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.CoverType
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
 import okhttp3.Credentials
 import java.io.File
 
@@ -20,6 +25,32 @@ import java.io.File
  *   version : 1.0
  */
 object CoverHelper {
+
+    /** 源列表缓存的刷新间隔：既避免每次绑定都查库，也保证编辑资源库后缓存尽快自愈 */
+    private const val SOURCE_CACHE_TTL_MS = 5_000L
+
+    // 源列表惰性缓存（Room3：sourceDataDao 为 suspend，图片绑定线程无法同步读库）
+    @Volatile
+    private var cachedSourceList: List<SourceData> = emptyList()
+
+    @Volatile
+    private var cacheAt: Long = 0L
+
+    // 仅用于后台预热源列表缓存的作用域（与 CoverHelper 同生命周期，非 GlobalScope）
+    private val cacheScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 缓存过期时后台刷新源列表（结果回填后供后续图片绑定使用） */
+    private fun refreshSourceListIfNeeded() {
+        if (System.currentTimeMillis() - cacheAt <= SOURCE_CACHE_TTL_MS) {
+            return
+        }
+        cacheScope.launch {
+            runCatching { DatabaseManager.sourceDataDao.list() }.onSuccess {
+                cachedSourceList = it
+                cacheAt = System.currentTimeMillis()
+            }
+        }
+    }
 
     private fun loadModel(path: String, headers: Map<String, String>): Any {
         if (headers.isEmpty() || !path.startsWith("http")) {
@@ -59,7 +90,10 @@ object CoverHelper {
         if (sourceList.isNotEmpty()) {
             return sourceList
         }
-        return LibraryCompat.loadSources(SpUtil(imageView.context))
+        // Room3：改为 TTL 惰性缓存——缓存过期触发后台刷新，本次绑定先返回当前缓存。
+        // 首次冷启动时缓存为空，该次 WEBDAV 封面可能缺认证头（表现为占位图），回填后自愈。
+        refreshSourceListIfNeeded()
+        return cachedSourceList
     }
 
     private fun resolveWebDavHeaders(imageView: ImageView, mediaData: MediaData, sourceList: List<SourceData>): Map<String, String> {

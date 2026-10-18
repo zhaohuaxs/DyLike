@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -27,6 +28,7 @@ import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.playlist.PlaylistSelectDialog
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
@@ -273,24 +275,23 @@ class FileBrowserActivity : BaseActivity(), MenuProvider {
 
     private fun addToMedia(item: FileEntity) {
         sourceData?.let { source ->
-            val mediaData = MediaData()
-            mediaData.title = item.name.trim()
-            mediaData.path = item.path
-            mediaData.type = MediaLibType.fromStorage(source.type!!)
-            mediaData.storageType = source.type!!
-            mediaData.storageId = source.id
-            val sourceList = LibraryCompat.loadSources(spUtil)
-            mediaData.id = LibraryCompat.mediaId(mediaData, sourceList)
-
-            LibraryCompat.loadMedia(spUtil).let { list ->
-                val index = list.indexOfFirst { LibraryCompat.sameMedia(it, mediaData, sourceList) }
-                if (index != -1) {
-                    ToastUtil.showToast(this, "媒体库已存在")
-                    return
+            lifecycleScope.launch {
+                val mediaData = MediaData()
+                mediaData.title = item.name.trim()
+                mediaData.path = item.path
+                mediaData.type = MediaLibType.fromStorage(source.type!!)
+                mediaData.storageType = source.type!!
+                mediaData.storageId = source.id
+                // Room3：sources/media 改为 DAO 异步读取，查重后单条落库
+                val sourceList = DatabaseManager.sourceDataDao.list()
+                mediaData.id = LibraryCompat.mediaId(mediaData, sourceList)
+                val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first()
+                if (list.any { LibraryCompat.sameMedia(it, mediaData, sourceList) }) {
+                    ToastUtil.showToast(this@FileBrowserActivity, "媒体库已存在")
+                } else {
+                    DatabaseManager.mediaDataDao.insert(mediaData)
+                    ToastUtil.showToast(this@FileBrowserActivity, "媒体库添加成功")
                 }
-                list.add(mediaData)
-                LibraryCompat.saveMedia(spUtil, list)
-                ToastUtil.showToast(this, "媒体库添加成功")
             }
         }
     }

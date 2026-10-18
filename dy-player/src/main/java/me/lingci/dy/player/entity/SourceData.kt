@@ -2,10 +2,10 @@ package me.lingci.dy.player.entity
 
 import android.os.Parcelable
 import androidx.core.net.toUri
-import androidx.room.ColumnInfo
-import androidx.room.Entity
-import androidx.room.PrimaryKey
-import androidx.room.TypeConverters
+import androidx.room3.ColumnInfo
+import androidx.room3.Entity
+import androidx.room3.PrimaryKey
+import androidx.room3.ColumnTypeConverters
 import kotlinx.parcelize.Parcelize
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
@@ -27,7 +27,7 @@ import me.lingci.lib.base.storage.impl.WebDavStorage
 @Serializable
 @Parcelize
 @Entity(tableName = "source_data")
-@TypeConverters(StorageTypeConverter::class)
+@ColumnTypeConverters(StorageTypeConverter::class)
 data class SourceData(
 
     @PrimaryKey

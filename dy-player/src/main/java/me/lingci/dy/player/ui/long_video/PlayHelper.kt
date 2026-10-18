@@ -5,13 +5,19 @@ import androidx.core.net.toUri
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.Serializable
 import master.flame.danmaku.danmaku.util.IOUtils
+import me.lingci.dy.player.entity.MediaData
+import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
+import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.room.entity.PlaySource
 import me.lingci.dy.player.util.AppUtil
+import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.okhttp.OkUtil
 import me.lingci.lib.base.okhttp.httpGet
@@ -42,6 +48,15 @@ import java.io.FileOutputStream
  */
 object PlayHelper {
 
+    // 进程级 IO 作用域：saveHistory/resetPlaySeek 的 DB 写入是 fire-and-forget，与进程同生命周期
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 进度落库节流窗口，与 saveInfo/updateInfo 依赖 PlayInfo 文件 mtime 的 6 秒窗口保持一致 */
+    private const val THROTTLE_MS = 6000L
+
+    /** updateHistoryProgress 的进程内节流表，key = "videoId|sourceKey" */
+    private val lastProgressSyncAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     private fun infoFile(context: Context, videoData: VideoData): File {
         return AppFile(context).buildCustom("info", "${videoData.videoUrl.md5()}.json")
     }
@@ -64,23 +79,74 @@ object PlayHelper {
         }
     }
 
-    fun saveHistory(spUtil: SpUtil, videoData: VideoData, update: Boolean = false) {
+    /**
+     * 保存播放历史（Room 版，替代 SP historyJson 整列表模式）：
+     * 1. 确保视频父行落在 video_data（play_history.video_id FK 前提）
+     * 2. play_history 打点：((video_id, source_key) 复合唯一自动去重，
+     *    无 SP 时代的 100 条上限；仅刷新 updated_at 保序，不覆盖已有进度/时长）
+     */
+    fun saveHistory(videoData: VideoData, source: HistorySource) {
         videoData.id = videoData.md5()
-        val list = JsonUtil.toList<VideoData>(
-            spUtil.historyJson!!
-        ).toMutableList()
-        val existIndex = list.indexOfFirst { it.id == videoData.id }
-        if (existIndex > -1) {
-            list.removeAt(existIndex)
-            list.add(videoData)
-        } else {
-            if (list.size >= 100) {
-                list.removeAt(0)
+        ioScope.launch {
+            runCatching {
+                ensureVideoParent(videoData)
+                DatabaseManager.playHistoryDao.touch(
+                    videoData.id, source.type.value, source.key, System.currentTimeMillis()
+                )
+            }.onFailure { e ->
+                logD("saveHistory failed", videoData.videoUrl, e)
             }
-            list.add(videoData)
         }
-        spUtil.historyJson = JsonUtil.toJsonString(list)
     }
+
+    /**
+     * 轻量进度同步：只写 play_history，不碰 PlayInfo 断点文件。
+     *
+     * 供没有弹幕控制器、因而永远不会走 saveInfo/updateInfo 的播放页（短视频页）使用，
+     * 避免复用 updateInfo 时用空 dmTrack 覆盖长视频已保存的弹幕轨道。
+     *
+     * 节流：进程内 ConcurrentHashMap 按 "videoId|sourceKey" 记录上次落库时间，
+     * [THROTTLE_MS] 窗口内丢弃。[force] = true 绕过节流（onStop/onDestroy 兜底落盘）。
+     */
+    fun updateHistoryProgress(
+        videoData: VideoData,
+        source: HistorySource,
+        playSeek: Long,
+        duration: Long,
+        force: Boolean = false
+    ) {
+        if (videoData.id.isBlank()) {
+            videoData.id = videoData.md5()
+        }
+        val throttleKey = "${videoData.id}|${source.key}"
+        if (!force) {
+            val last = lastProgressSyncAt[throttleKey] ?: 0L
+            if (System.currentTimeMillis() - last < THROTTLE_MS) {
+                return
+            }
+        }
+        lastProgressSyncAt[throttleKey] = System.currentTimeMillis()
+        val videoId = videoData.id
+        val videoUrl = videoData.videoUrl
+        ioScope.launch {
+            runCatching {
+                // 插入分支受 video_id 外键约束，父行缺失必须先补齐
+                ensureVideoParent(videoData)
+                DatabaseManager.playHistoryDao.upsertProgress(
+                    videoId, source.type.value, source.key,
+                    playSeek, duration, System.currentTimeMillis()
+                )
+            }.onFailure { e ->
+                logD("updateHistoryProgress failed", videoUrl, e)
+            }
+        }
+    }
+
+    /**
+     * 确保视频可安全落库（video_data 的 media_id 是 FK → media_data）：
+     * 公共方法（播放历史 / 收藏 / 播放列表条目共用），实现收敛在 LibraryCompat
+     */
+    suspend fun ensureVideoParent(videoData: VideoData) = LibraryCompat.ensureVideoParent(videoData)
 
     fun saveThumb(
         context: Context,
@@ -295,10 +361,12 @@ object PlayHelper {
         videoData: VideoData,
         playSeek: Long,
         dmTrack: MutableList<DmTrack>,
-        lastDmTrack: DmTrack?
+        lastDmTrack: DmTrack?,
+        source: HistorySource? = null
     ) {
         scope.launch(Dispatchers.IO) {
             saveInfoSync(context, videoData, PlayInfo(playSeek, dmTrack, lastDmTrack))
+            syncProgress(videoData, source, playSeek)
         }
     }
 
@@ -308,7 +376,9 @@ object PlayHelper {
         videoData: VideoData,
         playSeek: Long,
         dmTrack: MutableList<DmTrack>,
-        lastDmTrack: DmTrack?
+        lastDmTrack: DmTrack?,
+        source: HistorySource? = null,
+        duration: Long = 0L
     ) {
         scope.launch(Dispatchers.IO) {
             val file = infoFile(context, videoData)
@@ -325,14 +395,39 @@ object PlayHelper {
                 info = PlayInfo(playSeek, dmTrack, lastDmTrack)
             }
             saveInfoSync(context, videoData, info)
+            // 与文件写同一节流窗口同步进度到 play_history（避免高频 DB 写）
+            syncProgress(videoData, source, playSeek, duration)
+        }
+    }
+
+    /** 把播放进度/时长同步到 play_history（仅 LIBRARY/PLAYLIST/STANDALONE 来源带 source 时写入）
+     *  用 upsertProgress 而非裸 UPDATE：长视频开播打点(saveHistory)与本方法都跑在 Dispatchers.IO，
+     *  先播的那条记录若还没插入，裸 UPDATE 会静默影响 0 行导致首帧进度丢失。 */
+    private suspend fun syncProgress(
+        videoData: VideoData,
+        source: HistorySource?,
+        playSeek: Long,
+        duration: Long = 0L
+    ) {
+        if (source == null) {
+            return
+        }
+        runCatching {
+            DatabaseManager.playHistoryDao.upsertProgress(
+                videoData.id, source.type.value, source.key,
+                playSeek, duration, System.currentTimeMillis()
+            )
+        }.onFailure { e ->
+            logD("syncProgress failed", videoData.videoUrl, e)
         }
     }
 
     /**
      * 播放完成时同步清零 playSeek，保留弹幕轨道信息。
      * 绕过 [updateInfo] 的 6 秒节流，确保下次点击"重新播放"时 onPlayStart 不会 seekTo 到历史位置。
+     * 同时异步清零 play_history 进度（重播位置由上方文件 playSeek 决定，DB 写不阻塞回调）。
      */
-    fun resetPlaySeek(context: Context, videoData: VideoData) {
+    fun resetPlaySeek(context: Context, videoData: VideoData, source: HistorySource? = null) {
         try {
             val file = infoFile(context, videoData)
             if (!file.exists()) return
@@ -343,6 +438,15 @@ object PlayHelper {
             file.writeJsonEntity(info)
         } catch (e: Exception) {
             logD("resetPlaySeek failed", videoData.videoUrl, e)
+        }
+        if (source != null) {
+            ioScope.launch {
+                runCatching {
+                    DatabaseManager.playHistoryDao.resetProgress(
+                        videoData.id, source.type.value, source.key, System.currentTimeMillis()
+                    )
+                }
+            }
         }
     }
 
@@ -356,3 +460,26 @@ data class PlayInfo(
     var lastDmTrack: DmTrack? = null,
     var comments: MutableList<DmItem> = mutableListOf()
 )
+
+/**
+ * 播放历史来源上下文：播放页按进入来源派生（play_history.source_type/source_key 写入与查询同源）
+ */
+data class HistorySource(val type: PlaySource, val key: String) {
+
+    companion object {
+
+        fun standalone(): HistorySource = HistorySource(PlaySource.STANDALONE, PlaySource.STANDALONE_KEY)
+
+        /** 从播放页持有的 MediaData 派生：PLAYLIST → pl:{id}；可落库媒体类型 → lib:{id}；其余/为空 → standalone */
+        fun fromMediaData(mediaData: MediaData?): HistorySource {
+            return when {
+                mediaData == null -> standalone()
+                mediaData.type == MediaLibType.PLAYLIST ->
+                    HistorySource(PlaySource.PLAYLIST, PlaySource.playlistKey(mediaData.id))
+                mediaData.type.isLibraryType ->
+                    HistorySource(PlaySource.LIBRARY, PlaySource.libraryKey(mediaData.id))
+                else -> standalone()
+            }
+        }
+    }
+}

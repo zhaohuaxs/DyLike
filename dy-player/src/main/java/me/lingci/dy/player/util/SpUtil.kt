@@ -50,6 +50,11 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var dataSchemaVersion by SPManager.int(0)
 
+    // ---- SP→Room3 迁移（决策 10）：以下 6 个 JSON 字段迁移后停写 ----
+    // 字段定义保留（兼容旧备份恢复写回）；剩余读写仅出现在迁移管线
+    // （LibraryCompat.migrateIfNeeded 归一化、BackupSettingsFragment 旧备份恢复写回、迁移执行器预读），
+    // 业务流一律走 Room DAO，禁止再新增对这几个字段的读写。
+
     var sourceJson by SPManager.string("[]")
 
     var mediaJson by SPManager.string("[]")
@@ -164,6 +169,7 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var coverRatio by SPManager.string("3:4")
 
+    // 迁移后停写（决策 10，同上）：置顶乱序状态已迁移至 media_shuffle_state 表
     var mediaShuffleJson by SPManager.string("{}")
 
     var labSurfaceRgba by SPManager.boolean(false)
@@ -223,6 +229,9 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     // 实验室开关：短视频自动加载播放进度（开启时恢复上次进度，关闭时每次从头播放）
     var shortAutoLoadProgress by SPManager.boolean(true)
+
+    // 历史页删除方式（左滑/长按）是否已提示过，避免每次进入都弹提示
+    var historyDeleteTipShown by SPManager.boolean(false)
 
     // 设为启动自动播放的媒体库 id（空字符串表示未设置；单选，仅保留一个）
     var autoPlayMediaId by SPManager.string("")

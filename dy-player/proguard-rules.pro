@@ -6,18 +6,18 @@
 # 1. Room Database
 # ============================================================
 # 保留所有 Room 实体类
--keep @androidx.room.Entity class * { *; }
+-keep @androidx.room3.Entity class * { *; }
 
 # 保留所有 DAO 接口
--keep @androidx.room.Dao interface * { *; }
--keep @androidx.room.Dao class * { *; }
+-keep @androidx.room3.Dao interface * { *; }
+-keep @androidx.room3.Dao class * { *; }
 
 # 保留 Database 类
--keep @androidx.room.Database class * { *; }
+-keep @androidx.room3.Database class * { *; }
 
 # 保留 Room 生成的实现类
--keep class * extends androidx.room.RoomDatabase { *; }
--keep class * implements androidx.room.RoomDatabase$Callback { *; }
+-keep class * extends androidx.room3.RoomDatabase { *; }
+-keep class * implements androidx.room3.RoomDatabase$Callback { *; }
 
 # ============================================================
 # 2. Bugly 崩溃上报
@@ -74,13 +74,13 @@
 # 7. 明确保护 Room 实体和 DAO
 # ============================================================
 # 保护 dy-player 模块的 Room 实体
--keep @androidx.room.Entity class me.lingci.dy.player.entity.** { *; }
+-keep @androidx.room3.Entity class me.lingci.dy.player.entity.** { *; }
 -keep class me.lingci.dy.player.entity.VideoData { *; }
 -keep class me.lingci.dy.player.entity.MediaData { *; }
 -keep class me.lingci.dy.player.entity.SourceData { *; }
 
 # 保护 dy-player 模块的 DAO
--keep @androidx.room.Dao interface me.lingci.dy.player.room.dao.** { *; }
+-keep @androidx.room3.Dao interface me.lingci.dy.player.room.dao.** { *; }
 -keep interface me.lingci.dy.player.room.dao.MediaDataDao { *; }
 -keep interface me.lingci.dy.player.room.dao.SourceDataDao { *; }
 -keep interface me.lingci.dy.player.room.dao.VideoDataDao { *; }

@@ -26,7 +26,9 @@ navigation-ui = '2.5.3'
 window = '1.0.0'
 lifecycle = "2.7.0"
 kotlinx-serialization = "1.9.0"
-room = '2.5.1'
+# Room 3.0.3（新包名 androidx.room3）+ androidx.sqlite 2.7.1（AndroidSQLiteDriver），dy-player / app 模块用
+room3 = "3.0.3"
+sqlite = "2.7.1"
 okhttp = '4.12.0'
 glide = '4.16.0'
 flexbox = '3.0.0'
@@ -74,8 +76,9 @@ lifecycle-livedata-ktx = { group = "androidx.lifecycle", name = "lifecycle-lived
 lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
 lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version = "lifecycle" }
 
-androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
-androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+androidx-room3-runtime = { module = "androidx.room3:room3-runtime", version.ref = "room3" }
+androidx-room3-compiler = { module = "androidx.room3:room3-compiler", version.ref = "room3" }
+androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "sqlite" }
 android-flexbox = { module = "com.google.android.flexbox:flexbox", version.ref = "flexbox" }
 androidx-swiperefreshlayout = { module = "androidx.swiperefreshlayout:swiperefreshlayout", version.ref = "swiperefreshlayout" }
 eventbus = { module = "org.greenrobot:eventbus", version.ref = "eventbus" }
@@ -135,4 +138,5 @@ android-library = { id = "com.android.library", version.ref = "gradle" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlinx-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlin-ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+room3 = { id = "androidx.room3", version.ref = "room3" }
 kotlin-parcelize = { id = "org.jetbrains.kotlin.plugin.parcelize", version.ref = "kotlin" }
