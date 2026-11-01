@@ -122,6 +122,56 @@ public final class ExoMediaSourceHelper {
         };
     }
 
+    /**
+     * 为单个请求创建 DataSource。视频、外挂字幕和外挂音频必须共享同一套
+     * headers/cache/SMB 语义，但不能共享可变的默认请求头工厂，否则会串鉴权。
+     */
+    @OptIn(markerClass = UnstableApi.class)
+    public DataSource.Factory getDataSourceFactory(String uri, Map<String, String> headers, boolean isCache) {
+        Uri parsed = Uri.parse(uri);
+        if ("smb".equals(parsed.getScheme())) {
+            return new SmbDataSource.Factory(headers == null ? null : new HashMap<>(headers));
+        }
+
+        Map<String, String> requestHeaders = headers == null
+                ? new HashMap<>() : new HashMap<>(headers);
+        String requestUserAgent = requestHeaders.remove("User-Agent");
+        if (TextUtils.isEmpty(requestUserAgent)) {
+            requestUserAgent = mUserAgent;
+        }
+
+        DataSource.Factory upstream;
+        if (useOkhttp) {
+            OkHttpDataSource.Factory okFactory = new OkHttpDataSource.Factory(new Call.Factory() {
+                @NonNull
+                @Override
+                public Call newCall(@NonNull Request request) {
+                    return OkUtil.INSTANCE.getUnsafeClient().newCall(request);
+                }
+            });
+            okFactory.setUserAgent(requestUserAgent);
+            okFactory.setDefaultRequestProperties(requestHeaders);
+            upstream = new DefaultDataSource.Factory(mAppContext, okFactory);
+        } else {
+            DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
+                    .setUserAgent(requestUserAgent)
+                    .setAllowCrossProtocolRedirects(true)
+                    .setDefaultRequestProperties(requestHeaders);
+            upstream = new DefaultDataSource.Factory(mAppContext, httpFactory);
+        }
+
+        if (!isCache) {
+            return upstream;
+        }
+        if (mCache == null) {
+            mCache = newCache();
+        }
+        return new CacheDataSource.Factory()
+                .setCache(mCache)
+                .setUpstreamDataSourceFactory(upstream)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
+    }
+
     private int inferContentType(String fileName) {
         fileName = fileName.toLowerCase();
         if (fileName.contains(".mpd")) {

@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Bundle
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import androidx.activity.OnBackPressedCallback
 import androidx.core.net.toUri
@@ -17,6 +18,7 @@ import androidx.viewpager2.widget.ViewPager2
 import androidx.viewpager2.widget.ViewPager2.OnPageChangeCallback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
@@ -24,6 +26,8 @@ import me.lingci.dy.player.databinding.ActivityShortVideoBinding
 import me.lingci.dy.player.cache.ProgressManagerImpl
 import me.lingci.dy.player.core.DyPlayerCore
 import me.lingci.dy.player.core.DyPlayerCoreRegistry
+import me.lingci.dy.player.core.PlayRequest
+import me.lingci.dy.player.core.PlayRequestGate
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.DatabaseManager
@@ -177,17 +181,48 @@ class ShortVideoActivity : BaseActivity() {
     private val shortMoreDialog by lazy { ShortMoreDialog() }
     private var activeShortVideoControlView: ShortVideoControlView? = null
 
+    /** 每次起播/重试都有独立身份，异步 URL/token/302 回调不能提交到后来的页面。 */
+    private val playRequests = PlayRequestGate()
+    private var playJob: Job? = null
+    private var isForeground = false
+    private var pagerSelectedItem = 0
+    // C1: 推迟 mVideoView 移动/切源到 SCROLL_STATE_IDLE，避免 settle 期间旧页未离屏时画面跳回中央。
+    private var pendingPlayTarget = -1
+    private var currentScrollState = ViewPager2.SCROLL_STATE_IDLE
+
     /** 沉浸体验定时器(Activity 级,确保操作的是活跃的 ControlView)。 */
     private val immersiveHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var immersiveScheduled = false
-    private val enterImmersiveRunnable = Runnable {
-        immersiveScheduled = false
-        activeShortVideoControlView?.enterImmersive()
+    private var immersiveDeadline = 0L
+    // 显式声明为 Runnable 并用 object 实现：run() 内部需要重新 postDelayed 自身，
+    // 用 lambda 会触发递归类型推断（Kotlin 无法推断自引用 lambda 的类型）。
+    private val enterImmersiveRunnable: Runnable = object : Runnable {
+        override fun run() {
+            val control = activeShortVideoControlView
+            if (!isForeground || control == null) {
+                immersiveScheduled = false
+                return
+            }
+            if (control.isUserInteracting) {
+                // 拖进度/长按/缩放/翻页期间禁止隐藏控件；操作结束从完整 3 秒重新计时。
+                immersiveDeadline = System.currentTimeMillis() + 3000L
+                immersiveHandler.postDelayed(this, 250L)
+                return
+            }
+            val remaining = immersiveDeadline - System.currentTimeMillis()
+            if (remaining > 0) {
+                immersiveHandler.postDelayed(this, remaining)
+                return
+            }
+            immersiveScheduled = false
+            control.enterImmersive()
+        }
     }
     private fun scheduleImmersive() {
-        if (spUtil.showSysBar) return
+        if (spUtil.showSysBar || !isForeground) return
         immersiveHandler.removeCallbacks(enterImmersiveRunnable)
         immersiveScheduled = true
+        immersiveDeadline = System.currentTimeMillis() + 3000L
         immersiveHandler.postDelayed(enterImmersiveRunnable, 3000)
     }
     private fun cancelImmersive() {
@@ -268,7 +303,7 @@ class ShortVideoActivity : BaseActivity() {
             adapter = { mShortVideoAdapter },
             controller = { mController },
             currentControlView = { findCurrentShortVideoControlView() },
-            removeItem = ::removeItem
+            removeItemById = ::removeItemById
         )
     }
     // 字幕停靠几何计算较重，拆出后 Activity 只在时机点触发刷新。
@@ -288,6 +323,7 @@ class ShortVideoActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppUtil.setStatusBarTransparent(this)
+        hideSysBar()
         mBinding = ActivityShortVideoBinding.inflate(layoutInflater)
         setContentView(mBinding.root)
         // 播放器视图必须在任何生命周期回调与用户交互回调之前完成构造，
@@ -426,17 +462,15 @@ class ShortVideoActivity : BaseActivity() {
 
         mBinding.viewpage2.post {
             logD("currentIndex", currentIndex)
+            pagerSelectedItem = currentIndex
             if (currentIndex != 0) {
-                isUserScroll.set(false)
                 mBinding.viewpage2.setCurrentItem(currentIndex, false)
-                mBinding.viewpage2.postDelayed({ startPlay(currentIndex) }, 30)
-            } else {
-                startPlay(currentIndex)
             }
+            startPlay(currentIndex)
         }
         shortSettingsDialog.onChange {
             mVideoView.setLooping(PlayerInitializer.Player.shortAutoNext.not())
-            mVideoView.changeSysBar(PlayerInitializer.Player.shortShowSysBar)
+
             mVideoView.start()
             // 沉浸体验:开关变化时重新调度
             cancelImmersive()
@@ -500,7 +534,7 @@ class ShortVideoActivity : BaseActivity() {
                 when (playerState) {
                     VideoView.PLAYER_NORMAL -> {
                         applySubtitleTextSizeForPlayerState(VideoView.PLAYER_NORMAL)
-                        mVideoView.changeSysBar(PlayerInitializer.Player.shortShowSysBar)
+
                         isUserScroll.set(false)
                         updateSubtitleDocking()
                         if (isLandscape) {
@@ -521,6 +555,7 @@ class ShortVideoActivity : BaseActivity() {
 
             override fun onPlayStateChanged(playState: Int) {
                 if (playState == VideoView.STATE_PREPARED) {
+
                     logAndCache(TAG, "D", "STATE_PREPARED: pos=$mCurPos")
                     updateSubtitleDocking()
                     attachSubtitle()
@@ -571,7 +606,8 @@ class ShortVideoActivity : BaseActivity() {
                         )
                     }
 
-                    removeItem(mCurPos)
+                    // 网络抖动/SMB 超时是可恢复错误：保留条目和页面，控制层已展示错误提示。
+                    // 用户可再次点击播放触发 force 重试，不能在这里 removeItem 永久丢条目。
                 }
             }
         })
@@ -598,13 +634,20 @@ class ShortVideoActivity : BaseActivity() {
 
             override fun onPageSelected(position: Int) {
                 super.onPageSelected(position)
-                if (position == mCurItem) return
-                if (!isUserScroll.get()) return
-                mBinding.viewpage2.post { startPlay(position) }
+                if (position == pagerSelectedItem) return
+                pagerSelectedItem = position
+                // 程序化切页(setCurrentItem false)时 scrollState 为 IDLE，直接起播；
+                // 用户拖动/settle 期间推迟到 IDLE 再移动 mVideoView，避免旧页未离屏时画面跳回中央。
+                if (currentScrollState == ViewPager2.SCROLL_STATE_IDLE) {
+                    mBinding.viewpage2.post { startPlay(position) }
+                } else {
+                    pendingPlayTarget = position
+                }
             }
 
             override fun onPageScrollStateChanged(state: Int) {
                 super.onPageScrollStateChanged(state)
+                currentScrollState = state
                 if (state == ViewPager2.SCROLL_STATE_DRAGGING) {
                     mCurItem = mBinding.viewpage2.currentItem
                     dragStartItem = mCurItem
@@ -613,6 +656,12 @@ class ShortVideoActivity : BaseActivity() {
                     isUserScroll.set(false)
                     resetAllControlViewAlpha(animated = true)
                     activeShortVideoControlView?.setAutoImmersiveEnabled(spUtil.showSysBar.not())
+                    // settle 完成、旧页已离屏，此时移动 mVideoView 并切源
+                    if (pendingPlayTarget >= 0) {
+                        val target = pendingPlayTarget
+                        pendingPlayTarget = -1
+                        mBinding.viewpage2.post { startPlay(target) }
+                    }
                 } else {
                     isUserScroll.set(true)
                 }
@@ -702,16 +751,14 @@ class ShortVideoActivity : BaseActivity() {
             }
 
             override fun playNext() {
-                if (mCurPos < mShortVideoAdapter.itemCount) {
-                    isUserScroll.set(false)
-                    val currentIndex = mCurPos + 1
-                    mBinding.viewpage2.setCurrentItem(currentIndex, false)
-                    mBinding.viewpage2.postDelayed({ startPlay(currentIndex) }, 30)
-                }
+                val next = mCurPos + 1
+                if (next !in mVideoList.indices) return
+                // 只改变选择，由 onPageSelected 唯一驱动起播。
+                mBinding.viewpage2.setCurrentItem(next, false)
             }
 
             override fun onChangeSysBar(show: Boolean) {
-                mVideoView.changeSysBar(show)
+                // 系统栏始终隐藏(竖向全屏)，沉浸不再切换系统栏显隐
             }
 
             override fun onSingleTap() {
@@ -719,11 +766,37 @@ class ShortVideoActivity : BaseActivity() {
                 exitAndRescheduleImmersive()
             }
 
+            override fun onBack() {
+                finish()
+            }
+
         })
 
         // ViewPage2内部是通过RecyclerView去实现的，它位于ViewPager2的第0个位置
         mViewPagerImpl = mBinding.viewpage2.getChildAt(0) as RecyclerView
         //mViewPagerImpl.setScrollingTouchSlop(RecyclerView.TOUCH_SLOP_PAGING)
+    }
+
+    private var edgeTouchActive = false
+    private val edgeSizePx by lazy { (resources.displayMetrics.density *16).toInt() }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val h = mBinding.root.height
+                edgeTouchActive = h > 0 && (ev.y < edgeSizePx || ev.y > h - edgeSizePx)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (edgeTouchActive) {
+                    edgeTouchActive = false
+                    return false
+                }
+            }
+        }
+        if (edgeTouchActive) {
+            return false
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     private fun applyPlaybackCoreFor(videoBean: VideoData) {
@@ -779,111 +852,190 @@ class ShortVideoActivity : BaseActivity() {
      * 决策8：headers 不落库——调用方列表准备时已填 token 则立即起播；
      * 缺 token（如播放列表/历史等 DB 加载路径）先从 source_data 现算回填再起播。
      */
-    private fun playRemoteWithToken(videoBean: VideoData) {
-        if (!videoBean.getToken().isNullOrBlank()) {
-            mVideoView.setUrl(videoBean.videoUrl, videoBean.headers)
-            mVideoView.start()
+    private suspend fun resolvePlaySource(videoBean: VideoData): Pair<String, Map<String, String>?> {
+        if (videoBean.type == StorageType.WEBDAV || videoBean.type == StorageType.SMB) {
+            if (videoBean.getToken().isNullOrBlank()) {
+                VideoDataBinder.bindTokens(videoBean, mediaData)
+            }
+        }
+        // 302 解析结果只用于本次起播，不回写 videoBean.videoUrl：
+        // 回写会污染数据层（进度 key 按 url.hashCode、is302 判断失准、同实体跨请求串扰）。
+        // 每次起播重新解析的代价是一次轻量 HTTP HEAD，远小于数据污染风险。
+        val url = if (videoBean.type != StorageType.WEBDAV && videoBean.videoUrl.startsWith("http")) {
+            HttpUtil.getRedirectUrl(videoBean.videoUrl)
+        } else {
+            videoBean.videoUrl
+        }
+        return url to videoBean.headers
+    }
+
+    private fun stableMediaId(videoBean: VideoData): String {
+        if (videoBean.id.isBlank()) videoBean.id = videoBean.md5()
+        return videoBean.id
+    }
+
+    private fun currentMediaId(): String? {
+        return mVideoList.getOrNull(mCurPos)?.let { stableMediaId(it) }
+    }
+
+    private fun backendKey(videoBean: VideoData): String {
+        if (isSmbVideo(videoBean)) return "exo-smb"
+        return listOf(
+            DyPlayerCoreRegistry.resolveCore(spUtil.shortDyPlayerCore).name,
+            spUtil.labMpvSpecialRender,
+            spUtil.labMpvSuperResolution,
+            spUtil.sortRender
+        ).joinToString("|")
+    }
+
+    private var activeBackendKey: String? = null
+
+    private fun startPlay(position: Int, force: Boolean = false) {
+        if (position !in mVideoList.indices) return
+        val videoBean = mVideoList[position]
+        val mediaId = stableMediaId(videoBean)
+        val existing = playRequests.current
+        // 幂等保护：同一媒体且仍在播放时不重复起播；但 ERROR 态必须放行，
+        // 否则网络抖动后用户无法在同页重试（hasPlayer() 仍 true 会直接 return）。
+        if (!force && existing?.mediaId == mediaId && mCurPos == position && mVideoView.hasPlayer()
+            && mVideoView.currentPlayState != VideoView.STATE_ERROR) {
             return
         }
-        lifecycleScope.launch(Dispatchers.IO) {
-            VideoDataBinder.bindTokens(videoBean, mediaData)
+
+        val holder = findViewHolderByPosition(position)
+        if (holder == null) {
+            mBinding.viewpage2.postDelayed({
+                if (playRequests.current?.mediaId == mediaId || playRequests.current == null) {
+                    startPlay(position, force)
+                }
+            }, 50)
+            return
+        }
+
+        // 上一集进度必须在 mCurPos 改变、player reset/release 之前落盘。
+        val previousPosition = mCurPos
+        if (previousPosition in mVideoList.indices) {
+            saveProgressAt(previousPosition, force = true)
+        }
+        val previousUrl = mVideoList.getOrNull(previousPosition)?.videoUrl
+        val previousPos = if (::mVideoView.isInitialized) mVideoView.currentPosition else 0L
+        val previousDuration = if (::mVideoView.isInitialized) mVideoView.duration else 0L
+
+        playJob?.cancel()
+        val request = playRequests.begin(mediaId)
+        mediaPlaybackRecorder.cancelLastPlayedUpdate()
+        mVideoView.pause()
+
+        // 显式替换活跃组件，不依赖 release() 的 IDLE 回调；解析中连续切页也不会残留监听。
+        activeShortVideoControlView?.let { old ->
+            old.setOnVideoTransformChangedListener(null)
+            old.hidePlayButton()
+            mController.removeControlComponent(old)
+        }
+        activeShortVideoControlView = null
+        clearSubtitleCueListener()
+        subtitleControlView.clearText()
+        subtitleControlView.clearSubtitleLayoutBounds()
+
+        val nextBackend = backendKey(videoBean)
+        if (activeBackendKey != null && activeBackendKey != nextBackend) {
+            // 后端/画质配置改变时不能复用不同内核的 player。
+            mVideoView.release()
+        }
+        activeBackendKey = nextBackend
+        applyPlaybackCoreFor(videoBean)
+
+        if (previousUrl != null && previousDuration > 0 &&
+            previousPos >= previousDuration - COMPLETION_THRESHOLD
+        ) {
+            (VideoViewManager.getConfig().mProgressManager as? ProgressManagerImpl)
+                ?.clearSavedProgressByUrl(previousUrl)
+        }
+        if (!spUtil.shortAutoLoadProgress) {
+            (VideoViewManager.getConfig().mProgressManager as? ProgressManagerImpl)
+                ?.clearSavedProgressByUrl(videoBean.videoUrl)
+        }
+
+
+        // D1: 移动前禁用视频输出，清旧帧避免 surface 重建时左右条残影；loadfile 后自动恢复
+
+        mVideoView.suppressVideoForSwitch()
+        removeViewFormParent(mVideoView)
+        holder.playerContainer.addView(mVideoView, 0)
+
+
+        val displayTitle = formatShortTitle(videoBean.name)
+        mController.setTitle(displayTitle)
+        holder.shortVideoControlView.setTitle(displayTitle)
+        holder.shortVideoControlView.setPage(position, mVideoList.size)
+        mController.addShortVideoControlView(holder.shortVideoControlView)
+        holder.shortVideoControlView.setOnVideoTransformChangedListener {
+            updateSubtitleDocking()
+        }
+        holder.shortVideoControlView.setAutoImmersiveEnabled(spUtil.showSysBar.not())
+        holder.shortVideoControlView.resetScale(1.0f)
+        holder.shortVideoControlView.hidePlayButton()
+        activeShortVideoControlView = holder.shortVideoControlView
+        mCurPos = position
+        pagerSelectedItem = position
+        cancelImmersive()
+        if (ShortVideoControlView.isGlobalImmersive()) {
+            // 沉浸中切页保持隐藏，滑动不退出沉浸，仅单击才退出
+            holder.shortVideoControlView.enterImmersive()
+        } else {
+            scheduleImmersive()
+        }
+        saveMediaInfo(videoBean.videoUrl)
+        lifecycleScope.launch {
+            val commentCount = withContext(Dispatchers.IO) {
+                shortCommentController.loadCommentCount(videoBean.id)
+            }
+            if (playRequests.isCurrent(request) && currentMediaId() == mediaId) {
+                holder.shortVideoControlView.setCommentCount(commentCount)
+            }
+        }
+
+        playlistPlayJob(videoBean, request)
+    }
+
+    private fun playlistPlayJob(videoBean: VideoData, request: PlayRequest) {
+        val mediaId = request.mediaId
+        playJob = lifecycleScope.launch {
+            val source = try {
+                withContext(Dispatchers.IO) { resolvePlaySource(videoBean) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logAndCache(TAG, "E", "解析播放地址失败: ${e.message}")
+                return@launch
+            }
             withContext(Dispatchers.Main) {
-                mVideoView.setUrl(videoBean.videoUrl, videoBean.headers)
-                mVideoView.start()
+                if (!playRequests.isCurrent(request) || isFinishing || isDestroyed) return@withContext
+                if (currentMediaId() != mediaId) return@withContext
+                logAndCache(TAG, "D", "提交播放: ${request.mediaId}, url=${source.first}, type=${videoBean.type}")
+                mVideoView.setUrl(source.first, source.second?.toMutableMap())
+                // 单一提交点：MPV 同后端复用实例，其他后端仍走 release+start。
+                mVideoView.startOrReplace()
+
+                // exo 内核 startOrReplace 走 release+start，release 触发 STATE_IDLE，
+                // BaseVideoController.onPlayStateChanged(STATE_IDLE) 会调 removeAllDissociateComponents()
+                // 移除 isDissociate=true 的 controlView，导致后续 STATE_PAUSED 不通知 controlView，
+                // playBtn 保持 GONE。这里在 startOrReplace 后重新添加，确保 controlView 接收后续状态。
+                // LinkedHashMap.put 对已存在的 key 只更新值，mpv 内核下重复添加也安全。
+                activeShortVideoControlView?.let { cv ->
+                    mController.addShortVideoControlView(cv)
+                }
             }
         }
     }
 
-    private fun startPlay(position: Int) {
-        mediaPlaybackRecorder.cancelLastPlayedUpdate()
-        // 记录上一个视频的播放状态，用于切换时判断是否需要清除进度
-        // 注意：currentPosition getter 会更新 mCurrentPosition，必须在 release() 之前调用
-        val previousUrl = if (mCurPos in mVideoList.indices) mVideoList[mCurPos].videoUrl else null
-        val previousPosition = if (::mVideoView.isInitialized) mVideoView.currentPosition else 0L
-        val previousDuration = if (::mVideoView.isInitialized) mVideoView.duration else 0L
-        // 切集前把上一集的进度强制落库（心跳尚未到点时，避免上一集进度停在 5 秒前）
-        if (previousUrl != null) {
-            saveProgress(force = true)
+    private fun findViewHolderByPosition(position: Int): ShortVideoAdapter.ViewHolder? {
+        if (!::mViewPagerImpl.isInitialized) return null
+        for (i in 0 until mViewPagerImpl.childCount) {
+            val viewHolder = mViewPagerImpl.getChildAt(i).tag as? ShortVideoAdapter.ViewHolder ?: continue
+            if (viewHolder.bindingAdapterPosition == position) return viewHolder
         }
-        val count = mViewPagerImpl.childCount
-        for (i in 0 until count) {
-            val itemView = mViewPagerImpl.getChildAt(i)
-            val viewHolder = itemView.tag as ShortVideoAdapter.ViewHolder
-            if (viewHolder.bindingAdapterPosition == position) {
-                // 旧 ControlView 设为非活跃
-                activeShortVideoControlView?.setOnVideoTransformChangedListener(null)
-                clearSubtitleCueListener()
-                mVideoView.release()
-                // 播放完成重置进度：循环播放下 onCompletion 不触发，
-                // 若上一个视频已播放到接近结尾，清除其进度，避免下次从最后一刻开始
-                if (previousUrl != null && previousDuration > 0 &&
-                    previousPosition >= previousDuration - COMPLETION_THRESHOLD
-                ) {
-                    (VideoViewManager.getConfig().mProgressManager as? ProgressManagerImpl)
-                        ?.clearSavedProgressByUrl(previousUrl)
-                }
-                removeViewFormParent(mVideoView)
-                subtitleControlView.clearText()
-                subtitleControlView.clearSubtitleLayoutBounds()
-                // mVideoList[position]
-                val videoBean = viewHolder.mVideoData
-                applyPlaybackCoreFor(videoBean)
-                // 自动加载进度开关：关闭时清除新视频进度记录，使其从 0 开始播放
-                if (!spUtil.shortAutoLoadProgress) {
-                    (VideoViewManager.getConfig().mProgressManager as? ProgressManagerImpl)
-                        ?.clearSavedProgressByUrl(videoBean.videoUrl)
-                }
-                logAndCache(TAG, "D", "开始播放: pos=$position, url=${videoBean.videoUrl}, type=${videoBean.type}")
-                if (videoBean.type == StorageType.WEBDAV) {
-                    logAndCache(TAG, "D", "URL类型: webdav, url=${videoBean.videoUrl}")
-                    playRemoteWithToken(videoBean)
-                } else {
-                    if (videoBean.videoUrl.startsWith("http")) {
-                        logAndCache(TAG, "D", "URL类型: http(302重定向), url=${videoBean.videoUrl}")
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            videoBean.videoUrl = HttpUtil.getRedirectUrl(videoBean.videoUrl)
-                            withContext(Dispatchers.Main) {
-                                mVideoView.setUrl(videoBean.videoUrl)
-                                mVideoView.start()
-                            }
-                        }
-                    } else if (videoBean.videoUrl.startsWith("smb")) {
-                        logAndCache(TAG, "D", "URL类型: smb, url=${videoBean.videoUrl}")
-                        playRemoteWithToken(videoBean)
-                    } else {
-                        logAndCache(TAG, "D", "URL类型: local, url=${videoBean.videoUrl}")
-                        mVideoView.setUrl(videoBean.videoUrl)
-                        mVideoView.start()
-                    }
-                }
-                val displayTitle = formatShortTitle(videoBean.name)
-                mController.setTitle(displayTitle)
-                viewHolder.shortVideoControlView.setTitle(displayTitle)
-                viewHolder.shortVideoControlView.setPage(position, mVideoList.size)
-                mController.addShortVideoControlView(viewHolder.shortVideoControlView)
-                viewHolder.shortVideoControlView.setOnVideoTransformChangedListener {
-                    updateSubtitleDocking()
-                }
-                activeShortVideoControlView = viewHolder.shortVideoControlView
-                viewHolder.shortVideoControlView.setAutoImmersiveEnabled(spUtil.showSysBar.not())
-                // 切视频后重新调度沉浸(Activity 级定时器,确保操作的是活跃的 ControlView)
-                cancelImmersive()
-                scheduleImmersive()
-                viewHolder.playerContainer.addView(mVideoView, 0)
-                viewHolder.shortVideoControlView.resetScale(1.0f)
-                mCurPos = position
-
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val commentCount = shortCommentController.loadCommentCount(videoBean.id)
-                    withContext(Dispatchers.Main) {
-                        viewHolder.shortVideoControlView.setCommentCount(commentCount)
-                    }
-                }
-
-                saveMediaInfo(videoBean.videoUrl)
-                break
-            }
-        }
+        return null
     }
 
     private fun attachSubtitle() {
@@ -892,15 +1044,12 @@ class ShortVideoActivity : BaseActivity() {
         }
         clearSubtitleCueListener()
         subtitleControlView.clearText()
-        val position = mCurPos
-        val videoData = mVideoList[position]
+        val request = playRequests.current ?: return
+        val videoData = mVideoList[mCurPos]
         lifecycleScope.launch(Dispatchers.IO) {
             val subtitleFile = PlayHelper.resolveSubtitleFile(this@ShortVideoActivity, videoData)
             withContext(Dispatchers.Main) {
-                if (position != mCurPos || position !in mVideoList.indices) {
-                    return@withContext
-                }
-                if (mVideoList[position].videoUrl != videoData.videoUrl) {
+                if (!playRequests.isCurrent(request) || request.mediaId != stableMediaId(videoData)) {
                     return@withContext
                 }
                 if (subtitleFile != null && subtitleFile.exists() && subtitleFile.isFile) {
@@ -1008,33 +1157,63 @@ class ShortVideoActivity : BaseActivity() {
     }
 
     fun addData(list: List<VideoData>) {
-        val size = mVideoList.size
+        val start = mVideoList.size
         mVideoList.addAll(list)
-        // 使用此方法添加数据，使用notifyDataSetChanged会导致正在播放的视频中断
-        mShortVideoAdapter.notifyItemRangeChanged(size, mVideoList.size)
+        // 使用插入通知，不能对已存在数据发 Change 造成 RecyclerView 状态不一致。
+        mShortVideoAdapter.notifyItemRangeInserted(start, list.size)
     }
 
-    fun removeItem(position: Int) {
-        if (position < 0 || position >= mVideoList.size) return
-        // 先释放当前视频并从容器移除
-        mVideoView.release()
-        AppUtil.removeViewFormParent(mVideoView)
-        activeShortVideoControlView?.setOnVideoTransformChangedListener(null)
-        activeShortVideoControlView = null
+    /** 删除 UI 条目；调用方必须提供稳定媒体 ID，避免等待期间翻页导致位置失效。 */
+    fun removeItemById(mediaId: String) {
+        val position = mVideoList.indexOfFirst { stableMediaId(it) == mediaId }
+        if (position < 0) return
+        val deletingCurrent = position == mCurPos
+        val deletingBeforeCurrent = position < mCurPos
+
         mVideoList.removeAt(position)
         mShortVideoAdapter.notifyItemRemoved(position)
-        mShortVideoAdapter.notifyItemRangeChanged(position, mVideoList.size)
-        if (position == mCurPos) {
-            if (mVideoList.isNotEmpty()) {
-                val newPos = position.coerceAtMost(mVideoList.size - 1)
-                mCurPos = newPos
-                // 延迟执行，等待ViewPager2完成布局刷新后再播放
-                mBinding.viewpage2.post { startPlay(newPos) }
-            } else {
-                finish()
+        if (mVideoList.isNotEmpty()) {
+            mShortVideoAdapter.notifyItemRangeChanged(
+                position,
+                (mVideoList.size - position).coerceAtLeast(0)
+            )
+        }
+
+        if (!deletingCurrent) {
+            if (deletingBeforeCurrent) {
+                mCurPos--
+                pagerSelectedItem = mCurPos
+                // 非当前项删除不得释放/重建当前 player，只同步 Pager 下标。
+                if (mCurPos in mVideoList.indices && mBinding.viewpage2.currentItem != mCurPos) {
+                    mBinding.viewpage2.setCurrentItem(mCurPos, false)
+                }
             }
-        } else if (position < mCurPos) {
-            mCurPos--
+            return
+        }
+
+        playJob?.cancel()
+        playRequests.invalidate()
+        activeShortVideoControlView?.let { old ->
+            old.setOnVideoTransformChangedListener(null)
+            mController.removeControlComponent(old)
+        }
+        activeShortVideoControlView = null
+        mVideoView.release()
+        AppUtil.removeViewFormParent(mVideoView)
+
+        if (mVideoList.isEmpty()) {
+            finish()
+            return
+        }
+        val newPos = position.coerceAtMost(mVideoList.size - 1)
+        mCurPos = newPos
+        pagerSelectedItem = newPos
+        mBinding.viewpage2.post {
+            if (mBinding.viewpage2.currentItem != newPos) {
+                mBinding.viewpage2.setCurrentItem(newPos, false)
+            }
+            // 同一下标可能已经是不同媒体，必须显式 force 一次。
+            startPlay(newPos, force = true)
         }
     }
 
@@ -1087,10 +1266,9 @@ class ShortVideoActivity : BaseActivity() {
         progressTicking = false
     }
 
-    /** 把当前播放位置/时长写入 play_history（不写 PlayInfo 文件，避免覆盖长视频的弹幕轨道） */
-    private fun saveProgress(force: Boolean) {
+    /** 把指定页位置/时长写入 play_history（不写 PlayInfo 文件，避免覆盖长视频弹幕轨道）。 */
+    private fun saveProgressAt(position: Int, force: Boolean) {
         if (onHistory || !::mVideoView.isInitialized) return
-        val position = mCurPos
         if (position !in mVideoList.indices) return
         PlayHelper.updateHistoryProgress(
             mVideoList[position],
@@ -1101,31 +1279,43 @@ class ShortVideoActivity : BaseActivity() {
         )
     }
 
+    private fun saveProgress(force: Boolean) = saveProgressAt(mCurPos, force)
+
     fun doScreenShot(position: Int) {
+        val request = playRequests.current ?: return
         mBinding.root.postDelayed({
-            if (position != mCurPos) {
-                return@postDelayed
-            }
-            if (mVideoList[position].videoUrl.isLocal()) {
-                return@postDelayed
-            }
-            runOnUiThread {
-                val file = File(
-                    externalCacheDir,
-                    ".thumb/${mVideoList[mCurPos].md5()}.${AppUtil.THUMB_TYPE}"
-                )
-                if (file.exists() && file.length() < 20480) {
-                    file.delete()
-                }
-                if (!file.exists()) {
-                    try {
-                        file.createNew()
-                        FileOutputStream(file).use { fos ->
-                            mVideoView.doScreenShot().compress(AppUtil.COMPRESS_FORMAT, 70, fos)
+            if (!playRequests.isCurrent(request) || position != mCurPos) return@postDelayed
+            val videoData = mVideoList.getOrNull(position) ?: return@postDelayed
+            if (videoData.videoUrl.isLocal()) return@postDelayed
+            val target = File(
+                externalCacheDir,
+                ".thumb/${videoData.md5()}.${AppUtil.THUMB_TYPE}"
+            )
+            lifecycleScope.launch(Dispatchers.IO) {
+                if (target.exists() && target.length() >= 20480) return@launch
+                var temp: File? = null
+                try {
+                    // 截图/解码/压缩/写盘全部离开主线程；null 是明确失败，不再 NPE 后静默。
+                    val bitmap = mVideoView.doScreenShot() ?: return@launch
+                    if (!playRequests.isCurrent(request)) return@launch
+                    target.parentFile?.mkdirs()
+                    temp = File.createTempFile("thumb_", ".tmp", target.parentFile)
+                    FileOutputStream(temp).use { fos ->
+                        if (!bitmap.compress(AppUtil.COMPRESS_FORMAT, 70, fos)) {
+                            throw IllegalStateException("bitmap compress failed")
                         }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "doScreenShot failed: ${e.message}")
+                        fos.flush()
                     }
+                    if (target.exists()) target.delete()
+                    if (!temp.renameTo(target)) {
+                        throw IllegalStateException("rename thumbnail failed")
+                    }
+                    temp = null
+                } catch (e: Exception) {
+                    Log.d(TAG, "doScreenShot failed: ${e.message}")
+                } finally {
+                    temp?.delete()
+                    if (target.exists() && target.length() == 0L) target.delete()
                 }
             }
         }, 1000)
@@ -1147,8 +1337,10 @@ class ShortVideoActivity : BaseActivity() {
 
     override fun onResume() {
         super.onResume()
+        hideSysBar()
         if (::mVideoView.isInitialized) {
             mVideoView.resume()
+            scheduleImmersive()
         }
         timerCloseController.onResume()
         // 注册超分开关广播接收器（让设置页和 adb 都能在短视频页切换 FSR）
@@ -1179,19 +1371,28 @@ class ShortVideoActivity : BaseActivity() {
 
     override fun onStart() {
         super.onStart()
+        isForeground = true
         // 短视频不做后台播放：回到前台时若处于暂停态，恢复播放。
         if (::mVideoView.isInitialized && !userInitiatedExit && mVideoView.hasPlayer() && !mVideoView.isPlaying) {
             mVideoView.start()
+        }
+        if (::mVideoView.isInitialized && mVideoView.isPlaying) {
+            scheduleImmersive()
         }
     }
 
     override fun onStop() {
         super.onStop()
+        isForeground = false
+        cancelImmersive()
         if (userInitiatedExit) {
             userInitiatedExit = false
             return
         }
         if (isChangingConfigurations) return
+        // 解析中的请求不能在未来页面/后台起播；旧回调全部失效。
+        playRequests.invalidate()
+        playJob?.cancel()
         // 短视频不做后台播放：不可见时直接暂停。
         if (::mVideoView.isInitialized && mVideoView.hasPlayer()) {
             mVideoView.pause()
@@ -1203,6 +1404,11 @@ class ShortVideoActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isForeground = false
+        cancelImmersive()
+        immersiveHandler.removeCallbacksAndMessages(null)
+        playRequests.invalidate()
+        playJob?.cancel()
         // 注销超分广播接收器
         unregisterSuperResolutionReceiver()
         stopProgressTicker()

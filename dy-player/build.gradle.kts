@@ -100,7 +100,7 @@ android {
         create("beta") {
             dimension = "mode"
 
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".debugx"
             versionNameSuffix = "-d"
             manifestPlaceholders["APP_NAME"] = "@string/app_name_debug"
             manifestPlaceholders["APP_ICON"] = "@mipmap/ic_launcher_debug"

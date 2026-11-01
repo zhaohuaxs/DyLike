@@ -204,9 +204,11 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
         )
     }
 
+
     override fun setDataSource(path: String, headers: Map<String, String>?) {
         // Cache selection used to live in CustomVideoView. Keeping it here prevents player-ui from
         // importing Exo media-source helpers just to choose a data source implementation.
+
         if (isCacheEnabled) {
             mMediaSource = mMediaSourceHelper.getMediaSource(path, headers, true)
         } else {
@@ -429,50 +431,26 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
         }
     }
 
-    fun attachExternalSubtitle(uri: Uri, mimeType: String = MimeTypes.APPLICATION_SUBRIP, language: String? = null) {
+    fun attachExternalSubtitle(
+        uri: Uri,
+        mimeType: String = MimeTypes.APPLICATION_SUBRIP,
+        language: String? = null,
+        headers: Map<String, String>? = null
+    ) {
         // 先记录挂载前的文本轨快照，onTracksChanged 时用来识别“新增的外挂轨道”。
         pendingTextTrackSnapshot = captureCurrentTextTrackSnapshot()
-        when (subtitleAttachStrategy) {
-            SubtitleAttachStrategy.REBUILD_MEDIA_ITEM -> attachExternalSubtitleByMediaItem(uri, mimeType, language)
-            SubtitleAttachStrategy.MERGE_SUBTITLE_SOURCE -> attachExternalSubtitleByMediaSource(uri, mimeType, language)
-        }
+        attachExternalSubtitleByMediaSource(uri, mimeType, language, headers)
     }
 
-    private fun attachExternalSubtitleByMediaItem(uri: Uri, mimeType: String, language: String?) {
-        // MediaItem rebuild is the most compatible Exo path but replaces the current item, so it has
-        // to restore position and play state manually.
-        val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(uri)
-            .setMimeType(mimeType)
-            .setLanguage(language)
-            .build()
-
-        val currentMediaItem = mInternalPlayer.getMediaItemAt(0)
-        val videoUri = currentMediaItem.localConfiguration?.uri ?: return
-
-        val newMediaItem = MediaItem.Builder()
-            .setUri(videoUri)
-            .setSubtitleConfigurations(listOf(subtitleConfig))
-            .build()
-
-        val currentPosition = mInternalPlayer.currentPosition
-        val isPlaying = mInternalPlayer.isPlaying
-
-        pendingSelectSubtitle = true
-
-        mInternalPlayer.setMediaItem(newMediaItem)
-        mInternalPlayer.seekTo(currentPosition)
-        mInternalPlayer.prepare()
-
-        if (isPlaying) {
-            mInternalPlayer.play()
-        }
-    }
-
-    private fun attachExternalSubtitleByMediaSource(uri: Uri, mimeType: String, language: String?) {
+    private fun attachExternalSubtitleByMediaSource(
+        uri: Uri,
+        mimeType: String,
+        language: String?,
+        headers: Map<String, String>?
+    ) {
         if (baseMediaSource == null) {
-            Log.d(this, "attachExternalSubtitleByMediaSource fallback", "baseMediaSource is null")
-            // 极端场景下兜底到 MediaItem 方案，保证外挂字幕仍可挂载。
-            attachExternalSubtitleByMediaItem(uri, mimeType, language)
+            // 不能回退到重建 MediaItem：那会丢失主视频的 headers/cache/SMB 并触发二次 prepare。
+            Log.d(this, "attachExternalSubtitle failed", "baseMediaSource is null")
             return
         }
         val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(uri)
@@ -480,10 +458,13 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
             .setLanguage(language)
             .build()
         val currentPosition = mInternalPlayer.currentPosition
-        val isPlaying = mInternalPlayer.isPlaying
-        val dataSourceFactory = DefaultDataSource.Factory(
-            mContext,
-            DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+        val playWhenReady = mInternalPlayer.playWhenReady
+        val requestHeaders = headers?.toMap() ?: mCurrentRequestHeaders
+        // 与主视频共用 headers/cache/SMB 的请求级 DataSource 语义。
+        val dataSourceFactory = mMediaSourceHelper.getDataSourceFactory(
+            uri.toString(),
+            requestHeaders,
+            isCacheEnabled
         )
         externalSubtitleSource = SingleSampleMediaSource.Factory(dataSourceFactory)
             .createMediaSource(subtitleConfig, C.TIME_UNSET)
@@ -492,7 +473,7 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
             mMediaSource = mergedSource
             mInternalPlayer.setMediaSource(mergedSource, currentPosition)
             mInternalPlayer.prepare()
-            if (isPlaying) {
+            if (playWhenReady) {
                 mInternalPlayer.play()
             }
         }
@@ -502,7 +483,11 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
             .build()
-        val dataSourceFactory = DefaultDataSource.Factory(mContext)
+        val dataSourceFactory = mMediaSourceHelper.getDataSourceFactory(
+            uri.toString(),
+            mCurrentRequestHeaders,
+            isCacheEnabled
+        )
         externalAudioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
             .createMediaSource(mediaItem)
         rebuildAndPlayMergedSource()
@@ -517,7 +502,7 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
                 val mimeType = request.mimeType
                     ?: SubtitleMimeTypes.fromPath(request.uri.path)
                     ?: MimeTypes.APPLICATION_SUBRIP
-                attachExternalSubtitle(request.uri, mimeType, request.language)
+                attachExternalSubtitle(request.uri, mimeType, request.language, request.headers)
                 true
             }
             MediaTrackType.AUDIO -> {

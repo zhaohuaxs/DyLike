@@ -7,6 +7,7 @@ import android.view.SurfaceHolder;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.OptIn;
+import androidx.media3.common.C;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
@@ -42,6 +43,8 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
     protected ExoPlayer mInternalPlayer;
     protected MediaSource mMediaSource;
     protected ExoMediaSourceHelper mMediaSourceHelper;
+    /** 主视频请求头，供外挂字幕/音轨继承鉴权语义。 */
+    protected Map<String, String> mCurrentRequestHeaders;
 
     private PlaybackParameters mSpeedPlaybackParameters;
 
@@ -109,6 +112,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void setDataSource(String path, Map<String, String> headers) {
+        mCurrentRequestHeaders = headers == null ? null : new java.util.HashMap<>(headers);
         mMediaSource = mMediaSourceHelper.getMediaSource(path, headers);
     }
 
@@ -290,7 +294,12 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
         switch (action) {
             case CALL_PREPARED:
                 mPlayerEventListener.onPrepared();
-                mPlayerEventListener.onInfo(MEDIA_INFO_RENDERING_START, 0);
+                // READY 只代表时间轴可播放，不代表视频首帧已渲染。
+                // 纯音频没有 onRenderedFirstFrame，才把 prepared 作为播放起点上报。
+                if (mInternalPlayer != null
+                        && !mInternalPlayer.getCurrentTracks().containsType(C.TRACK_TYPE_VIDEO)) {
+                    mPlayerEventListener.onInfo(MEDIA_INFO_RENDERING_START, 0);
+                }
                 mIsPreparing = false;
                 break;
             case CALL_COMPLETION:
@@ -319,6 +328,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void onVideoSizeChanged(@NonNull VideoSize videoSize) {
+
         SurfaceRenderTrace.d("ExoMediaPlayer", "onVideoSizeChanged " + videoSize.width + "x" + videoSize.height + " rotation=" + videoSize.unappliedRotationDegrees);
         if (mPlayerEventListener != null) {
             mPlayerEventListener.onVideoSizeChanged(videoSize.width, videoSize.height);
@@ -330,6 +340,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void onRenderedFirstFrame() {
+
         SurfaceRenderTrace.d("ExoMediaPlayer", "onRenderedFirstFrame");
         if (mPlayerEventListener != null) {
             mPlayerEventListener.onInfo(MEDIA_INFO_RENDERING_START, 0);

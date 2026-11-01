@@ -1,7 +1,14 @@
 package me.lingci.dy.player.view;
 
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Bundle;
+import android.os.BatteryManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.AttributeSet;
 import android.view.GestureDetector;
 import android.view.LayoutInflater;
@@ -18,6 +25,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 
 import com.google.common.collect.Lists;
 
@@ -38,8 +46,7 @@ import xyz.doikki.videoplayer.util.PlayerUtils;
 public class ShortVideoControlView extends FrameLayout implements IControlComponent,
         GestureDetector.OnGestureListener,
         GestureDetector.OnDoubleTapListener,
-        ScaleGestureDetector.OnScaleGestureListener,
-        View.OnTouchListener {
+        ScaleGestureDetector.OnScaleGestureListener {
 
     private static final String SUBTITLE_GESTURE_TRACE_TAG = "SubtitleGestureTrace";
 
@@ -50,6 +57,17 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     }
 
     private final LayoutShortVideoControlViewBinding mBinding;
+
+    private BatteryReceiver mBatteryReceiver;
+    private boolean mIsRegister = false;
+    private final Handler mTimeHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mTimeTickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            mBinding.tvTime.setText(PlayerUtils.getCurrentSystemTime());
+            mTimeHandler.postDelayed(this, 60_000L);
+        }
+    };
 
     private ControlWrapper mControlWrapper;
     private final int mScaledTouchSlop;
@@ -66,6 +84,10 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     private boolean immersiveMode = false;
     /** 全局沉浸标志:任何 ControlView 进入沉浸时设为 true,所有实例共享。 */
     private static boolean globalImmersiveMode = false;
+
+    public static boolean isGlobalImmersive() {
+        return globalImmersiveMode;
+    }
     private boolean mIsSpeedLocked = false;
     private int mSeekPosition = -1;
     private boolean mFirstTouch;
@@ -101,6 +123,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
         void onSingleTap();
 
+        void onBack();
+
     }
 
     private OnShortVideoListener mOnShortVideoListener;
@@ -124,6 +148,11 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mBinding = LayoutShortVideoControlViewBinding.inflate(LayoutInflater.from(getContext()), this, true);
         //LayoutInflater.from(getContext()).inflate(R.layout.layout_tiktok_control_view, this, true);
         mScaledTouchSlop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
+        mBinding.ivBack.setOnClickListener(v -> {
+            if (mOnShortVideoListener != null) {
+                mOnShortVideoListener.onBack();
+            }
+        });
         mBinding.ivFull.setOnClickListener(v -> {
             if (!mControlWrapper.isPlaying()) {
                 mControlWrapper.togglePlay();
@@ -154,7 +183,13 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
                 mOnShortVideoListener.onMoreAction();
             }
         });
-        changeVisibility();
+        mBatteryReceiver = new BatteryReceiver(mBinding.tvBattery);
+        // 构造时根据全局沉浸态决定 UI 初始状态，避免滑动时相邻 item 先显示后隐藏
+        if (globalImmersiveMode) {
+            hideAllControlUi();
+        } else {
+            changeVisibility();
+        }
         mBinding.speedNode.setVisibility(GONE);
         mBinding.speedNode.setNodes(SPEED_NODES, 2);
         mBinding.tvProgress.setVisibility(GONE);
@@ -189,11 +224,42 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
                 mControlWrapper.startFadeOut();
             }
         });
-        setOnTouchListener(this);
     }
 
     public void setOnLikeClickListener(OnShortVideoListener onShortVideoListener) {
         this.mOnShortVideoListener = onShortVideoListener;
+    }
+
+    @SuppressLint("SetTextI18n")
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (!mIsRegister && mBatteryReceiver != null) {
+            ContextCompat.registerReceiver(getContext(), mBatteryReceiver,
+                    new IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED);
+            mIsRegister = true;
+        }
+        // 主动查询当前电量，不依赖 sticky broadcast 立即回放（首个 item 注册时机早于 Activity 完全激活，sticky 可能延迟）
+        BatteryManager bm = (BatteryManager) getContext().getSystemService(Context.BATTERY_SERVICE);
+        if (bm != null) {
+            int percent = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+            if (percent >= 0) {
+                mBinding.tvBattery.setText(percent + "%");
+            }
+        }
+        mBinding.tvTime.setText(PlayerUtils.getCurrentSystemTime());
+        mTimeHandler.postDelayed(mTimeTickRunnable, 60_000L);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        if (mIsRegister) {
+            getContext().unregisterReceiver(mBatteryReceiver);
+            mIsRegister = false;
+        }
+        mTimeHandler.removeCallbacks(mTimeTickRunnable);
     }
 
     public void setOnVideoTransformChangedListener(OnVideoTransformChangedListener listener) {
@@ -203,10 +269,16 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     // 解决单击：仅当确定不是双击时触发
     @Override
     public boolean onSingleTapConfirmed(@NonNull MotionEvent e) {
+        boolean wasImmersive = immersiveMode;
         if (mOnShortVideoListener != null) {
             mOnShortVideoListener.onSingleTap();
         }
+        // 第一次单击只退出沉浸并重新计时，不能同时切换播放状态。
+        if (wasImmersive) {
+            return true;
+        }
         if (mControlWrapper != null && !mControlWrapper.isFullScreen()) {
+            Log.d(this, "togglePlay", "isPlaying=" + mControlWrapper.isPlaying());
             mControlWrapper.togglePlay();
         }
         return true;
@@ -293,8 +365,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         return false;
     }
 
-    @Override
-    public boolean onTouch(View v, MotionEvent event) {
+    /** 唯一的多指/手势分发入口；每帧只喂 GestureDetector 一次。 */
+    private boolean handleTouch(MotionEvent event) {
         mScaleGestureDetector.onTouchEvent(event);
 
         int pointerCount = event.getPointerCount();
@@ -316,6 +388,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
                 cancelEvent.setAction(MotionEvent.ACTION_CANCEL);
                 mGestureDetector.onTouchEvent(cancelEvent);
                 cancelEvent.recycle();
+                // 第二指接管前取消旧横向 seek/长按业务状态，不能等合成 CANCEL 事件。
+                finishGesture(false);
                 break;
 
             case MotionEvent.ACTION_MOVE:
@@ -359,9 +433,9 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     @SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        mGestureDetector.onTouchEvent(event);
+        handleTouch(event);
 
-        int action = event.getAction();
+        int action = event.getActionMasked();
         switch (action) {
             case MotionEvent.ACTION_DOWN:
                 mFirstTouch = true;
@@ -389,42 +463,61 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
                 break;
 
             case MotionEvent.ACTION_UP:
+                finishGesture(true);
+                break;
             case MotionEvent.ACTION_CANCEL:
-                if (mChangePosition) {
-                    if (mSeekPosition >= 0) {
-                        mControlWrapper.seekTo(mSeekPosition);
-                    }
-                    mBinding.tvProgress.setVisibility(GONE);
-                    mControlWrapper.startProgress();
-                    mControlWrapper.startFadeOut();
-                }
-
-                if (mIsLongPressing) {
-                    if (mIsBottomLongPress) {
-                        // 下半部分长按结束：隐藏 speedNode
-                        mBinding.speedNode.setVisibility(GONE);
-                    } else if (mChangeLock) {
-                        if (mIsSpeedLocked) {
-                            releaseSpeed();
-                        } else {
-                            lockSpeed();
-                        }
-                        mChangeLock = false;
-                    } else {
-                        if (!mIsSpeedLocked) {
-                            resetSpeed();
-                        }
-                    }
-                }
-
-                mIsLongPressing = false;
-                mIsBottomLongPress = false;
-                mChangePosition = false;
-                mSeekPosition = -1;
-                getParent().requestDisallowInterceptTouchEvent(false);
+                finishGesture(false);
                 break;
         }
         return true;
+    }
+
+    /**
+     * 统一结束单指手势。CANCEL 与缩放接管只清理不提交 seek，也不切换锁速。
+     */
+    private void finishGesture(boolean commit) {
+        if (mChangePosition) {
+            if (commit && mSeekPosition >= 0 && mControlWrapper != null) {
+                mControlWrapper.seekTo(mSeekPosition);
+            }
+            mBinding.tvProgress.setVisibility(GONE);
+            if (mControlWrapper != null) {
+                mControlWrapper.startProgress();
+                mControlWrapper.startFadeOut();
+            }
+        }
+
+        if (mIsLongPressing) {
+            if (mIsBottomLongPress) {
+                mBinding.speedNode.setVisibility(GONE);
+            }
+            // 锁速是一个明确的用户手势，只在 UP 时切换；CANCEL 不改变锁状态。
+            if (commit && !mIsBottomLongPress && mChangeLock) {
+                if (mIsSpeedLocked) {
+                    releaseSpeed();
+                } else {
+                    lockSpeed();
+                }
+            } else if (!mIsSpeedLocked) {
+                // 本次临时倍速必须在取消/结束时归位。
+                resetSpeed();
+            }
+        }
+
+        mChangeLock = false;
+        mIsLongPressing = false;
+        mIsBottomLongPress = false;
+        mChangePosition = false;
+        mFirstTouch = false;
+        mSeekPosition = -1;
+        if (!mIsScaling && mCurrentScale <= 1.0f) {
+            getParent().requestDisallowInterceptTouchEvent(false);
+        }
+    }
+
+    /** Activity 用它暂停/恢复自动沉浸计时。 */
+    public boolean isUserInteracting() {
+        return mIsDragging || mIsLongPressing || mChangePosition || mIsScaling;
     }
 
     @SuppressLint("SetTextI18n")
@@ -516,10 +609,19 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         }
     }
 
-    /** 进入沉浸:隐藏 UI 覆盖层 + 系统栏。 */
-    public void enterImmersive() {
-        immersiveMode = true;
-        globalImmersiveMode = true;
+    /**
+     * 离开 active 期间隐藏播放按钮，避免滑动预览相邻 item 时残留显示。
+     * 与 STATE_PAUSED 的显示语义互不干扰：仅在切换/复用边界调用。
+     */
+    public void hidePlayButton() {
+
+        mBinding.playBtn.setVisibility(GONE);
+    }
+
+
+    /** 隐藏所有控制 UI（沉浸态视觉），不改变 immersiveMode 状态标志。 */
+    private void hideAllControlUi() {
+
         mBinding.tvTitle.setVisibility(GONE);
         mBinding.playLike.setVisibility(GONE);
         mBinding.layoutComment.setVisibility(GONE);
@@ -528,6 +630,17 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mBinding.ivMore.setVisibility(GONE);
         mBinding.playBtn.setVisibility(GONE);
         mBinding.ivFull.setVisibility(GONE);
+        mBinding.tvTime.setVisibility(GONE);
+        mBinding.tvBattery.setVisibility(GONE);
+        mBinding.ivBack.setVisibility(GONE);
+    }
+
+    /** 进入沉浸:隐藏 UI 覆盖层 + 系统栏。 */
+    public void enterImmersive() {
+
+        immersiveMode = true;
+        globalImmersiveMode = true;
+        hideAllControlUi();
         if (mOnShortVideoListener != null) {
             mOnShortVideoListener.onChangeSysBar(false);
         }
@@ -535,6 +648,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
     /** 退出沉浸:恢复 UI 覆盖层 + 系统栏。 */
     public void exitImmersive() {
+
         immersiveMode = false;
         globalImmersiveMode = false;
         changeVisibility();
@@ -551,6 +665,9 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mBinding.tvPage.setVisibility(PlayerInitializer.Player.INSTANCE.getShortShowPager() ? VISIBLE : GONE);
         mBinding.playSeekbar.setVisibility(PlayerInitializer.Player.INSTANCE.getShortShowSeekbar() ? VISIBLE : GONE);
         mBinding.ivMore.setVisibility(PlayerInitializer.Player.INSTANCE.getShortShowMore() ? VISIBLE : GONE);
+        mBinding.tvTime.setVisibility(VISIBLE);
+        mBinding.tvBattery.setVisibility(VISIBLE);
+        mBinding.ivBack.setVisibility(VISIBLE);
     }
 
     @SuppressLint("SetTextI18n")
@@ -581,12 +698,11 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     public void onPlayStateChanged(int playState) {
         switch (playState) {
             case VideoView.STATE_IDLE:
-                L.e("STATE_IDLE " + hashCode());
                 resetSpeed();
                 break;
             case VideoView.STATE_PLAYING:
-                L.e("STATE_PLAYING " + hashCode());
                 mBinding.playBtn.setVisibility(GONE);
+
                 if (!immersiveMode) {
                     changeVisibility();
                     int[] videoSize = mControlWrapper.getVideoSize();
@@ -599,14 +715,11 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
                 mControlWrapper.startProgress();
                 break;
             case VideoView.STATE_PAUSED:
-                L.e("STATE_PAUSED " + hashCode());
                 mBinding.playBtn.setVisibility(VISIBLE);
                 break;
             case VideoView.STATE_PREPARED:
-                L.e("STATE_PREPARED " + hashCode());
                 break;
             case VideoView.STATE_ERROR:
-                L.e("STATE_ERROR " + hashCode());
                 Toast.makeText(getContext(), me.lingci.lib.player.ui.R.string.dkplayer_error_message, Toast.LENGTH_SHORT).show();
                 break;
             case VideoView.STATE_PLAYBACK_COMPLETED:
@@ -683,7 +796,10 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
     private void resetSpeed() {
         mCurrentSpeed = 1;
-        mControlWrapper.setSpeed(mCurrentSpeed);
+        mIsSpeedLocked = false;
+        if (mControlWrapper != null) {
+            mControlWrapper.setSpeed(mCurrentSpeed);
+        }
         hideSpeedIndicator();
     }
 
@@ -784,6 +900,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
     @Override
     public boolean onScaleBegin(@NonNull ScaleGestureDetector detector) {
+        // 缩放接管前先取消旧横滑/长按，不提交 seek，避免同一手势产生双重业务。
+        finishGesture(false);
         mIsScaling = true;
         mHasScaled = false;
         mChangePosition = false;
@@ -960,6 +1078,24 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     private void notifyVideoTransformChanged() {
         if (mOnVideoTransformChangedListener != null) {
             mOnVideoTransformChangedListener.onVideoTransformChanged();
+        }
+    }
+
+    private static class BatteryReceiver extends BroadcastReceiver {
+        private final android.widget.TextView pow;
+
+        BatteryReceiver(android.widget.TextView pow) {
+            this.pow = pow;
+        }
+
+        @SuppressLint("SetTextI18s")
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level < 0 || scale <= 0) return;
+            int percent = level * 100 / scale;
+            pow.setText(percent + "%");
         }
     }
 

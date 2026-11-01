@@ -70,6 +70,13 @@ class PlaybackService : Service() {
     var skipCallback: ((Int) -> Unit)? = null
 
     /**
+     * 会话被 Service 侧终止(通知栏关闭/播放失败)时通知 Activity。
+     * Activity 自行决定恢复或终止；回调只做"事件通知"，不传递 player 引用。
+     */
+    @Volatile
+    var playerClosedCallback: ((String) -> Unit)? = null
+
+    /**
      * seek 目标位置(ms)。用户拖动进度条/后退/前进时设置。
      * progressRunnable 优先用它显示(避免 seek 异步期间进度回退),
      * 当 player 实际 position 追上后清除。
@@ -83,6 +90,11 @@ class PlaybackService : Service() {
             Log.i(TAG, "playPauseReceiver onReceive: ${intent?.action}")
             when (intent?.action) {
                 PlaybackAction.ACTION_PLAY -> {
+                    // F2-3：播放前必须真正持有音频焦点，未获批不发声
+                    if (!requestAudioFocus()) {
+                        Log.i(TAG, "ACTION_PLAY ignored: audio focus denied")
+                        return
+                    }
                     player?.start()
                     updateMediaSession(metadata ?: return, isPlaying = true)
                     updateNotification()
@@ -103,17 +115,18 @@ class PlaybackService : Service() {
                 }
                 PlaybackAction.ACTION_NEXT, PlaybackAction.ACTION_PREV -> {
                     // 后台切集:通过回调让 Activity 切集(不拉起 Activity 到前台)。
-                    // Activity 切集后新 player 起播时重新 detach 给 Service。
+                    // Activity 切集后新 player 起播时重新交回 Service。
                     val cb = skipCallback ?: return
                     val direction = if (intent?.action == PlaybackAction.ACTION_NEXT) 1 else -1
-                    android.os.Handler(android.os.Looper.getMainLooper()).post { cb(direction) }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        try {
+                            cb(direction)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "skip callback failed: ${e.message}")
+                        }
+                    }
                 }
-                PlaybackAction.ACTION_CLOSE -> {
-                    player?.release()
-                    player = null
-                    stopForegroundAndNotification()
-                    stopSelf()
-                }
+                PlaybackAction.ACTION_CLOSE -> closeSession("notification_close")
             }
         }
     }
@@ -191,7 +204,13 @@ class PlaybackService : Service() {
         updateNotification()
         // M2: 先释放可能存在的旧 AudioFocus,再重新申请,避免反复 takePlayer 导致 focus 泄漏
         abandonAudioFocus()
-        requestAudioFocus()
+        if (!requestAudioFocus() && player.isPlaying) {
+            // 未获批焦点时不允许继续出声（F2-3）
+            Log.i(TAG, "takePlayer: focus denied, pausing")
+            player.pause()
+            updateMediaSession(metadata, isPlaying = false)
+            updateNotification()
+        }
         // 启动进度条定时刷新
         progressHandler.removeCallbacks(progressRunnable)
         progressHandler.post(progressRunnable)
@@ -199,14 +218,62 @@ class PlaybackService : Service() {
     }
 
     /** Activity 取回 player。 */
-    fun returnPlayer(): AbstractPlayer? {
+    fun returnPlayer(): AbstractPlayer? = returnPlayer(stopService = true)
+
+    /**
+     * Activity 取回 player。
+     *
+     * @param stopService true = 最终 reclaim，停前台通知并自停；
+     *                    false = 后台切集等"临时取回"，保留绑定与 FGS，
+     *                    新 player 可在同一个 Service 实例上交回（避免 Android 12+ 后台起 FGS 崩溃）。
+     */
+    fun returnPlayer(stopService: Boolean): AbstractPlayer? {
         progressHandler.removeCallbacks(progressRunnable)
         val p = player
         player = null
         abandonAudioFocus()
-        stopForegroundAndNotification()
-        Log.i(TAG, "returned player")
+        if (stopService) {
+            stopForegroundAndNotification()
+        }
+        Log.i(TAG, "returned player, stopService=$stopService")
         return p
+    }
+
+    /** 没有任何 player 时收尾，避免 Started Service 与前台通知残留。 */
+    fun stopIfNoPlayer() {
+        if (player != null) return
+        progressHandler.removeCallbacks(progressRunnable)
+        stopForegroundAndNotification()
+        stopSelf()
+        Log.i(TAG, "stopped: no player held")
+    }
+
+    /**
+     * 会话唯一出口：通知栏关闭、不可恢复错误等都会走到这里。
+     * 先释放 player 并收拾通知，再通知 Activity 决定恢复或终止，保证不留孤立会话。
+     */
+    fun closeSession(reason: String) {
+        Log.i(TAG, "closeSession: $reason")
+        progressHandler.removeCallbacks(progressRunnable)
+        player?.release()
+        player = null
+        metadata = null
+        pendingSeekPosition = -1L
+        abandonAudioFocus()
+        val closed = playerClosedCallback
+        skipCallback = null
+        playerClosedCallback = null
+        stopForegroundAndNotification()
+        stopSelf()
+        if (closed != null) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try {
+                    closed(reason)
+                } catch (e: Exception) {
+                    Log.w(TAG, "playerClosedCallback failed: ${e.message}")
+                }
+            }
+        }
     }
 
     fun updateMetadata(metadata: PlaybackMetadata) {
@@ -231,9 +298,15 @@ class PlaybackService : Service() {
      * 释放 player 停止播放。
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "onTaskRemoved: stop playback")
+        progressHandler.removeCallbacks(progressRunnable)
         player?.release()
         player = null
+        metadata = null
         abandonAudioFocus()
+        // 进程被划掉：清掉 Activity 闭包，避免无主引用
+        skipCallback = null
+        playerClosedCallback = null
         stopForegroundAndNotification()
         stopSelf()
         super.onTaskRemoved(rootIntent)
@@ -249,6 +322,8 @@ class PlaybackService : Service() {
         unregisterPlayPauseReceiver()
         mediaSession?.release()
         mediaSession = null
+        skipCallback = null
+        playerClosedCallback = null
         Log.i(TAG, "PlaybackService destroyed")
     }
 
@@ -261,7 +336,12 @@ class PlaybackService : Service() {
                     MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
             )
             setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() { Log.i(TAG, "MediaSession onPlay"); player?.start(); updateNotification() }
+                override fun onPlay() {
+                    Log.i(TAG, "MediaSession onPlay")
+                    if (!requestAudioFocus()) return
+                    player?.start()
+                    updateNotification()
+                }
                 override fun onPause() { Log.i(TAG, "MediaSession onPause"); player?.pause(); updateNotification() }
                 override fun onStop() { Log.i(TAG, "MediaSession onStop"); player?.stop() }
                 override fun onSkipToNext() { playPauseReceiver.onReceive(this@PlaybackService, Intent(PlaybackAction.ACTION_NEXT)) }
@@ -378,7 +458,7 @@ class PlaybackService : Service() {
 
     // === AudioFocus ===
 
-    private fun requestAudioFocus() {
+    private fun requestAudioFocus(): Boolean {
         audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focus ->
             when (focus) {
                 AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
@@ -394,7 +474,7 @@ class PlaybackService : Service() {
                 }
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val attrs = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -403,15 +483,17 @@ class PlaybackService : Service() {
                 .setAudioAttributes(attrs)
                 .setOnAudioFocusChangeListener(audioFocusChangeListener!!)
                 .build()
-            audioManager?.requestAudioFocus(audioFocusRequest!!)
+            audioManager?.requestAudioFocus(audioFocusRequest!!) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } else {
             @Suppress("DEPRECATION")
             audioManager?.requestAudioFocus(
                 audioFocusChangeListener,
                 AudioManager.STREAM_MUSIC,
                 AudioManager.AUDIOFOCUS_GAIN
-            )
+            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
+        Log.i(TAG, "requestAudioFocus granted=$granted")
+        return granted
     }
 
     private fun abandonAudioFocus() {

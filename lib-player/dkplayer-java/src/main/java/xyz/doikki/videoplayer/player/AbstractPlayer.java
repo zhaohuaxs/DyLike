@@ -154,6 +154,22 @@ public abstract class AbstractPlayer {
     public abstract long getTcpSpeed();
 
     /**
+     * 是否允许在保持 render view 与 native 实例的情况下换源。
+     * 默认 false，后端必须显式声明支持，避免改变 Exo/IJK 的既有释放语义。
+     */
+    public boolean canReuseForNewMedia() {
+        return false;
+    }
+
+    /**
+     * 切换播放源前禁用视频输出，清掉旧帧避免 surface 重建时残影。
+     * 默认空实现，仅 mpv 等支持视频轨开关的后端 override。
+     * 恢复时机由后端在 loadfile 后自动触发，调用方无需手动 restore。
+     */
+    public void suppressVideoForSwitch() {
+    }
+
+    /**
      * 绑定VideoView
      */
     public void setPlayerEventListener(PlayerEventListener playerEventListener) {

@@ -70,6 +70,7 @@ public abstract class BaseVideoController extends FrameLayout
 
     //是否开始刷新进度
     private boolean mIsStartProgress;
+    private int mCurrentPlayState = VideoView.STATE_IDLE;
 
     //保存了所有的控制组件
     protected LinkedHashMap<IControlComponent, Boolean> mControlComponents = new LinkedHashMap<>();
@@ -153,6 +154,7 @@ public abstract class BaseVideoController extends FrameLayout
      *                     并将 isDissociate 设置为 true 来实现这种效果。
      */
     public void addControlComponent(IControlComponent component, boolean isDissociate) {
+
         mControlComponents.put(component, isDissociate);
         if (mControlWrapper != null) {
             component.attach(mControlWrapper);
@@ -167,6 +169,7 @@ public abstract class BaseVideoController extends FrameLayout
      * 移除某个控制组件
      */
     public void removeControlComponent(IControlComponent component) {
+
         removeView(component.getView());
         mControlComponents.remove(component);
     }
@@ -287,10 +290,16 @@ public abstract class BaseVideoController extends FrameLayout
      */
     @Override
     public void startProgress() {
-        //if (mIsStartProgress) return;
+        if (mIsStartProgress || !shouldRefreshProgress()) return;
         removeCallbacks(mShowProgress);
         post(mShowProgress);
         mIsStartProgress = true;
+    }
+
+    private boolean shouldRefreshProgress() {
+        return mCurrentPlayState == VideoView.STATE_PLAYING
+                || mCurrentPlayState == VideoView.STATE_BUFFERING
+                || mCurrentPlayState == VideoView.STATE_BUFFERED;
     }
 
     /**
@@ -309,13 +318,15 @@ public abstract class BaseVideoController extends FrameLayout
     protected Runnable mShowProgress = new Runnable() {
         @Override
         public void run() {
-            if (mControlWrapper == null) return;
-            int pos = setProgress();
-            if (mControlWrapper.isPlaying()) {
-                postDelayed(this, (long) ((1000 - pos % 1000) / mControlWrapper.getSpeed()));
-            } else if (mIsStartProgress) {
-                postDelayed(this, 1000);
+            if (mControlWrapper == null || !shouldRefreshProgress()) {
+                mIsStartProgress = false;
+                removeCallbacks(this);
+                return;
             }
+            int pos = setProgress();
+            postDelayed(this, mControlWrapper.isPlaying()
+                    ? (long) ((1000 - pos % 1000) / Math.max(0.1f, mControlWrapper.getSpeed()))
+                    : 1000);
         }
     };
 
@@ -340,6 +351,12 @@ public abstract class BaseVideoController extends FrameLayout
         if (mControlWrapper != null && mControlWrapper.isPlaying()) {
             startProgress();
         }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        stopProgress();
+        super.onDetachedFromWindow();
     }
 
     /**
@@ -557,16 +574,18 @@ public abstract class BaseVideoController extends FrameLayout
     }
 
     private void handlePlayStateChanged(int playState) {
+        mCurrentPlayState = playState;
+
         for (Map.Entry<IControlComponent, Boolean> next
                 : mControlComponents.entrySet()) {
             IControlComponent component = next.getKey();
             component.onPlayStateChanged(playState);
         }
         onPlayStateChanged(playState);
-        if (playState != VideoView.STATE_PAUSED
-                && playState != VideoView.STATE_ERROR
-                && playState != VideoView.STATE_PLAYBACK_COMPLETED) {
+        if (shouldRefreshProgress()) {
             startProgress();
+        } else {
+            stopProgress();
         }
     }
 
@@ -602,8 +621,6 @@ public abstract class BaseVideoController extends FrameLayout
             component.onPlayerStateChanged(playerState);
         }
         onPlayerStateChanged(playerState);
-        // 进度条不刷新补救
-        startProgress();
     }
 
     /**

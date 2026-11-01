@@ -75,6 +75,15 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
 
     protected long mCurrentPosition;//当前正在播放视频的位置
 
+    /**
+     * 用户播放意图，与当前瞬时状态分离。PREPARING/BUFFERING 时也必须被尊重，
+     * 否则一次后台 pause 会被后续 ready/first-frame 回调覆盖。
+     */
+    protected boolean mPlayWhenReady = true;
+
+    /** player 已交给后台 Service，但 render view 仍保留。 */
+    protected boolean mPlayerDetached;
+
     //播放器的各种状态
     public static final int STATE_ERROR = -1;
     public static final int STATE_IDLE = 0;
@@ -193,12 +202,69 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void start() {
+        mPlayWhenReady = true;
         if (isInIdleState()
-                || isInStartAbortState()) {
+                || isInStartAbortState()
+                || mMediaPlayer == null) {
             startPlay();
-        } else if (isInPlaybackState()) {
-            startInPlaybackState();
+            return;
         }
+        if (mCurrentPlayState == STATE_ERROR) {
+            // 可恢复错误的重试必须重建/重置源，不能对错误态 player 直接 start()。
+            release();
+            startPlay();
+            return;
+        }
+        if (mCurrentPlayState == STATE_PLAYBACK_COMPLETED) {
+            replay(false);
+            return;
+        }
+        startInPlaybackState();
+    }
+
+    /**
+     * 切换播放源前禁用视频输出，清旧帧避免 surface 重建残影。
+     * 可复用内核（mpv）用 vid=no 清 framebuffer；不可复用内核（exo）release 销毁 player，
+     * reparent 时 surfaceChanged 检查 mMediaPlayer==null 不绑定旧帧，避免拉伸。
+     */
+    public void suppressVideoForSwitch() {
+        if (mMediaPlayer != null) {
+            if (mMediaPlayer.canReuseForNewMedia()) {
+                mMediaPlayer.suppressVideoForSwitch();
+            } else {
+                release();
+            }
+        }
+    }
+
+    /**
+     * 切换视频源：调用前先 {@link #setUrl(String, Map)}。
+     * 后端声明可复用时保留 player/render view，只 reset+prepare 新源；
+     * 否则退回完整的 release + start。该方法避免长/短视频每次都重建 MPV。
+     */
+    public void startOrReplace() {
+        if (mMediaPlayer != null && mRenderView != null
+                && mMediaPlayer.canReuseForNewMedia()) {
+
+            try {
+                // 进度快照已由 setUrl 在切换 mUrl 之前完成，这里不能再存一次，
+                // 否则旧位置会被写到新媒体的进度上。
+                mMediaPlayer.setPlayerEventListener(this);
+                mMediaPlayer.reset();
+                mMediaPlayer.setSpeed(1f);
+                mPlayWhenReady = true;
+                setOptions();
+                startPrepareAfterReset();
+            } catch (Exception e) {
+                L.e("startOrReplace failed, rebuilding player: " + e.getMessage());
+                e.printStackTrace();
+                release();
+                start();
+            }
+            return;
+        }
+        release();
+        start();
     }
 
     /**
@@ -216,7 +282,13 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
         //监听音频焦点改变
         if (mEnableAudioFocus) {
             mAudioFocusHelper = new AudioFocusHelper(this);
+            if (!mIsMute) {
+                // 未获批时不直接依赖底层 prepare 后自动出声，onPrepared 会保持暂停。
+                mAudioFocusHelper.requestFocus();
+            }
         }
+        mPlayWhenReady = true;
+        mPlayerDetached = false;
         //读取播放进度
         if (mProgressManager != null) {
             mCurrentPosition = mProgressManager.getSavedProgress(mUrl);
@@ -303,10 +375,18 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
             //重新设置option，media player reset之后，option会失效
             setOptions();
         }
+        startPrepareAfterReset();
+    }
+
+    /** 数据源已经 reset/设置完毕后，提交唯一的一次 prepare。 */
+    protected void startPrepareAfterReset() {
         if (prepareDataSource()) {
             mMediaPlayer.prepareAsync();
             setPlayState(STATE_PREPARING);
             setPlayerState(isFullScreen() ? PLAYER_FULL_SCREEN : isTinyScreen() ? PLAYER_TINY_SCREEN : PLAYER_NORMAL);
+        } else {
+            // 已经创建 player/render 但数据源无效时不能停留在 IDLE，否则 release 会泄漏资源。
+            setPlayState(STATE_ERROR);
         }
     }
 
@@ -329,10 +409,22 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      * 播放状态下开始播放
      */
     protected void startInPlaybackState() {
+        if (mMediaPlayer == null) {
+            return;
+        }
+        if (mCurrentPlayState != STATE_PREPARING
+                && mCurrentPlayState != STATE_BUFFERING
+                && mAudioFocusHelper != null
+                && !mIsMute
+                && !mAudioFocusHelper.requestFocus()) {
+            // 用户意图保持为播放，焦点延迟获批时由 AudioFocusHelper 再次调用 start()。
+            mPlayWhenReady = true;
+            return;
+        }
         mMediaPlayer.start();
-        setPlayState(STATE_PLAYING);
-        if (mAudioFocusHelper != null && !isMute()) {
-            mAudioFocusHelper.requestFocus();
+        // PREPARING/BUFFERING 只提交 playWhenReady，真实播放状态由 ready/首帧事件决定。
+        if (mCurrentPlayState != STATE_PREPARING && mCurrentPlayState != STATE_BUFFERING) {
+            setPlayState(STATE_PLAYING);
         }
         mPlayerContainer.setKeepScreenOn(true);
         // 音频渐入
@@ -346,8 +438,10 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void pause() {
-        if (isInPlaybackState()
-                && mMediaPlayer.isPlaying()) {
+        mPlayWhenReady = false;
+        if (mMediaPlayer != null && (isInPlaybackState()
+                || mCurrentPlayState == STATE_PREPARING
+                || mCurrentPlayState == STATE_BUFFERING)) {
             mMediaPlayer.pause();
             setPlayState(STATE_PAUSED);
             if (mAudioFocusHelper != null && !isMute()) {
@@ -365,18 +459,9 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      * 继续播放
      */
     public void resume() {
-        if (isInPlaybackState()
-                && !mMediaPlayer.isPlaying()) {
-            mMediaPlayer.start();
-            setPlayState(STATE_PLAYING);
-            if (mAudioFocusHelper != null && !isMute()) {
-                mAudioFocusHelper.requestFocus();
-            }
-            mPlayerContainer.setKeepScreenOn(true);
-            // 恢复音频渐变
-            if (mAudioFadeHelper != null) {
-                mAudioFadeHelper.resume();
-            }
+        mPlayWhenReady = true;
+        if (mMediaPlayer != null && !mMediaPlayer.isPlaying()) {
+            startInPlaybackState();
         }
     }
 
@@ -384,12 +469,20 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      * 释放播放器
      */
     public void release() {
-        if (!isInIdleState()) {
-            //释放播放器
+        // IDLE 只表示"未在播"，不代表没有资源：prepareDataSource 失败后可能已有
+        // player/render view，必须按真实资源判断，不能只看状态。
+        if (mMediaPlayer != null || mRenderView != null || mAssetFileDescriptor != null) {
+            // 必须在 player.release/null 之前取快照。getDuration() 依赖 player，
+            // 旧顺序会让 duration 恒为 0，导致末尾进度不被清零。
+            saveProgressSnapshot();
+            mPlayWhenReady = false;
+
             if (mMediaPlayer != null) {
+                mMediaPlayer.setPlayerEventListener(null);
                 mMediaPlayer.release();
                 mMediaPlayer = null;
             }
+            mPlayerDetached = false;
             //释放renderView
             if (mRenderView != null) {
                 mPlayerContainer.removeView(mRenderView.getView());
@@ -403,6 +496,7 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
+                mAssetFileDescriptor = null;
             }
             //关闭AudioFocus监听
             if (mAudioFocusHelper != null) {
@@ -415,8 +509,6 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
             }
             //关闭屏幕常亮
             mPlayerContainer.setKeepScreenOn(false);
-            //保存播放进度
-            saveProgress();
             //重置播放进度
             mCurrentPosition = 0;
             //切换转态
@@ -439,25 +531,24 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
         if (player == null) {
             return null;
         }
-        // 停止视频解码但保留音频(setVideoSurface(null) 是 Media3 标准 API)
-        // 这样后台 Service 接管后，player 继续播音频不解码视频
+        // 保存快照后再解绑，render view 不释放，回前台可重新绑定。
+        saveProgressSnapshot();
         try {
+            // MPV/Exo 的显式解绑语义由后端处理；null surface 在后端必须支持。
             player.setSurface(null);
         } catch (Exception e) {
-            // 某些 backend 可能不支持，忽略
+            L.e("detach surface failed: " + e.getMessage());
         }
-        // 解除 player 的事件监听(避免 detach 后事件还回到 view)
-        // 注意:不 setPlayerEventListener(null),因为 AbstractPlayer 没有空 setter;
-        // 事件回调会继续触发但 view 处于中间态,回调里要判 mMediaPlayer != null
         mMediaPlayer = null;
-        // 不动 mRenderView:保留它的 surface,等 attach 时重新绑定
+        mPlayerDetached = true;
+        mPlayerContainer.setKeepScreenOn(false);
         return player;
     }
 
     /**
      * 放回 player 实例，从前台 Service 取回后恢复显示。
-     *
-     * @param player 之前通过 {@link #detachPlayerForBackground} 取出的 player
+     * 同时重新申请音频焦点：Service 在 returnPlayer 时已 abandon，
+     * 只把开关设回 true 并不会真的持有焦点（F2-3）。
      */
     @SuppressWarnings("unchecked")
     public void attachPlayerFromBackground(AbstractPlayer player) {
@@ -465,21 +556,48 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
             return;
         }
         mMediaPlayer = (P) player;
-        // 重新绑定 surface:如果 mRenderView 存在且 surface 可用,
-        // 通过 render view 的 onSurfaceTextureAvailable 逻辑重新绑定。
-        // 但 onSurfaceTextureAvailable 只在 surface 首次创建时触发,
-        // 这里需要主动调 setSurface。
+        mPlayerDetached = false;
+        mMediaPlayer.setPlayerEventListener(this);
         if (mRenderView != null) {
-            // mRenderView 持有的 surface 可能已失效(TextureView 仍 attached 时 surface 应该还在)
-            // 重新 attach 会触发 onSurfaceTextureAvailable → setSurface
-            // 但如果 surface 已经 available(没销毁过),需要手动调一次
-            // 安全做法:让 render view 重新走一遍 attach 流程
             mRenderView.attachToPlayer(mMediaPlayer);
         }
-        // 恢复 keep screen on(如果正在播放)
-        if (mMediaPlayer != null && mMediaPlayer.isPlaying()) {
+        if (mEnableAudioFocus) {
+            if (mAudioFocusHelper == null) {
+                mAudioFocusHelper = new AudioFocusHelper(this);
+            }
+            if (!mIsMute) {
+                mAudioFocusHelper.requestFocus();
+            }
+        }
+        if (mMediaPlayer.isPlaying()) {
             mPlayerContainer.setKeepScreenOn(true);
         }
+    }
+
+    /** 保存进度（不依赖当前状态，释放和 detach 共用）。 */
+    protected void saveProgressSnapshot() {
+        if (mProgressManager == null) {
+            return;
+        }
+        long position = mCurrentPosition;
+        long duration = 0;
+        if (mMediaPlayer != null) {
+            try {
+                long livePosition = mMediaPlayer.getCurrentPosition();
+                if (livePosition > 0) {
+                    position = livePosition;
+                }
+                duration = mMediaPlayer.getDuration();
+            } catch (Exception ignored) {
+                // 释放中的后端可能拒绝查询，保留最后一次已知位置。
+            }
+        }
+        if (position <= 0) {
+            return;
+        }
+        long saved = xyz.doikki.videoplayer.util.ProgressUtils.computeSavedProgress(position, duration);
+        L.d("saveProgress: pos=" + position + " dur=" + duration + " saved=" + saved);
+        mProgressManager.saveProgress(mUrl, saved);
     }
 
     /**
@@ -487,10 +605,7 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     protected void saveProgress() {
         if (mProgressManager != null && mCurrentPosition > 0) {
-            long duration = getDuration();
-            long saved = xyz.doikki.videoplayer.util.ProgressUtils.computeSavedProgress(mCurrentPosition, duration);
-            L.d("saveProgress: pos=" + mCurrentPosition + " dur=" + duration + " saved=" + saved);
-            mProgressManager.saveProgress(mUrl, saved);
+            saveProgressSnapshot();
         }
     }
 
@@ -527,10 +642,21 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void replay(boolean resetPosition) {
+        if (mMediaPlayer == null || mRenderView == null) {
+            // player 已释放时不能 addDisplay(null)/reset()；有数据源则走完整起播。
+            if (!TextUtils.isEmpty(mUrl) || mAssetFileDescriptor != null) {
+                if (!resetPosition) {
+                    mCurrentPosition = mProgressManager != null
+                            ? mProgressManager.getSavedProgress(mUrl) : mCurrentPosition;
+                }
+                start();
+            }
+            return;
+        }
         if (resetPosition) {
             mCurrentPosition = 0;
         }
-        addDisplay();
+        mPlayWhenReady = true;
         startPrepare(true);
     }
 
@@ -539,22 +665,19 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public long getDuration() {
-        if (isInPlaybackState()) {
+        if (mMediaPlayer != null && mCurrentPlayState != STATE_ERROR && mCurrentPlayState != STATE_IDLE) {
             return mMediaPlayer.getDuration();
         }
         return 0;
     }
 
-    /**
-     * 获取当前播放的位置
-     */
     @Override
     public long getCurrentPosition() {
-        if (isInPlaybackState()) {
+        if (mMediaPlayer != null && mCurrentPlayState != STATE_ERROR && mCurrentPlayState != STATE_IDLE) {
             mCurrentPosition = mMediaPlayer.getCurrentPosition();
             return mCurrentPosition;
         }
-        return 0;
+        return mCurrentPosition;
     }
 
     /**
@@ -612,10 +735,12 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onPrepared() {
-        setPlayState(STATE_PREPARED);
-        if (!isMute() && mAudioFocusHelper != null) {
-            mAudioFocusHelper.requestFocus();
+        if (mPlayerDetached) {
+            dispatchDetachedState(STATE_PREPARED);
+            return;
         }
+        setPlayState(STATE_PREPARED);
+        boolean focusReady = mIsMute || mAudioFocusHelper == null || mAudioFocusHelper.requestFocus();
         if (mCurrentPosition > 0) {
             long duration = getDuration();
             if (xyz.doikki.videoplayer.util.ProgressUtils.isNearEnd(mCurrentPosition, duration)) {
@@ -628,6 +753,18 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
                 seekTo(mCurrentPosition);
             }
         }
+        if (!mPlayWhenReady || !focusReady) {
+            // Exo/MPV 可能已经自行开始，必须把用户暂停/焦点未获批意图再提交给内核。
+            if (mMediaPlayer != null) {
+                mMediaPlayer.pause();
+            }
+            setPlayState(STATE_PAUSED);
+            return;
+        }
+        // 显式提交起播：Exo 的 onRenderedFirstFrame 可能在 onPrepared 之前触发，
+        // 此时状态会被 STATE_PREPARED 覆盖，必须在这里重新推进到 PLAYING，
+        // 否则控制器因 isInPlaybackState() 排除 PREPARED 而无法弹出。
+        startInPlaybackState();
         // 音频渐入
         if (mAudioFadeHelper != null) {
             mAudioFadeHelper.startFadeIn();
@@ -639,6 +776,16 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onInfo(int what, int extra) {
+        if (mPlayerDetached) {
+            if (what == AbstractPlayer.MEDIA_INFO_BUFFERING_START) {
+                dispatchDetachedState(STATE_BUFFERING);
+            } else if (what == AbstractPlayer.MEDIA_INFO_BUFFERING_END) {
+                dispatchDetachedState(STATE_BUFFERED);
+            } else if (what == AbstractPlayer.MEDIA_INFO_RENDERING_START) {
+                dispatchDetachedState(STATE_PLAYING);
+            }
+            return;
+        }
         switch (what) {
             case AbstractPlayer.MEDIA_INFO_BUFFERING_START:
                 setPlayState(STATE_BUFFERING);
@@ -648,15 +795,19 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
                 }
                 break;
             case AbstractPlayer.MEDIA_INFO_BUFFERING_END:
-                setPlayState(STATE_BUFFERED);
+                // 缓冲结束不能覆盖用户暂停意图。
+                setPlayState(mPlayWhenReady ? STATE_BUFFERED : STATE_PAUSED);
                 // 缓冲结束时恢复渐变
                 if (mAudioFadeHelper != null) {
                     mAudioFadeHelper.onBufferingEnd();
                 }
                 break;
-            case AbstractPlayer.MEDIA_INFO_RENDERING_START: // 视频/音频开始渲染
-                setPlayState(STATE_PLAYING);
-                mPlayerContainer.setKeepScreenOn(true);
+            case AbstractPlayer.MEDIA_INFO_RENDERING_START:
+                // 不得用首帧事件覆盖 BUFFERING/PAUSED；只更新屏幕常亮。
+                if (mPlayWhenReady && mCurrentPlayState != STATE_BUFFERING) {
+                    setPlayState(STATE_PLAYING);
+                    mPlayerContainer.setKeepScreenOn(true);
+                }
                 break;
             case AbstractPlayer.MEDIA_INFO_VIDEO_ROTATION_CHANGED:
                 if (mRenderView != null) mRenderView.setVideoRotation(extra);
@@ -669,6 +820,10 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onError() {
+        if (mPlayerDetached) {
+            dispatchDetachedState(STATE_ERROR);
+            return;
+        }
         mPlayerContainer.setKeepScreenOn(false);
         setPlayState(STATE_ERROR);
         // 播放错误时取消渐变
@@ -682,8 +837,13 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onCompletion() {
+        if (mPlayerDetached) {
+            dispatchDetachedState(STATE_PLAYBACK_COMPLETED);
+            return;
+        }
         mPlayerContainer.setKeepScreenOn(false);
         mCurrentPosition = 0;
+        mPlayWhenReady = false;
         if (mProgressManager != null) {
             //播放完成，清除进度
             mProgressManager.saveProgress(mUrl, 0);
@@ -693,6 +853,20 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
             mAudioFadeHelper.onCompletion();
         }
         setPlayState(STATE_PLAYBACK_COMPLETED);
+    }
+
+    /**
+     * detach 后 player 的终态只能通知监听者，不能修改 View 的状态字段，
+     * 否则 Service 的真实状态与前台 View 会分叉。
+     */
+    private void dispatchDetachedState(int playState) {
+        if (mOnStateChangeListeners != null) {
+            for (OnStateChangeListener l : PlayerUtils.getSnapshot(mOnStateChangeListeners)) {
+                if (l != null) {
+                    l.onPlayStateChanged(playState);
+                }
+            }
+        }
     }
 
     /**
@@ -749,6 +923,11 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      * @param headers 请求头
      */
     public void setUrl(String url, Map<String, String> headers) {
+        // 换源前必须先按"旧 url"落盘进度：setUrl 之后 mUrl 已是新媒体，
+        // 任何后续快照(release/startOrReplace)都会把旧位置写到新视频名下。
+        if (mUrl != null && !mUrl.equals(url)) {
+            saveProgressSnapshot();
+        }
         mAssetFileDescriptor = null;
         mUrl = url;
         mHeaders = headers;
@@ -1037,6 +1216,7 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
     public void onVideoSizeChanged(int videoWidth, int videoHeight) {
         mVideoSize[0] = videoWidth;
         mVideoSize[1] = videoHeight;
+
 
         if (mRenderView != null) {
             mRenderView.setScaleType(mCurrentScreenScaleType);

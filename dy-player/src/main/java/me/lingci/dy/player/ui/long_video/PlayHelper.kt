@@ -161,14 +161,29 @@ object PlayHelper {
             }
             if (!file.exists()) {
                 try {
-                    file.createNew()
                     scope.launch(Dispatchers.Main) {
+                        // 截图读取位于主线程（渲染器契约），压缩与写盘仍留在 IO；
+                        // 先写临时文件再原子改名，避免失败时留下空缩略图（F4-3）。
                         videoView.doScreenShot()?.let { bitmap ->
                             scope.launch(Dispatchers.IO) {
-                                FileOutputStream(file).use { fos ->
-                                    bitmap.compress(AppUtil.COMPRESS_FORMAT, 75, fos)
-                                    fos.flush()
-                                    logD("save thumb", file.path)
+                                val tmp = File(file.parentFile, "${file.name}.tmp")
+                                try {
+                                    FileOutputStream(tmp).use { fos ->
+                                        bitmap.compress(AppUtil.COMPRESS_FORMAT, 75, fos)
+                                        fos.flush()
+                                    }
+                                    if (tmp.length() > 0L) {
+                                        if (file.exists()) file.delete()
+                                        if (tmp.renameTo(file)) {
+                                            logD("save thumb", file.path)
+                                        } else {
+                                            logD("save thumb rename failed", file.path)
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    logD("save thumb failed: ${e.message}", e)
+                                } finally {
+                                    if (tmp.exists()) tmp.delete()
                                 }
                             }
                         }
@@ -303,19 +318,17 @@ object PlayHelper {
                         }
                     }
                 } else {
-                    scope.launch(Dispatchers.Main) {
-                        videoView.doScreenShot().let { bitmap ->
-                            if (bitmap == null) {
-                                onBack.invoke(false)
-                            } else {
-                                scope.launch(Dispatchers.IO) {
-                                    ImageConverter().saveImageToMediaStore(
-                                        videoView.context, bitmap, folder, fileName
-                                    ).let {
-                                        onBack.invoke(it != null)
-                                    }
-                                }
-                            }
+                    // 截图读取（含 MPV 命令投递 + 文件轮询 + 解码）必须离开主线程，
+                    // 否则 MPV 的 screenshot-to-file 等待会阻塞 UI 500ms+（F4-3）。
+                    scope.launch(Dispatchers.IO) {
+                        val bitmap = videoView.doScreenShot()
+                        if (bitmap == null) {
+                            scope.launch(Dispatchers.Main) { onBack.invoke(false) }
+                        } else {
+                            val saved = ImageConverter().saveImageToMediaStore(
+                                videoView.context, bitmap, folder, fileName
+                            ) != null
+                            scope.launch(Dispatchers.Main) { onBack.invoke(saved) }
                         }
                     }
                 }

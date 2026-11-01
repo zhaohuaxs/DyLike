@@ -29,6 +29,8 @@ import kotlinx.coroutines.withContext
 import me.lingci.dy.player.databinding.ActivityLongVideoBinding
 import me.lingci.dy.player.core.DyPlayerCore
 import me.lingci.dy.player.core.DyPlayerCoreRegistry
+import me.lingci.dy.player.core.PlayRequest
+import me.lingci.dy.player.core.PlayRequestGate
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.service.PlaybackAction
@@ -239,6 +241,37 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
      * 需要重新 detach 给 Service 并更新通知。
      */
     private var pendingBgSwitch = false
+    /**
+     * 后台切集超时兜底：新集起播后应由 STATE_PLAYING → handOffPlaybackToBackground 交回 Service，
+     * 若 8 秒内未交回（起播失败/Surface 未创建等），显式收尾避免孤立 FGS 空转。
+     */
+    private val bgSwitchTimeoutHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val bgSwitchTimeoutRunnable = Runnable {
+        if (pendingBgSwitch && !isForeground) {
+            Log.d(this, "pendingBgSwitch timed out, closing background session")
+            closeBackgroundSession()
+        }
+    }
+    private fun armBgSwitchTimeout() {
+        bgSwitchTimeoutHandler.removeCallbacks(bgSwitchTimeoutRunnable)
+        bgSwitchTimeoutHandler.postDelayed(bgSwitchTimeoutRunnable, 8000L)
+    }
+    private fun disarmBgSwitchTimeout() {
+        bgSwitchTimeoutHandler.removeCallbacks(bgSwitchTimeoutRunnable)
+    }
+    /**
+     * 播放请求代次：所有异步回调(URL 解析、历史恢复、字幕、弹幕、缩略图)入口
+     * 都必须先校验是否仍是当前请求，否则直接丢弃 (F1-1)。
+     */
+    private val playRequests = PlayRequestGate()
+    /** 请求级 Job：新请求会取消旧请求仍在进行的解析/恢复。 */
+    private var playJob: Job? = null
+    /** Activity 是否处于前台(started)。后台交接提交点必须再看一眼。 */
+    private var isForeground = false
+    /** 当前生效的后端指纹，用于判断 player 能否复用 (F4-4)。 */
+    private var activeBackendKey: String? = null
+    /** Service 侧会话已被关闭(通知栏关闭)，回到前台需要显式重建。 */
+    private var needsRestartOnForeground = false
     private val playbackServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             playbackService = service as? PlaybackBinder
@@ -266,8 +299,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                 if (on) "画质增强：已开启（重播以生效）" else "画质增强：已关闭（重播以生效）",
                 android.widget.Toast.LENGTH_SHORT
             ).show()
-            // 重播当前视频，触发 player + render view 重建
-            startPlay(mCurPos)
+            // 重播当前视频，触发 player + render view 重建（渲染配置变了，必须强制重建）
+            startPlay(mCurPos, force = true)
         }
     }
     private var isSuperResReceiverRegistered = false
@@ -655,9 +688,14 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                     // 非后台恢复错误，或已重试过一次，执行正常错误处理
                     longDanmakuController.saveCacheInfo(binding.videoView.currentPosition, true)
                     if (spUtil.autoNext) {
+                        // F2-4：错误切集与完成切集、通知切集共用同一交接事务，
+                        // 先把 Service 侧 player 收回，避免新旧 player 并存导致通知控制对象分裂。
+                        reclaimFromServiceForSwitch(keepService = !isForeground)
                         longVideoControlView.showTips("播放错误，自动播放下一集")
                         onNextPlay()
                     } else {
+                        // 不自动续播：显式终止后台会话，避免通知栏残留一个已损坏的会话。
+                        closeBackgroundSession()
                         longVideoControlView.showTips("播放错误")
                     }
                 }
@@ -673,17 +711,9 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                             HistorySource.fromMediaData(itemViewModel.getMediaData())
                         )
                     }
-                    // 后台播放模式下播完:先释放 Service 持有的旧 player(避免双 player),
-                    // 再切下一集。新视频起播后由 STATE_PLAYING 的 pendingBgSwitch 重新 detach。
-                    if (isBoundToPlaybackService && playbackService?.isHoldingPlayer == true) {
-                        playbackService?.returnPlayer()?.release()
-                        try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
-                        isBoundToPlaybackService = false
-                        playbackService?.setSkipCallback(null)
-                        playbackService = null
-                        videoView.setEnableAudioFocus(true)
-                        pendingBgSwitch = true
-                    }
+                    // 后台播放模式下播完:先把 Service 侧 player 收回释放(避免双 player),
+                    // 再切下一集。新视频起播后由 STATE_PLAYING 的 pendingBgSwitch 交回 Service。
+                    reclaimFromServiceForSwitch(keepService = !isForeground)
                     // 标记进入完成态，下一次 STATE_PREPARED 触发的 onPlayStart 视为"重新播放"，跳过历史进度恢复
                     isReplayFromCompletion = true
                     if (spUtil.autoNext) {
@@ -693,10 +723,11 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                 if (playState == VideoView.STATE_PLAYING) {
                     clearBackgroundRecoveryState()
                     scheduleMediaLastPlayedUpdate(mCurPos)
-                    // 后台通知栏切集:新视频起播后重新 detach 给 Service 并更新通知标题。
+                    // 后台通知栏切集:新视频起播后重新交回 Service 并更新通知标题。
+                    // 提交点会再次校验前后台状态与请求代次，前台绝不 detach（F2-5）。
                     if (pendingBgSwitch) {
                         pendingBgSwitch = false
-                        startPlaybackService()
+                        handOffPlaybackToBackground(playRequests.current)
                     }
                 }
             }
@@ -712,6 +743,11 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         } else {
             danmakuView.release()
             longVideoControlView.showTips("没有更多")
+            // 后台切集到达边界：没有新视频可交回，显式收尾避免孤立 FGS
+            if (pendingBgSwitch) {
+                pendingBgSwitch = false
+                closeBackgroundSession()
+            }
         }
     }
 
@@ -724,6 +760,11 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         } else {
             danmakuView.release()
             longVideoControlView.showTips("没有更多")
+            // 后台连播到达边界：没有新视频可交回，显式收尾避免孤立 FGS
+            if (pendingBgSwitch) {
+                pendingBgSwitch = false
+                closeBackgroundSession()
+            }
         }
     }
 
@@ -731,41 +772,99 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         longDanmakuController.syncTime()
     }
 
-    private fun startPlay(position: Int) {
+    /**
+     * 切集/起播的唯一入口。
+     *
+     * F1-1：每次调用递增请求代次并取消旧 Job，后续所有异步回调必须持同一 request 才能提交，
+     * 避免 A→B 快速切换时旧结果 release 掉新播放器或把新集 seek 到旧集进度。
+     * F4-4：后端/渲染配置未变时复用 player（MPV 走 loadfile replace），不重建 native 实例。
+     */
+    private fun startPlay(position: Int, force: Boolean = false) {
+        if (position < 0 || position >= itemViewModel.getItemSize()) {
+            Log.d(this, "startPlay skipped, invalid position", position)
+            return
+        }
         // 切换集数时重置"重新播放"标记，避免误判为完成态重播而跳过进度恢复
         isReplayFromCompletion = false
         mediaPlaybackRecorder.cancelLastPlayedUpdate()
         // 切换播放项前先清掉上一集弹幕列表/曲线，避免旧数据短暂残留。
         longDanmakuController.clearPanels()
         val videoBean = itemViewModel.getItem(position)
-        Log.d(this, "startPlay", position, videoBean.name)
-        logAndCache("LongVideoActivity", "D", "startPlay position=$position name=${videoBean.name} url=${videoBean.videoUrl}")
-        lifecycleScope.launch(Dispatchers.IO) {
+        // 取消旧请求：旧的 URL 解析回调到达时已不再 isCurrent
+        playJob?.cancel()
+        val request = playRequests.begin(stableMediaId(videoBean))
+        Log.d(this, "startPlay", position, videoBean.name, request.requestId, force)
+        logAndCache(
+            "LongVideoActivity", "D",
+            "startPlay position=$position id=${request.requestId} force=$force name=${videoBean.name} url=${videoBean.videoUrl}"
+        )
+        playJob = lifecycleScope.launch(Dispatchers.IO) {
             // 决策8：headers 不落库，播放前从 source_data 现算凭据回填（DB 加载的视频无凭据）
             VideoDataBinder.bindTokens(videoBean, itemViewModel.getMediaData())
-            videoBean.playUrl().let { playUrl ->
-                lifecycleScope.launch(Dispatchers.Main) {
-                    // 新视频起播前统一重置 controller 持有的弹幕 UI 状态。
-                    longDanmakuController.resetForNewPlayback()
-                    subtitleControlView.clearText()
-                    videoScaleControlView.resetValue()
-                    PlayerInitializer.resetSpeed()
-                    videoView.release()
-                    applyPlaybackCoreFor(videoBean, playUrl)
-                    //mController.setTitle(videoBean.name)
-                    longVideoControlView.setTitle(videoBean.name)
-                    videoView.setUrl(
-                        playUrl,
-                        if (videoBean.is302(playUrl).not()) videoBean.headers else mutableMapOf()
-                    )
-                    videoView.start()
-                    videoView.post { videoScaleControlView.applyCache() }
-                    mCurPos = position
-                    epSelectView.selected(position)
-                    saveMediaInfo(videoBean.videoUrl)
+            val playUrl = videoBean.playUrl()
+            withContext(Dispatchers.Main) {
+                if (!playRequests.isCurrent(request)) {
+                    Log.d(this@LongVideoActivity, "startPlay abandoned stale request", request.requestId)
+                    return@withContext
                 }
+                commitPlayback(request, position, videoBean, playUrl, force)
             }
         }
+    }
+
+    /** 稳定媒体身份：同一集多次重试必须命中同一个 id。 */
+    private fun stableMediaId(videoData: VideoData): String =
+        "${videoData.type}:${videoData.name}:${videoData.videoUrl}"
+
+    /** 后端 + 渲染配置指纹，用于判断现有 player 能否复用 (F4-4)。 */
+    private fun backendKeyFor(videoBean: VideoData, playUrl: String): String {
+        val core = if (isSmbVideo(videoBean, playUrl)) DyPlayerCore.EXO else spUtil.dyPlayerCore
+        return listOf(
+            core.name,
+            spUtil.surfaceRender,
+            spUtil.labMpvSpecialRender,
+            spUtil.labMpvSuperResolution
+        ).joinToString("|")
+    }
+
+    /** 唯一提交点：setUrl/start 只在这里发生，提交前再校验一次请求身份。 */
+    private fun commitPlayback(
+        request: PlayRequest,
+        position: Int,
+        videoBean: VideoData,
+        playUrl: String,
+        force: Boolean
+    ) {
+        if (!playRequests.isCurrent(request)) return
+        // 新视频起播前统一重置 controller 持有的弹幕 UI 状态。
+        longDanmakuController.resetForNewPlayback()
+        subtitleControlView.clearText()
+        videoScaleControlView.resetValue()
+        PlayerInitializer.resetSpeed()
+
+        val backendKey = backendKeyFor(videoBean, playUrl)
+        // 只有后端/渲染配置一致且未要求强制重建时，才复用现有 player。
+        val reusePlayer = !force && videoView.hasPlayer() && backendKey == activeBackendKey
+        if (!reusePlayer) {
+            videoView.release()
+            applyPlaybackCoreFor(videoBean, playUrl)
+            activeBackendKey = backendKey
+        }
+        longVideoControlView.setTitle(videoBean.name)
+        videoView.setUrl(
+            playUrl,
+            if (videoBean.is302(playUrl).not()) videoBean.headers else mutableMapOf()
+        )
+        // 先更新位置再起播：onPlayStart 依赖 mCurPos 定位同一集。
+        mCurPos = position
+        if (reusePlayer) {
+            videoView.startOrReplace()
+        } else {
+            videoView.start()
+        }
+        videoView.post { videoScaleControlView.applyCache() }
+        epSelectView.selected(position)
+        saveMediaInfo(videoBean.videoUrl)
     }
 
     private fun retryCurrentVideoAfterBackgroundError() {
@@ -775,16 +874,22 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         val position = mCurPos
         val retryPosition = lastKnownPlaybackPosition
         val videoBean = itemViewModel.getItem(position)
-        lifecycleScope.launch(Dispatchers.IO) {
+        playJob?.cancel()
+        val request = playRequests.begin(stableMediaId(videoBean))
+        playJob = lifecycleScope.launch(Dispatchers.IO) {
             // 决策8：重试路径同样先现算凭据回填 headers，再解析播放地址
             VideoDataBinder.bindTokens(videoBean, itemViewModel.getMediaData())
             val playUrl = videoBean.playUrl()
             withContext(Dispatchers.Main) {
-                if (position != mCurPos || itemViewModel.getItemSize() <= position) {
+                if (!playRequests.isCurrent(request)
+                    || position != mCurPos
+                    || itemViewModel.getItemSize() <= position
+                ) {
                     return@withContext
                 }
                 videoView.release()
                 applyPlaybackCoreFor(videoBean, playUrl)
+                activeBackendKey = backendKeyFor(videoBean, playUrl)
                 videoView.setUrl(
                     playUrl,
                     if (videoBean.is302(playUrl).not()) videoBean.headers else mutableMapOf()
@@ -817,34 +922,27 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         // 读取"重新播放"标记并立即重置（loadInfo 回调是异步的，需在同步阶段捕获）
         val skipSeekDueToReplay = isReplayFromCompletion
         isReplayFromCompletion = false
-        /*videoView.setOnTimedTextListener(null)
-        videoView.trackInfo.let {
-            if (it.second.isNotEmpty()) {
-                videoView.showSubTitle(1)
-                videoView.setOnTimedTextListener { _, text ->
-                    text?.let {
-                        Log.d(this@LongVideoActivity, "timedText", text)
-                    }
-                }
-            }
-        }*/
         if (itemViewModel.getItemSize() <= 0) {
             return
         }
+        // F1-2：只处理当前请求对应的这一集；旧集迟到的 PREPARED 不允许再产生副作用。
+        val request = playRequests.current ?: return
         val videoData = itemViewModel.getItem(position)
-        attachSubtitle(videoData, position)
+        if (stableMediaId(videoData) != request.mediaId) {
+            Log.d(this, "onPlayStart ignored: stale media", position, request.requestId)
+            return
+        }
+        attachSubtitle(videoData, position, request)
         PlayHelper.loadInfo(this@LongVideoActivity, lifecycleScope, videoData) { info ->
+            if (!playRequests.isCurrent(request)) {
+                Log.d(this@LongVideoActivity, "loadInfo ignored: stale request", request.requestId)
+                return@loadInfo
+            }
+            if (position != mCurPos || itemViewModel.getItemSize() <= position) {
+                return@loadInfo
+            }
             var unLoadDm = true
             if (info != null) {
-                // 超过片长9/10，重播
-                // 若由"播放完成 → 重新播放"触发，跳过历史进度恢复（resetPlaySeek 已清零，此处为双保险）
-                if (!skipSeekDueToReplay && info.playSeek > 0L){
-                    videoView.seekTo(info.playSeek)
-                    longVideoControlView.showTips("跳转上传播放的位置 ${PlayerUtils.stringForTime(info.playSeek.toInt())}")
-                } else if (skipSeekDueToReplay && info.playSeek > 0L) {
-                    // 完成态下不跳转，仅记录日志便于排查
-                    Log.d(this@LongVideoActivity, "Skip seekTo due to replay from completion, stored playSeek=${info.playSeek}")
-                }
                 info.dmTrack.let { list ->
                     // 弹幕轨道恢复细节由 controller 处理，Activity 只决定何时触发恢复。
                     longDanmakuController.addTracks(list)
@@ -865,24 +963,21 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                         lifecycleScope,
                         videoData
                     ) { file ->
-                        longDanmakuController.addDmFile(file)
+                        if (playRequests.isCurrent(request)) {
+                            longDanmakuController.addDmFile(file)
+                        }
                     }
                 }
             }
-        }
-        if (itemViewModel.hasMediaData()) {
-            itemViewModel.getMediaData()?.let {
-                // 跳过片头
-                Log.d(this@LongVideoActivity, "op", it.opOffset)
-                if (it.opOffset > 0 && videoView.currentPosition < it.opOffset * 1000) {
-                    videoView.seekTo(it.opOffset * 1000L)
-                    longVideoControlView.showTips("跳过片头")
-                }
-            }
+            // 历史进度与片头跳过收敛为唯一 seek 提交点（F1-2）
+            commitInitialSeek(request, info?.playSeek ?: 0L, skipSeekDueToReplay)
         }
         updateTrackPanel(getMediaTrackProvider()?.getMediaTracks() ?: MediaTrackSnapshot())
         setupMediaInfoProvider()
         binding.root.post {
+            if (!playRequests.isCurrent(request)) {
+                return@post
+            }
             if (onHistory) {
                 return@post
             }
@@ -890,7 +985,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             PlayHelper.saveHistory(videoData, HistorySource.fromMediaData(itemViewModel.getMediaData()))
         }
         binding.root.postDelayed({
-            if (position != mCurPos) {
+            if (!playRequests.isCurrent(request) || position != mCurPos) {
                 return@postDelayed
             }
             // 保存预览图
@@ -898,12 +993,48 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         }, 1000)
     }
 
-    private fun attachSubtitle(videoData: VideoData, position: Int) {
+    /**
+     * 片头跳过与历史进度合并为唯一 seek 提交点。
+     * 优先级：片头跳过 > 历史进度；两者都夹取到片长内，避免直接落在结尾触发 COMPLETED。
+     */
+    private fun commitInitialSeek(request: PlayRequest, historySeek: Long, skipHistory: Boolean) {
+        if (!playRequests.isCurrent(request)) return
+        val duration = videoView.duration.toLong()
+        val opOffset = (itemViewModel.getMediaData()?.opOffset ?: 0).toLong() * 1000L
+        var target = if (skipHistory) 0L else historySeek.coerceAtLeast(0L)
+        var skipIntro = false
+        if (opOffset > 0 && target < opOffset) {
+            target = opOffset
+            skipIntro = true
+        }
+        if (target <= 0) return
+        if (duration > 0) {
+            // 留 1 秒余量，避免 seek 落在末尾直接播完
+            target = target.coerceAtMost((duration - 1000L).coerceAtLeast(0L))
+        }
+        if (target <= 0) {
+            Log.d(this, "commitInitialSeek skipped: target out of range", target, duration, opOffset)
+            return
+        }
+        Log.d(this, "commitInitialSeek", target, "duration", duration, "op", opOffset, "history", historySeek)
+        videoView.seekTo(target)
+        if (skipIntro) {
+            longVideoControlView.showTips("跳过片头")
+        } else {
+            longVideoControlView.showTips("跳转上传播放的位置 ${PlayerUtils.stringForTime(target.toInt())}")
+        }
+    }
+
+    private fun attachSubtitle(videoData: VideoData, position: Int, request: PlayRequest) {
         clearSubtitleCueListener()
         subtitleControlView.clearText()
         lifecycleScope.launch(Dispatchers.IO) {
             val subtitleFile = PlayHelper.resolveSubtitleFile(this@LongVideoActivity, videoData)
             withContext(Dispatchers.Main) {
+                // 请求身份优先：仅位置校验无法区分同位置的重试与旧回调
+                if (!playRequests.isCurrent(request)) {
+                    return@withContext
+                }
                 if (position != mCurPos || itemViewModel.getItemSize() <= position) {
                     return@withContext
                 }
@@ -961,12 +1092,25 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     override fun onStart() {
         super.onStart()
+        isForeground = true
         android.util.Log.i("BgPlayDebug", "onStart: isBound=" + isBoundToPlaybackService + " binder=" + (playbackService != null) + " holding=" + (playbackService?.isHoldingPlayer ?: false))
         // M2 fix: 用户已返回前台，清除"待进入后台"标记。
         pendingBackgroundEntry = false
+        // F2-5: 回前台时取消尚未提交的后台切集意图，避免新集 PLAYING 时把前台 player detach 出去。
+        pendingBgSwitch = false
         // 如果 binder 已连接且 Service 持有 player，直接取回
         if (playbackService?.isHoldingPlayer == true) {
             reclaimPlayerFromService()
+            return
+        }
+        // Service 会话在后台被关闭(通知栏关闭)或已无 player：回到前台必须显式重建，避免黑屏。
+        if (needsRestartOnForeground || (isBoundToPlaybackService && !videoView.hasPlayer())) {
+            needsRestartOnForeground = false
+            Log.d(this, "onStart: no player in view, restarting pos=$mCurPos")
+            closeBackgroundSession()
+            if (itemViewModel.getItemSize() > 0) {
+                startPlay(mCurPos, force = true)
+            }
             return
         }
         // 注:不再用 500ms 延迟 tryReclaim。它在按 Home 进后台时会与 Service 的
@@ -976,61 +1120,96 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
     }
 
     private fun reclaimPlayerFromService() {
-        val player = playbackService?.returnPlayer()
-        if (player != null) {
-            // 如果 player 已播完(ENDED/COMPLETED),不 attach 它(画面会是黑屏),
-            // 直接释放并重新 startPlay 当前位置,让画面恢复。
-            val state = videoView.currentPlayState
-            if (state == VideoView.STATE_PLAYBACK_COMPLETED || state == VideoView.STATE_ERROR) {
-                player.release()
-                Log.d(this, "reclaim: player completed/error, restarting pos=$mCurPos")
-                videoView.setEnableAudioFocus(true)
-                try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
-                isBoundToPlaybackService = false
-                playbackService?.setSkipCallback(null)
-                playbackService = null
-                startPlay(mCurPos)
-                return
-            }
-            videoView.attachPlayer(player)
-            videoView.setEnableAudioFocus(true)
-            Log.d(this, "resumed from background, player reattached")
-        }
+        val binder = playbackService ?: return
+        binder.setSkipCallback(null)
+        binder.setPlayerClosedCallback(null)
+        // 最终 reclaim：Service 不再持有 player，前台通知与 FGS 一并收尾。
+        val player = binder.returnPlayer(stopService = true)
+        binder.stopIfNoPlayer()
         try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
         isBoundToPlaybackService = false
-        playbackService?.setSkipCallback(null)
         playbackService = null
+        if (player == null) return
+        videoView.setEnableAudioFocus(true)
+        // 如果 player 已播完(ENDED/COMPLETED),不 attach 它(画面会是黑屏),
+        // 直接释放并重新 startPlay 当前位置,让画面恢复。
+        val state = videoView.currentPlayState
+        if (state == VideoView.STATE_PLAYBACK_COMPLETED || state == VideoView.STATE_ERROR) {
+            player.release()
+            Log.d(this, "reclaim: player completed/error, restarting pos=$mCurPos")
+            startPlay(mCurPos, force = true)
+            return
+        }
+        // attach 内部会重新申请音频焦点，避免只改开关却没真正持有焦点（F2-3）。
+        videoView.attachPlayer(player)
+        Log.d(this, "resumed from background, player reattached")
     }
 
     /**
-     * 通知点击恢复场景：Service 可能还在运行(持有 player)，但 Activity 的 binder 已断开。
-     * 重新 bind 取回 player。
+     * 终止后台会话：停通知、解绑、释放 Service 侧 player。
+     * 与 [reclaimFromServiceForSwitch] 的区别是这里不保留 FGS，用于"会话真的结束"的场景。
      */
-    private fun tryReclaimFromSurvivingService() {
-        val intent = Intent(this, PlaybackService::class.java)
-        val reclaimConnection = object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                val binder = service as? PlaybackBinder
-                if (binder?.isHoldingPlayer == true) {
-                    val player = binder.returnPlayer()
-                    if (player != null) {
-                        videoView.attachPlayer(player)
-                        videoView.setEnableAudioFocus(true)
-                        android.util.Log.i("BgPlayDebug", "reclaimed player from surviving service")
-                    }
-                    binder.stopForegroundAndNotification()
-                } else {
-                    // Service 没持有 player,停止它
-                    binder?.stopForegroundAndNotification()
-                }
-                try { unbindService(this) } catch (_: Exception) {}
-            }
-            override fun onServiceDisconnected(name: ComponentName?) {}
+    private fun closeBackgroundSession() {
+        val binder = playbackService
+        binder?.setSkipCallback(null)
+        binder?.setPlayerClosedCallback(null)
+        binder?.returnPlayer(stopService = true)?.release()
+        binder?.stopIfNoPlayer()
+        if (isBoundToPlaybackService) {
+            try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
+            isBoundToPlaybackService = false
         }
-        try {
-            bindService(intent, reclaimConnection, 0)
-        } catch (e: Exception) {
-            android.util.Log.w("BgPlayDebug", "tryReclaimFromSurvivingService failed: ${e.message}")
+        playbackService = null
+        pendingBgSwitch = false
+        disarmBgSwitchTimeout()
+        pendingBackgroundEntry = false
+        videoView.setEnableAudioFocus(true)
+    }
+
+    /**
+     * 统一的后台交接事务（F2-4）：切集/重播前把 player 从 Service 收回，
+     * 保证新视频在 Activity 侧是唯一持有者。
+     *
+     * @param keepService true = 临时取回，保留绑定与前台通知，供后台连播直接交回，
+     *                    避免再次 startForegroundService（Android 12+ 后台限制）；
+     *                    false = 会话结束，停前台通知并解绑。
+     * @return Service 此前是否持有 player
+     */
+    private fun reclaimFromServiceForSwitch(keepService: Boolean): Boolean {
+        val binder = playbackService
+        if (binder == null || !isBoundToPlaybackService) {
+            if (!keepService) closeBackgroundSession()
+            return false
+        }
+        val held = binder.isHoldingPlayer
+        // 后台切集期间 Service 不再需要感知关闭事件，切换事务本身接管收尾
+        binder.setPlayerClosedCallback(null)
+        binder.returnPlayer(stopService = !keepService)?.release()
+        videoView.setEnableAudioFocus(true)
+        if (keepService) {
+            pendingBgSwitch = true
+            armBgSwitchTimeout()
+        } else {
+            binder.stopIfNoPlayer()
+            try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
+            isBoundToPlaybackService = false
+            playbackService = null
+            pendingBgSwitch = false
+        }
+        Log.d(this, "reclaimForSwitch keepService=$keepService held=$held")
+        return held
+    }
+
+    /** 通知栏关闭事件：Service 已释放 player，按当前可见性决定恢复或等待。 */
+    private fun handleSessionClosedByService(reason: String) {
+        Log.d(this, "playback session closed by service: $reason")
+        if (isFinishing || isDestroyed) return
+        if (isForeground) {
+            // 前台可见却没了 player：立即重建，避免黑屏/静止画面。
+            startPlay(mCurPos, force = true)
+        } else {
+            // 后台不可见时不擅自起播（会变成无通知的裸音频），回到前台再恢复。
+            needsRestartOnForeground = true
         }
     }
 
@@ -1094,10 +1273,15 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         }
         danmakuView.pause()
         videoView.pause()
+        // F2-1：退出时强制持久化当前进度（含末尾<10s 清零）到 PlayInfo 文件 + DB，
+        // 否则重进读 PlayInfo 仍旧值，末尾进度守卫失效。update=false 绕过 6 秒节流。
+        longDanmakuController.saveCacheInfo(lastKnownPlaybackPosition, update = false)
     }
 
     override fun onStop() {
         super.onStop()
+        // 先落前台状态：后台交接提交点依赖它做最后校验（前台绝不 detach）。
+        isForeground = false
         android.util.Log.i("BgPlayDebug", "onStop: userExit=$userInitiatedExit changingCfg=$isChangingConfigurations pip=$isInPictureInPictureMode state=${videoView.currentPlayState} hasPlayer=${videoView.hasPlayer()}")
         // 用户主动退出 → 不进后台
         if (userInitiatedExit) {
@@ -1109,13 +1293,22 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         if (isChangingConfigurations) return
         // 正在 PiP → 不进后台（PiP 期间 Activity 仍可见）
         if (isInPictureInPictureMode) return
-        // 播放中 + 未暂停 → 进入后台播放模式
+        // 播放中(含 PREPARING/BUFFERING 的起播意图) → 进入后台播放模式
         if (shouldEnterBackgroundPlay()) {
             startPlaybackService()
+        } else if (isBoundToPlaybackService) {
+            // 已不具备后台播放条件(已暂停/无 player)：收尾，避免残留前台通知与孤立绑定
+            closeBackgroundSession()
         }
     }
 
-    /** 后台播放触发条件：开关开启 + 处于活跃播放态(PLAYING/BUFFERED) + 有 player。 */
+    /**
+     * 后台播放触发条件：开关开启 + 有 player + 用户仍想播放。
+     *
+     * PREPARING/BUFFERING 也算"想播放"：用户暂停时 {@code pause()} 已把状态改成 PAUSED 并清掉
+     * playWhenReady，所以 PREPARING 只可能来自"正在起播"。把这两种状态纳入后，
+     * 离开页面时不会出现"prepare 完成后在后台无通知地出声"（F2-7）。
+     */
     private fun shouldEnterBackgroundPlay(): Boolean {
         // 后台播放开关关闭 → 不走后台播放
         if (!spUtil.longVideoBackgroundPlay) {
@@ -1126,17 +1319,29 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         // 内部状态可能与 currentPlayState 不同步(isPlaying 返回 false 但 state 仍是 PLAYING)，
         // 导致后台播放触发不了。currentPlayState 反映的是用户预期状态。
         val state = videoView.currentPlayState
-        return videoView.hasPlayer() && (state == VideoView.STATE_PLAYING || state == VideoView.STATE_BUFFERED)
+        val active = state == VideoView.STATE_PLAYING
+                || state == VideoView.STATE_BUFFERED
+                || state == VideoView.STATE_PREPARING
+                || state == VideoView.STATE_BUFFERING
+        return videoView.hasPlayer() && active
     }
 
     /** 启动并绑定 PlaybackService。 */
     private fun startPlaybackService() {
         val intent = Intent(this, PlaybackService::class.java)
         intent.putExtra("source_activity", LongVideoActivity::class.java.name)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            // Android 12+ 后台禁止启动 FGS：降级为不接管，避免直接崩溃（F2-6）。
+            Log.d(this, "startForegroundService rejected: ${e.message}")
+            videoView.setEnableAudioFocus(true)
+            longVideoControlView.showTips("后台播放不可用，请回到前台继续")
+            return
         }
         bindService(intent, playbackServiceConnection, Context.BIND_AUTO_CREATE)
         isBoundToPlaybackService = true
@@ -1145,9 +1350,6 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         pendingBackgroundEntry = true
         // 禁用 view 的音频焦点（Service 接管）
         videoView.setEnableAudioFocus(false)
-        // 注册后台切集回调:通知栏上一个/下一个时 Service 调用,Activity 在后台切集,
-        // 新视频起播后(STATE_PLAYING)重新 detach 给 Service(不拉起 Activity)。
-        pendingBgSwitch = false
         Log.d(this, "starting background playback")
     }
 
@@ -1159,42 +1361,75 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         // 导致画面冻结+误显示后台通知。直接解绑并退出，让前台继续播放。
         if (!pendingBackgroundEntry) {
             Log.d(this, "abort background entry: user already returned to foreground")
+            binder.stopIfNoPlayer()
             try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
             isBoundToPlaybackService = false
             playbackService = null
-            // Service 未持有 player，调用 stopForegroundAndNotification 让其自停
-            binder.stopForegroundAndNotification()
             videoView.setEnableAudioFocus(true)
             return
         }
         pendingBackgroundEntry = false
-        val player = videoView.detachPlayer() ?: return
+        handOffPlaybackToBackground(playRequests.current)
+    }
+
+    /**
+     * 把当前 player 交回后台 Service。
+     * 这是 detach 的唯一提交点：必须同时满足"仍处于后台 + 仍是同一请求 + View 持有 player"，
+     * 否则前台播放器会被错误交出导致画面冻结（F2-5）。
+     */
+    private fun handOffPlaybackToBackground(request: PlayRequest?) {
+        if (isForeground) {
+            Log.d(this, "skip background handoff: activity is foreground")
+            // 前台绝不 detach；顺手收掉不再需要的 FGS，避免残留通知
+            if (playbackService?.isHoldingPlayer == false) playbackService?.stopIfNoPlayer()
+            return
+        }
+        if (request == null || !playRequests.isCurrent(request)) {
+            Log.d(this, "skip background handoff: stale request")
+            if (playbackService?.isHoldingPlayer == false) playbackService?.stopIfNoPlayer()
+            return
+        }
+        if (!shouldEnterBackgroundPlay()) {
+            Log.d(this, "skip background handoff: not in active playback")
+            if (playbackService?.isHoldingPlayer == false) playbackService?.stopIfNoPlayer()
+            return
+        }
+        val binder = playbackService ?: run {
+            // 仍未连上：保持待交回意图，ServiceConnection 回调会再次尝试
+            pendingBgSwitch = true
+            return
+        }
+        if (binder.isHoldingPlayer) return
+        // 元数据必须在 detach 之前采样：detach 后 View 已无 player，duration 会变成 0。
         val metadata = PlaybackMetadata(
             title = currentTitle,
             subtitle = currentSourceName,
             duration = videoView.duration,
             currentPosition = videoView.currentPosition
         )
+        val player = videoView.detachPlayer() ?: return
         // Task 8: 先用 null 封面 takePlayer(立即显示标题),再异步加载封面后 updateMetadata。
         binder.setSourceActivity(LongVideoActivity::class.java)
         binder.takePlayer(player, metadata.copy(coverBitmap = null))
-        // 注册后台切集回调:通知栏上一个/下一个时 Service 调用。
-        binder.setSkipCallback { direction ->
-            // 取回 Service 持有的 player 并释放(避免双音频),再切集。
-            // 新视频起播后(STATE_PLAYING)由 pendingBgSwitch 重新 detach 给 Service。
-            playbackService?.returnPlayer()?.release()
-            try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
-            isBoundToPlaybackService = false
-            playbackService = null
-            videoView.setEnableAudioFocus(true)
-            pendingBgSwitch = true
-            if (direction > 0) onNextPlay() else onPreviousPlay()
-        }
+        binder.setSkipCallback(skipCallback)
+        binder.setPlayerClosedCallback(::handleSessionClosedByService)
+        disarmBgSwitchTimeout()
         loadCoverBitmap(currentCoverUrl) { bitmap ->
             if (bitmap != null) {
                 playbackService?.updateMetadata(metadata.copy(coverBitmap = bitmap))
             }
         }
+    }
+
+    /**
+     * 通知栏"上一个/下一个"回调（后台切集）。
+     * 与完成/错误切集共用同一交接事务：先临时收回并释放 Service 侧 player，再切集；
+     * 新集起播后由 pendingBgSwitch 交回同一个 Service 实例。
+     */
+    private val skipCallback: (Int) -> Unit = { direction ->
+        Log.d(this, "notification skip: direction=$direction")
+        reclaimFromServiceForSwitch(keepService = !isForeground)
+        if (direction > 0) onNextPlay() else onPreviousPlay()
     }
 
     /**
@@ -1285,12 +1520,37 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         clearBackgroundRecoveryState()
         clearSurfaceTrace()
         PlayerInitializer.resetSpeed()
-        // 如果 Service 还持有 player（Activity 异常销毁），取回并释放
+        // 作废所有在途请求：销毁后不再允许任何异步回调提交起播
+        playRequests.invalidate()
+        playJob?.cancel()
+        playJob = null
+        disarmBgSwitchTimeout()
+
+        val binder = playbackService
+        // Service 侧闭包持有 Activity 引用，必须在销毁时清掉（F2-2）。
+        binder?.setSkipCallback(null)
+        binder?.setPlayerClosedCallback(null)
+
+        // 区分"UI 销毁"与"主动结束"（F2-2 / F2-10）：
+        // 后台播放中 Activity 被系统回收时，播放会话属于 Service，这里只解绑不取回不释放，
+        // 由 Service.onTaskRemoved / 通知控制收尾；用户主动退出或配置变化才真正释放。
+        val keepBackgroundSession = !userInitiatedExit
+                && !isFinishing
+                && !isChangingConfigurations
+                && isBoundToPlaybackService
+                && binder?.isHoldingPlayer == true
+        if (keepBackgroundSession) {
+            Log.d(this, "onDestroy: background session kept by service")
+        } else {
+            binder?.returnPlayer(stopService = true)?.release()
+            binder?.stopIfNoPlayer()
+        }
         if (isBoundToPlaybackService) {
             try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
             isBoundToPlaybackService = false
         }
-        playbackService?.returnPlayer()?.release()
+        pendingBgSwitch = false
+        pendingBackgroundEntry = false
         playbackService = null
         videoView.release()
         danmakuView.release()
@@ -1316,13 +1576,27 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
     }
 
     override fun onScreenshot() {
+        val request = playRequests.current
+        if (request == null || itemViewModel.getItemSize() <= mCurPos) {
+            // 没有有效请求时明确失败，而不是截一张空图（F4-3）
+            longVideoControlView.showTips("截图失败")
+            return
+        }
         PlayHelper.doScreenShot(
             lifecycleScope, videoView,
             itemViewModel.getItem(mCurPos),
             videoView.currentPosition
         ) { save ->
+            // 截图完成时若已切集，该产物不再属于当前画面，只提示不误导
+            val stillCurrent = playRequests.isCurrent(request)
             lifecycleScope.launch(Dispatchers.Main) {
-                longVideoControlView.showTips(if (save) "截图成功" else "截图失败")
+                longVideoControlView.showTips(
+                    when {
+                        !stillCurrent -> "截图完成（已切换视频）"
+                        save -> "截图成功"
+                        else -> "截图失败"
+                    }
+                )
             }
         }
     }
@@ -1493,17 +1767,17 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             enterPipUiState()
         } else {
             exitPipUiState()
-            // PiP 退出后:
-            // - 后台播放开关开: 直接进入后台播放(PiP 退出后 Activity 回到前台,不会触发 onStop)
-            // - 后台播放开关关: 主动 pause(用户关闭 PiP 意味着不想继续播放)
-            if (spUtil.longVideoBackgroundPlay && shouldEnterBackgroundPlay()) {
-                android.util.Log.i("BgPlayDebug", "PiP exit: bg switch on, start background play")
-                startPlaybackService()
-            } else if (!spUtil.longVideoBackgroundPlay) {
+            // PiP 退出后的决策顺序（F2-10）：
+            // - 展开回全屏：Activity 仍可见，这里绝不能 detach，否则画面冻结 + 误显示通知；
+            // - 关闭小窗：系统随后会回调 onStop，真正的后台交接交给 onStop 判断。
+            // 因此这里只处理"用户明确要求暂停"的分支，不主动启动后台服务。
+            if (!spUtil.longVideoBackgroundPlay) {
                 if (::videoView.isInitialized && videoView.hasPlayer()) {
                     videoView.pause()
                     android.util.Log.i("BgPlayDebug", "PiP exit: bg switch off, pause")
                 }
+            } else {
+                android.util.Log.i("BgPlayDebug", "PiP exit: defer background decision to onStop")
             }
         }
     }

@@ -21,6 +21,7 @@ import me.lingci.dy.player.view.ShortVideoControlView
 import me.lingci.dy.player.view.ShortVideoController
 import me.lingci.lib.base.storage.IStorage
 import me.lingci.lib.base.util.logD
+import me.lingci.lib.base.util.md5
 import java.io.File
 
 /**
@@ -41,7 +42,7 @@ class ShortVideoFileActions(
     private val adapter: () -> ShortVideoAdapter,
     private val controller: () -> ShortVideoController,
     private val currentControlView: () -> ShortVideoControlView?,
-    private val removeItem: (Int) -> Unit
+    private val removeItemById: (String) -> Unit
 ) {
 
     /** 打开重命名弹窗，并在确认后执行本地或远程存储重命名。 */
@@ -184,6 +185,9 @@ class ShortVideoFileActions(
         val videoList = videoList()
         if (position !in videoList.indices) return
         val videoData = videoList[position]
+        // 慢远程删除等待期间用户可能翻页/增删，完成后必须按稳定媒体 ID 提交。
+        if (videoData.id.isBlank()) videoData.id = videoData.md5()
+        val mediaId = videoData.id
         val path = videoData.videoUrl
 
         scope.launch(Dispatchers.IO) {
@@ -202,7 +206,7 @@ class ShortVideoFileActions(
 
             withContext(Dispatchers.Main) {
                 if (success) {
-                    removeItem(position)
+                    removeItemById(mediaId)
                     Toast.makeText(activity, activity.getString(R.string.action_delete) + "成功", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(activity, activity.getString(R.string.action_delete) + "失败", Toast.LENGTH_SHORT).show()

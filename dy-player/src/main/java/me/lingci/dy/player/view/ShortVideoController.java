@@ -55,6 +55,7 @@ public class ShortVideoController extends GestureVideoController {
         addControlComponent(component, true);
     }
 
+
     public void setTitle(String name) {
         mVideoFullControlView.setTitle(name);
     }

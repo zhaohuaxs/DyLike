@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -18,6 +20,7 @@ import xyz.doikki.videoplayer.render.IRenderView
 import xyz.doikki.videoplayer.render.MeasureHelper
 import me.lingci.lib.player.util.SurfaceRenderTrace
 import java.text.SimpleDateFormat
+import java.util.concurrent.CountDownLatch
 import java.util.Date
 import java.util.Locale
 
@@ -30,6 +33,7 @@ class MpvSurfaceRenderView(
     private var mIsSurfaceCreated = false
     private var mIsReleased = false
     private var mHasBoundDisplay = false
+    private var screenshotOptionsConfigured = false
 
     var mpv: MPV?= null
 
@@ -112,8 +116,11 @@ class MpvSurfaceRenderView(
             //mpv?.setOptionString("screenshot-format", "png")
             // --- 优化体积的关键配置 ---
             player.setOptionString("screenshot-format", "png")
-            player.setOptionString("screenshot-png-compression", "7") // 提高压缩率
-            player.setOptionString("screenshot-png-filter", "5")      // 优化过滤
+            if (!screenshotOptionsConfigured) {
+                player.setOptionString("screenshot-png-compression", "7") // 提高压缩率
+                player.setOptionString("screenshot-png-filter", "5")      // 优化过滤
+                screenshotOptionsConfigured = true
+            }
             //mpv?.setOptionString("screenshot-high-bit-depth", "no") // 强制8bit
             //mpv?.setOptionString("screenshot-tag-colorspace", "no") // 忽略色彩空间
             // mpv-shot%n
@@ -121,7 +128,23 @@ class MpvSurfaceRenderView(
             // 使用MPV的截图命令
             //mpv?.command("screenshot", "video")
             //mpv?.setOptionString("screenshot-jpeg-quality", "100")
-            player.command("screenshot-to-file", screenshotFile.path, "video")
+            // MPV command 必须在主线程投递；调用方已在 IO 线程，用 latch 同步等待命令提交完成。
+            // 命令本身只触发 native 截图，不等待文件落盘——文件轮询在当前 IO 线程做。
+            val cmdLatch = CountDownLatch(1)
+            val mainHandler = Handler(Looper.getMainLooper())
+            mainHandler.post {
+                try {
+                    player.command("screenshot-to-file", screenshotFile.path, "video")
+                } catch (cmdErr: Exception) {
+                    Log.d("MpvSurfaceRenderView", "screenshot command failed: ${cmdErr.message}")
+                } finally {
+                    cmdLatch.countDown()
+                }
+            }
+            if (!cmdLatch.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.d("MpvSurfaceRenderView", "screenshot command dispatch timed out")
+                return null
+            }
 
             repeat(10) {
                 if (screenshotFile.exists() && screenshotFile.length() > 0L) {

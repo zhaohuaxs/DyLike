@@ -609,27 +609,16 @@ class SharpenVideoRenderer(
     }
 
     fun release() {
+        // 兼容旧调用：GL 资源必须在 GL 线程删，native 等待放后台。
+        releaseGlResources()
+        releaseNativeAsync()
+    }
+
+    /** 只允许在持有 EGL 上下文的 GL 线程调用。 */
+    fun releaseGlResources() {
+        if (released) return
+        released = true
         try {
-            // 1. 先置位 released：阻止新的投递 + 让后台任务早退
-            released = true
-
-            // 2. 优雅关闭 executor，等待正在执行的 infer() 结束。
-            //    不能用 shutdownNow()：它会立刻中断线程，但 NCNN/OpenMP 内部的
-            //    pthread_mutex 并不响应 Java 中断，native 仍在跑，主线程随后调用
-            //    nativeRelease() → sr_net.clear() 会触发 use-after-free / destroyed-mutex 崩溃。
-            ncnnExecutor.shutdown()
-            try {
-                if (!ncnnExecutor.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS)) {
-                    // 兜底：3 秒还跑不完（理论上单帧 ~50-100ms），强制停
-                    ncnnExecutor.shutdownNow()
-                    ncnnExecutor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)
-                }
-            } catch (_: InterruptedException) {
-                ncnnExecutor.shutdownNow()
-                Thread.currentThread().interrupt()
-            }
-
-            // 3. 此时所有 native 推理已结束，安全释放
             surfaceTexture?.release()
             blitProgram?.delete()
             sgsrProgram?.delete()
@@ -637,15 +626,50 @@ class SharpenVideoRenderer(
             if (fboId != 0) {
                 GLES20.glDeleteFramebuffers(1, intArrayOf(fboId), 0)
                 GLES20.glDeleteTextures(1, intArrayOf(fboTextureId), 0)
+                fboId = 0
             }
             if (smallFboId != 0) {
                 GLES20.glDeleteFramebuffers(1, intArrayOf(smallFboId), 0)
                 GLES20.glDeleteTextures(1, intArrayOf(smallFboTexId), 0)
+                smallFboId = 0
             }
             if (ncnnOutputTexId != 0) {
                 GLES20.glDeleteTextures(1, intArrayOf(ncnnOutputTexId), 0)
+                ncnnOutputTexId = 0
             }
-            ncnnSr?.release()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * 等待 native 推理真正退出后再释放 ncnn。决不能在 shutdownNow 后假设 native 已停止：
+     * NCNN/OpenMP 不响应 Java 中断，提前 release 会造成 use-after-free。
+     */
+    fun releaseNativeAsync() {
+        val executor = ncnnExecutor
+        val nativeSr = ncnnSr
+        ncnnSr = null
+        Thread({
+            var safeToRelease = false
+            try {
+                executor.shutdown()
+                safeToRelease = executor.awaitTermination(3, java.util.concurrent.TimeUnit.SECONDS)
+                if (!safeToRelease) {
+                    executor.shutdownNow()
+                    safeToRelease = executor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            if (safeToRelease) {
+                try {
+                    nativeSr?.release()
+                } catch (_: Exception) {
+                }
+            } else {
+                // 保留 native 对象，宁可有界泄漏也不能在与推理并发时释放。
+                Log.d("SharpenVideoRenderer", "native inference did not terminate; skip unsafe release")
+            }
+        }, "sharpen-native-release").start()
     }
 }

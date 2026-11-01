@@ -3,6 +3,8 @@ package me.lingci.lib.player.mpv
 import android.content.Context
 import android.content.res.AssetFileDescriptor
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.preference.PreferenceManager
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -81,6 +83,15 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     @Volatile
     private var hasAttachedSurface = false
 
+    /** 后台 detach 后允许无 Surface loadfile；前台初始起播仍必须等待 Surface。 */
+    @Volatile
+    private var audioOnlyMode = false
+    private var seekingBuffering = false
+    private var cacheBuffering = false
+    private var bufferingReported = false
+    private var preparedNotified = false
+    private var firstFrameNotified = false
+
     private var voInUse: String = "gpu"
     private var mIsPreparing = false
     private var configDir: String = appContext.filesDir.path
@@ -115,6 +126,10 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
 
     @Volatile
     private var isReleased = false
+
+    // D1: 切换源前禁用视频轨清旧帧，loadfile 后自动恢复
+    @Volatile
+    private var videoSuppressedForSwitch = false
 
     @Volatile
     private var isNativeDestroyed = false
@@ -241,8 +256,32 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
 
     override fun initPlayer() {
         if (isReleasing || isReleased || isNativeDestroyed) return
-        Utils.copyAssets(appContext)
+        // Assets 是进程级只读资源，多个 MPV 实例/切集不需要重复复制。
+        if (assetsCopied.compareAndSet(false, true)) {
+            try {
+                Utils.copyAssets(appContext)
+            } catch (e: Exception) {
+                assetsCopied.set(false)
+                L.e("MPV copyAssets failed: ${e.message}")
+                return
+            }
+        }
         initialize()
+    }
+
+    override fun canReuseForNewMedia(): Boolean =
+        !isReleasing && !isReleased && !isNativeDestroyed
+
+    override fun suppressVideoForSwitch() {
+        if (!isMpvInitialized || isNativeDestroyed) return
+        videoSuppressedForSwitch = true
+        try {
+            mpv.setPropertyString("vid", "no")
+            SurfaceRenderTrace.d("MpvMediaPlayer", "suppressVideoForSwitch vid=no")
+        } catch (e: Exception) {
+            L.e("MPV suppressVideoForSwitch failed: ${e.message}")
+            videoSuppressedForSwitch = false
+        }
     }
 
     fun getTrackManager(): MpvTrackManager {
@@ -757,16 +796,20 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
 
         mIsPreparing = true
         playbackHasStarted = false
+        preparedNotified = false
+        firstFrameNotified = false
+        seekingBuffering = false
+        cacheBuffering = false
+        bufferingReported = false
     }
 
     private fun flushPendingLoadIfReady() {
         if (isReleasing || isReleased || isNativeDestroyed) return
         val path = pendingPath ?: return
-        if (!isMpvInitialized || isNativeDestroyed || !hasAttachedSurface) {
-            // loadfile before a Surface is attached can leave MPV with an invalid VO/black frame.
-            // Deferring here matches PlayerCapabilities.requiresSurfaceRenderView.
-            L.d("Defer loadfile until surface ready, path=$path attached=$hasAttachedSurface")
-            SurfaceRenderTrace.d("MpvMediaPlayer", "defer loadfile initialized=$isMpvInitialized nativeDestroyed=$isNativeDestroyed attached=$hasAttachedSurface path=$path")
+        if (!isMpvInitialized || isNativeDestroyed || (!hasAttachedSurface && !audioOnlyMode)) {
+            // 前台初始起播仍等待 Surface；只有明确 detach 到后台音频模式才允许无 Surface 换源。
+            L.d("Defer loadfile until surface ready, path=$path attached=$hasAttachedSurface audioOnly=$audioOnlyMode")
+            SurfaceRenderTrace.d("MpvMediaPlayer", "defer loadfile initialized=$isMpvInitialized nativeDestroyed=$isNativeDestroyed attached=$hasAttachedSurface audioOnly=$audioOnlyMode path=$path")
             return
         }
 
@@ -777,8 +820,22 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
 
         try {
             L.d("Flush deferred loadfile: $path")
-            SurfaceRenderTrace.d("MpvMediaPlayer", "flush loadfile path=$path headers=${headers?.size ?: 0}")
+            SurfaceRenderTrace.d("MpvMediaPlayer", "flush loadfile path=$path headers=${headers?.size ?: 0} audioOnly=$audioOnlyMode")
+            if (audioOnlyMode) {
+                safeSetVoNull()
+                mpv.setOptionString("force-window", "no")
+            }
             mpv.command("loadfile", path, "replace")
+            // D1: 切换源后恢复视频轨，mpv 会自动选轨并渲染新首帧
+            if (videoSuppressedForSwitch) {
+                videoSuppressedForSwitch = false
+                try {
+                    mpv.setPropertyString("vid", "auto")
+                    SurfaceRenderTrace.d("MpvMediaPlayer", "restoreVideoForSwitch vid=auto")
+                } catch (e: Exception) {
+                    L.e("MPV restoreVideoForSwitch failed: ${e.message}")
+                }
+            }
         } catch (e: Exception) {
             L.e("Error loading file: ${e.message}")
             SurfaceRenderTrace.e("MpvMediaPlayer", "loadfile failed: ${e.message}")
@@ -847,6 +904,11 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
             // 不设置vo = "null"，保持当前vo设置，避免重新播放时无画面
         }
         mIsPreparing = false
+        preparedNotified = false
+        firstFrameNotified = false
+        seekingBuffering = false
+        cacheBuffering = false
+        bufferingReported = false
         // 清空状态缓存
         psc.clear()
         lastDisplayWidth = 0
@@ -893,6 +955,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
             isMpvInitialized = false
             needsReinitialize = true
             hasAttachedSurface = false
+            audioOnlyMode = false
             holder = null
 
             psc.clear()
@@ -967,7 +1030,12 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
         }
     }
 
-    override fun setSurface(surface: Surface) {
+    override fun setSurface(surface: Surface?) {
+        if (surface == null) {
+            // Java 调用 setSurface(null) 是后台交接的合法契约；不能触发 Kotlin 非空参数 NPE。
+            setDisplay(null)
+            return
+        }
         if (isReleasing || isReleased || isNativeDestroyed) return
         Log.d(this, "setSurface", isMpvInitialized)
         SurfaceRenderTrace.d("MpvMediaPlayer", "setSurface initialized=$isMpvInitialized released=$isReleased nativeDestroyed=$isNativeDestroyed surface=$surface valid=${surface.isValid}")
@@ -976,6 +1044,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
             var attached = false
             try {
                 // Surface attachment is the last prerequisite for deferred loadfile requests.
+                audioOnlyMode = false
                 mpv.attachSurface(surface)
                 attached = true
                 hasAttachedSurface = true
@@ -997,6 +1066,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
         this.holder = holder
         if (holder == null) {
             SurfaceRenderTrace.d("MpvMediaPlayer", "setDisplay null initialized=$isMpvInitialized attached=$hasAttachedSurface")
+            audioOnlyMode = true
             if (isReleasing || isReleased || isNativeDestroyed) return
             if (!isMpvInitialized || isNativeDestroyed) return
             safeSetVoNull()
@@ -1009,6 +1079,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
             return
         }
 
+        audioOnlyMode = false
         if (isReleasing || isReleased || isNativeDestroyed) return
         ensureInitializedForPlayback()
         SurfaceRenderTrace.d("MpvMediaPlayer", "setDisplay holder surface=${holder.surface} valid=${holder.surface?.isValid} initialized=$isMpvInitialized attached=$hasAttachedSurface")
@@ -1279,24 +1350,27 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
                 // 暂停状态由isPlaying()直接获取，无需回调
             }
             "paused-for-cache" -> {
-                playerScopeMain.launch {
-                    if (isReleasing || isReleased || isNativeDestroyed) return@launch
-                    if (value) {
-                        mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_START, 0)
-                    } else {
-                        mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_END, psc.bufferedPercentage)
-                    }
-                }
+                cacheBuffering = value
+                reportMergedBuffering()
             }
             "seeking" -> {
-                playerScopeMain.launch {
-                    if (isReleasing || isReleased || isNativeDestroyed) return@launch
-                    if (value) {
-                        mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_START, 0)
-                    } else {
-                        mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_END, psc.bufferedPercentage)
-                    }
-                }
+                seekingBuffering = value
+                reportMergedBuffering()
+            }
+        }
+    }
+
+    /** seek 与 cache 缓冲是合并条件，任一个结束都不能单独发 BUFFERING_END。 */
+    private fun reportMergedBuffering() {
+        val buffering = seekingBuffering || cacheBuffering
+        if (buffering == bufferingReported) return
+        bufferingReported = buffering
+        playerScopeMain.launch {
+            if (isReleasing || isReleased || isNativeDestroyed) return@launch
+            if (buffering) {
+                mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_START, 0)
+            } else {
+                mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_END, psc.bufferedPercentage)
             }
         }
     }
@@ -1334,6 +1408,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
             "chapter-list" -> {
                 dispatchChaptersLoaded(parseChapters(value))
             }
+
             else -> {
                 L.d("mpvNode $property $value")
             }
@@ -1353,13 +1428,18 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
                 lastEventLabel = "shutdown"
                 playbackHasStarted = false
                 mIsPreparing = false
+                val unexpected = !isReleasing
+                val listener = mPlayerEventListener
                 isMpvInitialized = false
                 needsReinitialize = true
                 hasAttachedSurface = false
                 hasNativeCreated = false
                 isNativeDestroyed = true
-                // SHUTDOWN表示播放器正在退出，不做回调避免状态混乱
-                L.d("MPV shutdown event received, isReleasing=$isReleasing")
+                if (unexpected && listener != null) {
+                    // 不能静默失活：会话层需要清理旧实例/展示错误。
+                    Handler(Looper.getMainLooper()).post { listener.onError() }
+                }
+                L.d("MPV shutdown event received, isReleasing=$isReleasing unexpected=$unexpected")
             }
             mpvEvent.MPV_EVENT_START_FILE -> {
                 lastEventLabel = "start_file"
@@ -1367,23 +1447,26 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
                 if (this.statsLuaMode > 0 && !playbackHasStarted) {
                     mpv.command("script-binding", "stats/display-page-${this.statsLuaMode}-toggle")
                 }
-                playerScopeMain.launch {
-                    if (isReleasing || isReleased || isNativeDestroyed) return@launch
-                    mPlayerEventListener?.onPrepared()
-                }
+                // START_FILE 仅表示开始装载，不代表解码器/时间轴可用；prepared 在 FILE_LOADED 提交。
                 playbackHasStarted = true
             }
             mpvEvent.MPV_EVENT_FILE_LOADED -> {
                 lastEventLabel = "file_loaded"
                 SurfaceRenderTrace.d("MpvMediaPlayer", "event FILE_LOADED attached=$hasAttachedSurface preparing=$mIsPreparing")
                 if (mIsPreparing && mPlayerEventListener != null) {
-                    playerScopeMain.launch {
-                        if (isReleasing || isReleased || isNativeDestroyed) return@launch
-                        refreshVideoGeometryFromMpv()
-                        onVideoSizeChanged()
-                        mPlayerEventListener?.onInfo(MEDIA_INFO_RENDERING_START, 0)
-                    }
                     mIsPreparing = false
+                    if (!preparedNotified) {
+                        preparedNotified = true
+                        firstFrameNotified = true
+                        playerScopeMain.launch {
+                            if (isReleasing || isReleased || isNativeDestroyed) return@launch
+                            refreshVideoGeometryFromMpv()
+                            onVideoSizeChanged()
+                            mPlayerEventListener?.onPrepared()
+                            // FILE_LOADED 即代表解码器已装载、时间轴可用，作为首帧起点上报。
+                            mPlayerEventListener?.onInfo(MEDIA_INFO_RENDERING_START, 0)
+                        }
+                    }
                 }
             }
             mpvEvent.MPV_EVENT_END_FILE -> {
@@ -1462,6 +1545,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
                 "video-params/rotate" to MPV.mpvFormat.MPV_FORMAT_INT64,
                 "chapter" to MPV.mpvFormat.MPV_FORMAT_INT64,
                 "chapter-list" to MPV.mpvFormat.MPV_FORMAT_NODE,
+
                 "playlist-pos" to MPV.mpvFormat.MPV_FORMAT_INT64,
                 "playlist-count" to MPV.mpvFormat.MPV_FORMAT_INT64,
                 "video-format" to MPV.mpvFormat.MPV_FORMAT_STRING,
@@ -1483,6 +1567,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
 
     private companion object {
         private const val BACKEND_MPV = "mpv"
+        private val assetsCopied = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 
     private fun refreshVideoGeometryFromMpv() {

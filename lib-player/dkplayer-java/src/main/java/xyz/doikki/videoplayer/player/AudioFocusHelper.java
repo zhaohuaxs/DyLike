@@ -79,36 +79,45 @@ final class AudioFocusHelper implements AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * Requests to obtain the audio focus
+     * Requests to obtain the audio focus.
+     *
+     * @return true only when focus is currently held. A delayed grant is reported through
+     * {@link #onAudioFocusChange(int)} so playback can resume after the interruption.
      */
-    void requestFocus() {
-        if (mCurrentFocus == AudioManager.AUDIOFOCUS_GAIN) {
-            return;
+    boolean requestFocus() {
+        if (mCurrentFocus == AudioManager.AUDIOFOCUS_GAIN && !mPausedForLoss) {
+            return true;
         }
 
         if (mAudioManager == null) {
-            return;
+            return false;
         }
 
         int status = mAudioManager.requestAudioFocus(this, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
         if (AudioManager.AUDIOFOCUS_REQUEST_GRANTED == status) {
             mCurrentFocus = AudioManager.AUDIOFOCUS_GAIN;
-            return;
+            mPausedForLoss = false;
+            return true;
         }
 
         mStartRequested = true;
+        return false;
+    }
+
+    boolean hasFocus() {
+        return mCurrentFocus == AudioManager.AUDIOFOCUS_GAIN;
     }
 
     /**
-     * Requests the system to drop the audio focus
+     * Requests the system to drop the audio focus. Reset all state so a later manual play can
+     * request focus again; otherwise LOSS would permanently disable foreground playback.
      */
     void abandonFocus() {
-
-        if (mAudioManager == null) {
-            return;
-        }
-
         mStartRequested = false;
-        mAudioManager.abandonAudioFocus(this);
+        mPausedForLoss = false;
+        mCurrentFocus = AudioManager.AUDIOFOCUS_NONE;
+        if (mAudioManager != null) {
+            mAudioManager.abandonAudioFocus(this);
+        }
     }
 }

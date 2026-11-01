@@ -103,7 +103,24 @@ class GlRenderView @JvmOverloads constructor(
             measureHelper.setVideoSize(videoWidth, videoHeight)
             videoRenderer?.onVideoSizeChanged(videoWidth, videoHeight)
             requestLayout()
+            // ExoPlayer 的 onVideoSizeChanged 与 onRenderedFirstFrame 在同一 VSync 回调，
+            // requestLayout 异步，第一帧 GL 渲染时 view 仍 fill_parent，glViewport 用 view.width/height
+            // 导致画面拉伸。强制同步 measure/layout，确保第一帧前 view 尺寸已按视频比例缩放。
+            forceMeasureLayoutSync()
         }
+    }
+
+    private fun forceMeasureLayoutSync() {
+        val p = parent as? View ?: return
+        val pw = p.width
+        val ph = p.height
+        if (pw <= 0 || ph <= 0) return
+        val wSpec = View.MeasureSpec.makeMeasureSpec(pw, View.MeasureSpec.EXACTLY)
+        val hSpec = View.MeasureSpec.makeMeasureSpec(ph, View.MeasureSpec.EXACTLY)
+        measure(wSpec, hSpec)
+        val left = (pw - measuredWidth) / 2
+        val top = (ph - measuredHeight) / 2
+        layout(left, top, left + measuredWidth, top + measuredHeight)
     }
 
     override fun setVideoRotation(degree: Int) {
@@ -137,18 +154,26 @@ class GlRenderView @JvmOverloads constructor(
     }
 
     override fun release() {
+        if (isReleased) return
         isReleased = true
-        mainHandler.post {
-            try {
-                mediaPlayer?.setSurface(null)
-            } catch (_: Exception) {}
-        }
-        mediaPlayer = null
-        // GLSurfaceView 自己管 EGL 释放
-        try {
-            onPause()
-        } catch (_: Exception) {}
-        videoRenderer?.release()
+        val renderer = videoRenderer
         videoRenderer = null
+        mediaPlayer = null
+        // 主线程不等待推理。GL 删除提交到 GL 线程；native 等待/释放在独立后台线程。
+        try {
+            queueEvent {
+                try {
+                    renderer?.releaseGlResources()
+                } finally {
+                    try {
+                        onPause()
+                    } catch (_: Exception) {}
+                }
+            }
+            requestRender()
+        } catch (_: Exception) {
+            // GLSurfaceView 已 detach 时上下文可能已不存在，交给 native 后台收尾。
+        }
+        renderer?.releaseNativeAsync()
     }
 }

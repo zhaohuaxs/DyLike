@@ -4,6 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
+
     <me.lingci.dy.player.view.ShortVideoControlView
         android:id="@+id/short_video_view"
         android:layout_width="match_parent"
