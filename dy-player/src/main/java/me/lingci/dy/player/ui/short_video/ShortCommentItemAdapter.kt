@@ -54,7 +54,7 @@ class ShortCommentItemAdapter(
     }
 
     fun sorted() {
-        dataList.reversed()
+        dataList.reverse()
         notifyAllChanged()
     }
 

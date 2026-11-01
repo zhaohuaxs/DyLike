@@ -92,6 +92,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     private int mSeekPosition = -1;
     private boolean mFirstTouch;
     private boolean mChangePosition;
+    private float mAccumDX;
+    private float mAccumDY;
     private float mLongPressY; // 记录长按触发时的 Y 坐标
     private boolean mChangeLock;
     private boolean mIsBottomLongPress; // 是否下半部分长按
@@ -347,12 +349,16 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         if (e1 == null || PlayerUtils.isEdge(getContext(), e1)) return false;
         Log.d(this, "onScroll", mFirstTouch, mIsLongPressing);
         if (mFirstTouch) {
-            // 横向滚动分量大于纵向，判定为进度调节
-            mChangePosition = Math.abs(distanceX) > Math.abs(distanceY);
-            mFirstTouch = false;
-            if (mChangePosition) {
-                // 进度调节：禁用 ViewPager2，停止进度条自动更新
-                getParent().requestDisallowInterceptTouchEvent(true);
+            mAccumDX += distanceX;
+            mAccumDY += distanceY;
+            if (Math.max(Math.abs(mAccumDX), Math.abs(mAccumDY)) > mScaledTouchSlop) {
+                // 累计位移超过阈值后一次性判定方向，避免首帧噪声误判横竖
+                mChangePosition = Math.abs(mAccumDX) > Math.abs(mAccumDY);
+                mFirstTouch = false;
+                if (mChangePosition) {
+                    // 进度调节：禁用 ViewPager2，停止进度条自动更新
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                }
             }
         }
 
@@ -440,6 +446,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
             case MotionEvent.ACTION_DOWN:
                 mFirstTouch = true;
                 mChangePosition = false;
+                mAccumDX = 0f;
+                mAccumDY = 0f;
                 break;
 
             case MotionEvent.ACTION_MOVE:
@@ -509,6 +517,8 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mIsBottomLongPress = false;
         mChangePosition = false;
         mFirstTouch = false;
+        mAccumDX = 0f;
+        mAccumDY = 0f;
         mSeekPosition = -1;
         if (!mIsScaling && mCurrentScale <= 1.0f) {
             getParent().requestDisallowInterceptTouchEvent(false);

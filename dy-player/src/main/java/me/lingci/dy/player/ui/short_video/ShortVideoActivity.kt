@@ -395,6 +395,7 @@ class ShortVideoActivity : BaseActivity() {
             spUtil.showSysBar,
             spUtil.showShortMore
         )
+        PlayerInitializer.Player.shortAutoNext = spUtil.shortPlayNext
         // 同步短视频标题策略运行时缓存
         PlayerInitializer.Player.shortTitleStrategy = spUtil.shortTitleStrategy
         PlayerInitializer.Player.shortTitleDelimiter = spUtil.shortTitleDelimiter!!
@@ -444,7 +445,7 @@ class ShortVideoActivity : BaseActivity() {
             it.like = ids.contains(it.id)
         }
         var currentIndex = index
-        if ((customRandom && random) || (!customRandom && spUtil.shortRandom)) {
+        if (((customRandom && random) || (!customRandom && spUtil.shortRandom)) && index in list.indices) {
             val data = list.removeAt(index)
             mVideoList.addAll(list.shuffled())
             mVideoList.add(0, data)
@@ -754,7 +755,7 @@ class ShortVideoActivity : BaseActivity() {
                 val next = mCurPos + 1
                 if (next !in mVideoList.indices) return
                 // 只改变选择，由 onPageSelected 唯一驱动起播。
-                mBinding.viewpage2.setCurrentItem(next, false)
+                mBinding.viewpage2.setCurrentItem(next, true)
             }
 
             override fun onChangeSysBar(show: Boolean) {
@@ -829,7 +830,7 @@ class ShortVideoActivity : BaseActivity() {
         }
         DyPlayerCoreRegistry.applyCore(mVideoView, spUtil.shortDyPlayerCore, spUtil.labMpvSpecialRender, spUtil.labMpvSuperResolution, false)
         // 画质增强开启时保留 applyCore 设的 GlRenderViewFactory，不要被 TextureRenderView 覆盖
-        if (!spUtil.sortRender && !spUtil.labMpvSuperResolution && !false) {
+        if (!spUtil.sortRender && !spUtil.labMpvSuperResolution) {
             mVideoView.setRenderViewFactory(TextureRenderViewFactory.create())
             mVideoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT)
         }
@@ -1100,15 +1101,7 @@ class ShortVideoActivity : BaseActivity() {
     }
 
     private fun findShortVideoControlViewByPosition(position: Int): ShortVideoControlView? {
-        val count = mViewPagerImpl.childCount
-        for (i in 0 until count) {
-            val itemView = mViewPagerImpl.getChildAt(i)
-            val viewHolder = itemView.tag as? ShortVideoAdapter.ViewHolder ?: continue
-            if (viewHolder.bindingAdapterPosition == position) {
-                return viewHolder.shortVideoControlView
-            }
-        }
-        return null
+        return (mViewPagerImpl.findViewHolderForAdapterPosition(position) as? ShortVideoAdapter.ViewHolder)?.shortVideoControlView
     }
 
     private fun updateControlAlphaForPageScroll(position: Int, positionOffset: Float, dragStartItem: Int) {
