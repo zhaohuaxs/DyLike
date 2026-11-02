@@ -1214,6 +1214,9 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
 
     @Override
     public void onVideoSizeChanged(int videoWidth, int videoHeight) {
+        if (mPlayerDetached) {
+            return;
+        }
         mVideoSize[0] = videoWidth;
         mVideoSize[1] = videoHeight;
 

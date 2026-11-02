@@ -101,6 +101,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         private const val KEY_INDEX = "index"
         private const val KEY_HISTORY = "history"
         private const val KEY_TEMP = "temp"
+
         private const val BACKGROUND_RECOVERY_WINDOW_MS = 5000L
 
         // 超分开关广播 action（adb 和 LabSettingsFragment 都可发）
@@ -272,15 +273,36 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
     private var activeBackendKey: String? = null
     /** Service 侧会话已被关闭(通知栏关闭)，回到前台需要显式重建。 */
     private var needsRestartOnForeground = false
+    /** 重建后待检测后台会话：Activity 被系统回收时 Service 可能仍持有 player，需主动 bindService 检测并 reclaim。 */
+    private var pendingBgReclaim = false
     private val playbackServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             playbackService = service as? PlaybackBinder
-            // Service 连上后，把 player 交给它
-            tryEnterBackgroundPlay()
+            if (pendingBgReclaim) {
+                handleReclaimOnReconnect()
+            } else {
+                tryEnterBackgroundPlay()
+            }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             playbackService = null
             isBoundToPlaybackService = false
+        }
+    }
+
+    /** 重建后主动检测到 Service 仍持有 player 时，reclaim 回前台；否则正常起播。 */
+    private fun handleReclaimOnReconnect() {
+        pendingBgReclaim = false
+        if (playbackService?.isHoldingPlayer == true) {
+            reclaimPlayerFromService()
+        } else {
+            playbackService?.stopIfNoPlayer()
+            try { unbindService(playbackServiceConnection) } catch (_: Exception) {}
+            isBoundToPlaybackService = false
+            playbackService = null
+            if (itemViewModel.getItemSize() > 0 && !videoView.hasPlayer()) {
+                startPlay(mCurPos, force = true)
+            }
         }
     }
 
@@ -391,6 +413,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingBgReclaim = savedInstanceState != null && !isChangingConfigurations
         // 竖屏模式：尽早锁定竖屏，避免 Manifest 的 landscape 启动后旋转闪烁
         if (spUtil.labLongVideoPortrait) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -414,6 +437,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             outState.putBoolean(KEY_HISTORY, onHistory)
             outState.putParcelable(KEY_MEDIA, itemViewModel.getMediaData())
             outState.putString(KEY_TEMP, VideoListTempStore.write(this, itemViewModel.getData()))
+
         }
     }
 
@@ -449,7 +473,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                     data.map { item -> TitleItem(title = item.name) }
                         .let { list -> epSelectView.setData(list) }
                 }
-                if (itemViewModel.getItemSize() > 0) {
+                if (itemViewModel.getItemSize() > 0 && !pendingBgReclaim && !videoView.hasPlayer()) {
                     startPlay(mCurPos)
                 }
             }
@@ -1112,6 +1136,21 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                 startPlay(mCurPos, force = true)
             }
             return
+        }
+        // F2-2: Activity 被系统回收重建后，Service 可能仍持有 player（孤立会话）。
+        // 主动 bindService 检测 isHoldingPlayer：持有则 reclaim，否则正常起播。
+        if (pendingBgReclaim && !isBoundToPlaybackService && !videoView.hasPlayer()) {
+            val intent = Intent(this, PlaybackService::class.java)
+            intent.putExtra("source_activity", LongVideoActivity::class.java.name)
+            val bound = bindService(intent, playbackServiceConnection, Context.BIND_AUTO_CREATE)
+            if (bound) {
+                isBoundToPlaybackService = true
+            } else {
+                pendingBgReclaim = false
+                if (itemViewModel.getItemSize() > 0) {
+                    startPlay(mCurPos, force = true)
+                }
+            }
         }
         // 注:不再用 500ms 延迟 tryReclaim。它在按 Home 进后台时会与 Service 的
         // takePlayer 竞态,错误地把刚交给 Service 的 player 取回,导致后台播放失效。
