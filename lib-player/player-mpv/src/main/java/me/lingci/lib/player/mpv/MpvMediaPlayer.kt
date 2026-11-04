@@ -153,6 +153,16 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     private val SP_KEY_LAB_MPV_SEQUENTIAL_READ = "labMpvSequentialRead"
     private val SP_LAB_MPV_SEQUENTIAL_READ_DEFAULT = true
 
+    /**
+     * MPV 视频输出 / 硬解方式的跨模块 SP key（由 dy-player.SpUtil.mpvVideoOutput / mpvHwdec 写入）。
+     *
+     * 短视频链路不走 LongVideoActivity 的 setVo/setHwdec 下发，如果只在那里读，
+     * 用户在设置里选了 gpu-next 或软解，短视频仍然按默认值播。这里在初始化时统一同步一次，
+     * 两条链路就一致了；没设置过时取不到值，保持构造默认（gpu / auto），不影响存量行为。
+     */
+    private val SP_KEY_MPV_VIDEO_OUTPUT = "mpvVideoOutput"
+    private val SP_KEY_MPV_HWDEC = "mpvHwdec"
+
     // HDR模式
     enum class HdrMode {
         SDR_MAPPING,       // 稳定优先：映射到 SDR 目标显示。
@@ -1145,8 +1155,26 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     /**
      * 运行时选项（可以在mpv.init()之后设置）
      */
+    /**
+     * 从 SP 同步 vo / hwdec。只在初始化选项时同步一次，之后仍可被 setVo() / setHwdec() 覆盖。
+     */
+    private fun syncRenderPrefsFromSp() {
+        try {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(appContext)
+            prefs.getString(SP_KEY_MPV_VIDEO_OUTPUT, null)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { voInUse = it }
+            prefs.getString(SP_KEY_MPV_HWDEC, null)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { hwdecMode = it }
+        } catch (e: Exception) {
+            L.e("Failed to read mpv render preferences: ${e.message}")
+        }
+    }
+
     private fun setRuntimeOptions() {
         if (isReleasing || isReleased || isNativeDestroyed) return
+        syncRenderPrefsFromSp()
         // 视频输出
         mpv.setOptionString("vo", voInUse)
         

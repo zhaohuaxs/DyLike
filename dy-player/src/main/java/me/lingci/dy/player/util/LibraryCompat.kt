@@ -1,5 +1,6 @@
 package me.lingci.dy.player.util
 
+import android.content.Context
 import me.lingci.dy.player.entity.CoverType
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
@@ -34,6 +35,19 @@ object LibraryCompat {
     fun builtinExternalId(): String = BUILTIN_EXTERNAL_ID
 
     fun builtinStreamId(): String = BUILTIN_STREAM_ID
+
+    /**
+     * 内置存储源数量：本地存储 + 串流播放，设备挂载了外部存储时再加一个。
+     *
+     * 资源库页面的列表由「内置源 + 库内源」拼成（见 SourcesScreen），
+     * 统计数字必须同源，否则会出现「页面显示 3 个源、统计显示 0」的矛盾。
+     */
+    fun builtinSourceCount(context: Context): Int {
+        var count = 2 // 本地存储 + 串流播放
+        val dirs = context.getExternalFilesDirs(null)
+        if (dirs != null && dirs.size > 1) count++
+        return count
+    }
 
     /**
      * SP 数据归一化（v2→v3）。仅在旧备份恢复（写回 SP 后重迁移）与迁移执行器预读时调用；
@@ -209,6 +223,95 @@ object LibraryCompat {
 
     private fun isRemoteMedia(type: MediaLibType): Boolean {
         return type == MediaLibType.WEBDAV || type == MediaLibType.SMB
+    }
+
+    // ---- 媒体入库（新增 / 编辑 / 扫描共用唯一入口）----
+
+    enum class MediaSaveResult {
+        /** 新增成功 */
+        Inserted,
+
+        /** 编辑成功 */
+        Updated,
+
+        /** 库内已存在同一媒体（新增场景） */
+        Duplicate
+    }
+
+    /**
+     * 媒体库写入唯一入口。
+     *
+     * 取代此前散落在各处的「list 前 200 条去重 + delete 再 insert」写法，统一处理三件事：
+     * ① 去重覆盖**全库**（`listLibrary()`），不受分页影响；
+     * ② 编辑走 upsert 而非 delete+insert —— `video_data.media_id` 是 FK CASCADE，
+     *    先删父行会把该媒体的分集全部级联删除，而编辑场景没有 items 可重建；
+     * ③ 分集重建只删「确实消失」的条目（按 beanId 比对），避免 favorite / playlist_item
+     *    的外键 CASCADE 连带清空用户收藏。
+     *
+     * @param items 需要落库的分集（扫描/导入场景）；为空表示不动分集
+     * @param isEdit true 表示编辑已有媒体，命中另一条同源记录时归并到该记录 id
+     */
+    suspend fun saveMedia(
+        media: MediaData,
+        sources: List<SourceData>,
+        items: List<VideoData> = emptyList(),
+        isEdit: Boolean = false
+    ): MediaSaveResult {
+        val mediaDao = DatabaseManager.mediaDataDao
+        val videoDao = DatabaseManager.videoDataDao
+
+        if (media.id.isBlank()) {
+            media.id = buildStableMediaId(media, sources)
+        }
+
+        // 全库比对，排除自身；不能再用「前 N 条」快照，否则超出部分永远判不出重复
+        val duplicate = mediaDao.listLibrary().firstOrNull {
+            it.id != media.id && sameMedia(it, media, sources)
+        }
+        if (!isEdit && duplicate != null) {
+            return MediaSaveResult.Duplicate
+        }
+        if (isEdit && duplicate != null) {
+            // 改名/改路径后稳定 id 变化，归并到库内既有那条，避免同一媒体出现两行
+            media.id = duplicate.id
+        }
+
+        val normalized = if (items.isEmpty()) {
+            emptyList()
+        } else {
+            sortByParentPath(items.toMutableList()).mapIndexed { index, video ->
+                video.apply {
+                    sortIndex = index
+                    if (id.isBlank()) id = beanId()
+                    mediaId = media.id
+                }
+            }
+        }
+        val staleIds = if (normalized.isEmpty()) {
+            emptyList()
+        } else {
+            val incoming = normalized.mapTo(mutableSetOf()) { it.id }
+            videoDao.listByMedia(media.id).map { it.id }.filterNot { it in incoming }
+        }
+
+        DatabaseManager.inTransaction {
+            mediaDao.upsert(media)
+            if (staleIds.isNotEmpty()) {
+                videoDao.deleteByIds(staleIds)
+            }
+            if (normalized.isNotEmpty()) {
+                videoDao.upsertAll(normalized)
+            }
+        }
+
+        return if (isEdit) MediaSaveResult.Updated else MediaSaveResult.Inserted
+    }
+
+    /** 按同源规则在**全库**中定位已存在的媒体（编辑页回填、导入查重共用） */
+    suspend fun findMedia(media: MediaData, sources: List<SourceData>): MediaData? {
+        return DatabaseManager.mediaDataDao.listLibrary().firstOrNull {
+            it.id == media.id || sameMedia(it, media, sources)
+        }
     }
 
     // ---- 视频落库（video_data.media_id 是 FK → media_data，写入前必须兜底）----

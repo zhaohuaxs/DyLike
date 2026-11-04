@@ -9,6 +9,7 @@ plugins {
     id("kotlinx-serialization")
     id("com.google.devtools.ksp")
     alias(libs.plugins.room3)
+    alias(libs.plugins.kotlin.compose)
 }
 
 // Room 3 Gradle 插件：schema 输出目录（必填），schema JSON 需签入仓库
@@ -73,6 +74,7 @@ android {
     buildFeatures {
         viewBinding = true
         buildConfig = true
+        compose = true
     }
 
     packaging {
@@ -212,6 +214,11 @@ dependencies {
 
     implementation(libs.bundles.androidx.navigation)
     implementation(libs.android.material)
+
+    // Compose
+    implementation(platform(libs.compose.bom))
+    implementation(libs.bundles.compose)
+    debugImplementation(libs.compose.ui.tooling)
     implementation(libs.androidx.viewpager2)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)

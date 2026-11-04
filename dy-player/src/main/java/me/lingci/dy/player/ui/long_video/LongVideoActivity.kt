@@ -60,6 +60,7 @@ import me.lingci.lib.player.exo.CustomExoMediaPlayer
 import me.lingci.lib.player.listener.OnFontChangeListener
 import me.lingci.lib.player.listener.OnLongVideoListener
 import me.lingci.lib.player.listener.OnPlayNextListener
+import me.lingci.lib.player.mpv.MpvMediaPlayer
 import me.lingci.lib.player.render.SurfaceRenderViewFactory
 import me.lingci.lib.player.widget.component.DanmakuControlView
 import me.lingci.lib.player.widget.component.DmConfControlView
@@ -424,7 +425,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         init(savedInstanceState?: intent.getBundleExtra(KEY_BUNDLE))
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         fromOpen()
     }
@@ -517,6 +518,12 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             (player as? CustomExoMediaPlayer)?.let { exoPlayer ->
                 exoPlayer.useOkhttp(spUtil.useOkhttp)
                 exoPlayer.setDebugMode(spUtil.debugMode)
+            }
+            // MPV 的 vo / hwdec 是内核级偏好，和 Exo 的 useOkhttp 一样在每次实例化后下发，
+            // 避免让 player-mpv 模块反过来依赖 app 的 SP 定义
+            (player as? MpvMediaPlayer)?.let { mpvPlayer ->
+                mpvPlayer.setHwdec(spUtil.mpvHwdec ?: "auto")
+                mpvPlayer.setVo(spUtil.mpvVideoOutput ?: "gpu")
             }
             (player as? MediaTrackProvider)?.setOnMediaTracksChangedListener { snapshot ->
                 Log.d(this, "updateTrackPanel", snapshot.audioTracks.size, snapshot.subtitleTracks.size)

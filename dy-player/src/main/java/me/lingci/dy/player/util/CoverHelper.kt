@@ -24,6 +24,17 @@ import java.io.File
  *   desc    :
  *   version : 1.0
  */
+/**
+ * 封面加载候选：[path] 为本地绝对路径或 http(s) URL，[headers] 是该 URL 需要的请求头（WebDAV 认证）。
+ *
+ * 解析与加载分离后，Compose 侧可以先拿到路径再决定用 Composable 渲染还是回落 Glide，
+ * 不必为了算一个路径而构造 ImageView。
+ */
+data class CoverCandidate(
+    val path: String,
+    val headers: Map<String, String> = emptyMap()
+)
+
 object CoverHelper {
 
     /** 源列表缓存的刷新间隔：既避免每次绑定都查库，也保证编辑资源库后缓存尽快自愈 */
@@ -86,7 +97,7 @@ object CoverHelper {
         return true
     }
 
-    private fun resolveSourceList(imageView: ImageView, sourceList: List<SourceData>): List<SourceData> {
+    private fun resolveSourceList(sourceList: List<SourceData>): List<SourceData> {
         if (sourceList.isNotEmpty()) {
             return sourceList
         }
@@ -96,11 +107,11 @@ object CoverHelper {
         return cachedSourceList
     }
 
-    private fun resolveWebDavHeaders(imageView: ImageView, mediaData: MediaData, sourceList: List<SourceData>): Map<String, String> {
+    private fun resolveWebDavHeaders(mediaData: MediaData, sourceList: List<SourceData>): Map<String, String> {
         if (mediaData.type != MediaLibType.WEBDAV) {
             return emptyMap()
         }
-        val sources = resolveSourceList(imageView, sourceList)
+        val sources = resolveSourceList(sourceList)
         val storageId = LibraryCompat.effectiveStorageId(mediaData, sources) ?: return emptyMap()
         val source = sources.find { it.id == storageId } ?: return emptyMap()
         if (source.username.isBlank() || source.password.isBlank()) {
@@ -109,11 +120,11 @@ object CoverHelper {
         return mapOf(VideoData.TOKEN_KEY to Credentials.basic(source.username, source.password))
     }
 
-    private fun resolveWebDavCoverPath(imageView: ImageView, mediaData: MediaData, sourceList: List<SourceData>): String? {
+    private fun resolveWebDavCoverPath(mediaData: MediaData, sourceList: List<SourceData>): String? {
         if (mediaData.type != MediaLibType.WEBDAV) {
             return null
         }
-        val sources = resolveSourceList(imageView, sourceList)
+        val sources = resolveSourceList(sourceList)
         val storageId = LibraryCompat.effectiveStorageId(mediaData, sources) ?: return null
         val source = sources.find { it.id == storageId } ?: return null
         if (source.siteUrl.isBlank()) {
@@ -128,39 +139,49 @@ object CoverHelper {
         }
     }
 
-    fun setCover(imageView: ImageView, mediaData: MediaData, sourceList: List<SourceData> = emptyList()) {
-        val headers = resolveWebDavHeaders(imageView, mediaData, sourceList)
+    /**
+     * 路径是否值得交给加载器：本地路径要先确认文件真在，否则必然白跑一次解码；
+     * 网络地址与 content:// 无法同步探测，一律放行。
+     */
+    private fun String?.isUsable(): Boolean = when {
+        isNullOrBlank() -> false
+        startsWith("/") -> File(this).exists()
+        else -> true
+    }
+
+    private fun firstUsable(vararg paths: String?): String? = paths.firstOrNull { it.isUsable() }
+
+    /**
+     * 解析媒体库封面：DEFAULT 只认 cover.jpg（忽略 showFile），CUSTOM/AUTO 优先 showFile 再回退。
+     * 返回 null 表示没有任何可加载的路径，调用方应显示占位图。
+     */
+    fun resolveCover(mediaData: MediaData, sourceList: List<SourceData> = emptyList()): CoverCandidate? {
+        val headers = resolveWebDavHeaders(mediaData, sourceList)
         val fallbackPath = if (mediaData.type == MediaLibType.WEBDAV) {
-            resolveWebDavCoverPath(imageView, mediaData, sourceList)
+            resolveWebDavCoverPath(mediaData, sourceList)
         } else {
             mediaData.coverPath()
         }
-        // DEFAULT: 忽略 showFile，只查 cover.jpg，失败后显示占位图
-        if (mediaData.coverType == CoverType.DEFAULT) {
-            if (!loadImage(imageView, fallbackPath, headers)) {
-                imageView.setImageResource(R.drawable.ic_media_default)
-            }
-            return
-        }
-        // CUSTOM/AUTO: 优先加载 showFile，再回退到 cover.jpg，最终显示占位图
-        if (loadImage(imageView, mediaData.showFile, headers)) {
-            return
-        }
-        if (!loadImage(imageView, fallbackPath, headers)) {
+        val showPath = if (mediaData.coverType == CoverType.DEFAULT) null else mediaData.showFile
+        val path = firstUsable(showPath, fallbackPath) ?: return null
+        return CoverCandidate(path, headers)
+    }
+
+    /** 解析「自定义封面 → 同名 cover」两级候选。 */
+    fun resolveCover(showPath: String?, coverPath: String?): CoverCandidate? =
+        firstUsable(showPath, coverPath)?.let { CoverCandidate(it) }
+
+    fun setCover(imageView: ImageView, mediaData: MediaData, sourceList: List<SourceData> = emptyList()) {
+        val candidate = resolveCover(mediaData, sourceList)
+        if (candidate == null || !loadImage(imageView, candidate.path, candidate.headers)) {
             imageView.setImageResource(R.drawable.ic_media_default)
         }
     }
 
     fun setCover(imageView: ImageView, showPath: String?, coverPath: String?) {
-        if (showPath.isNullOrBlank() && coverPath.isNullOrBlank()) {
+        val candidate = resolveCover(showPath, coverPath)
+        if (candidate == null || !loadImage(imageView, candidate.path)) {
             imageView.setImageResource(R.drawable.ic_media_default)
-            return
-        }
-        val success = loadImage(imageView, showPath)
-        if (success.not()) {
-            if (!loadImage(imageView, coverPath)) {
-                imageView.setImageResource(R.drawable.ic_media_default)
-            }
         }
     }
 

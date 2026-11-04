@@ -20,6 +20,10 @@ interface SourceDataDao {
     @Query("SELECT count(*) FROM source_data")
     suspend fun count(): Int
 
+    /** 存储源总数（响应式，供「我的」统计展示；增删资源时自动重发） */
+    @Query("SELECT count(*) FROM source_data")
+    fun observeCount(): Flow<Int>
+
     @Query("SELECT * FROM source_data")
     suspend fun list(): List<SourceData>
 

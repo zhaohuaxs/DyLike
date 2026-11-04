@@ -43,6 +43,15 @@
     <string name="hint_smb_domain_desc">可选，Windows/NAS 登录失败时可填写 WORKGROUP 或设备名</string>
     <string name="hint_smb_username_desc">可选，不填使用访客/匿名访问</string>
     <string name="hint_smb_password_desc">可选，不填为空密码</string>
+    <string name="default_source_dav_name">WebDav资源库</string>
+    <string name="hint_source_site_required">请填写服务器地址</string>
+    <string name="hint_source_site_invalid">请填写正确的服务器地址</string>
+    <string name="hint_source_test_success">连接成功</string>
+    <string name="hint_source_test_failure">连接失败</string>
+    <string name="content_desc_add_source">添加资源库</string>
+    <string name="hint_source_load_failed">资源库加载失败：%1$s</string>
+    <string name="hint_source_action_edit">编辑资源库</string>
+    <string name="hint_source_action_delete">删除资源库</string>
     <string name="hint_version_message">最新公告</string>
     <string name="hint_version_update">版本更新</string>
     <string name="hint_version_null">无事发生，没事就想冒个泡</string>
@@ -95,6 +104,13 @@
     <string name="hint_online_link">链接列表</string>
     <string name="hint_online_link_help">输入可播放的媒体列表，示例 #EP 第1话;https?://media.m3u8</string>
     <string name="hint_media_scan_local">扫描本地媒体</string>
+    <string name="hint_scan_no_storage">未找到可扫描的存储目录</string>
+    <string name="hint_scan_running">扫描进行中</string>
+    <string name="hint_scan_failed">扫描失败</string>
+    <string name="hint_scan_no_selection">未选择新增目录</string>
+    <string name="hint_scan_no_new_media">没有新增媒体库</string>
+    <string name="hint_scan_added">已加入 %1$d 个媒体库</string>
+    <string name="hint_scan_permission_denied">未授予存储权限</string>
     <string name="hint_media_link_add">添加在线媒体库</string>
     <string name="hint_media_link_input">导入在线媒体库</string>
     <string name="hint_media_link_local">在线媒体库文件</string>
@@ -204,9 +220,18 @@
     <string name="hint_history_delete_tip">长按可删除单条记录</string>
     <string name="dialog_delete_title">删除提醒</string>
     <string name="hint_add_to_playlist">添加到播放列表</string>
+    <string name="hint_add_to_media">添加到媒体库</string>
+    <string name="media_add_success">媒体库添加成功</string>
+    <string name="media_add_exist">媒体库已存在</string>
+    <string name="media_add_failed">媒体库添加失败</string>
+    <string name="hint_media_link_empty">请输入媒体链接</string>
+    <string name="hint_media_link_unparsed">未解析到媒体</string>
+    <string name="folder_no_video">该目录没有视频文件</string>
     <string name="hint_playlist_created">播放列表创建成功</string>
     <string name="hint_playlist_deleted">播放列表已删除</string>
     <string name="hint_playlist_renamed">播放列表已重命名</string>
+    <string name="hint_playlist_auto_play_set">已设为启动自动播放</string>
+    <string name="hint_playlist_auto_play_cleared">已取消启动自动播放</string>
     <string name="hint_playlist_video_added">已添加到播放列表</string>
     <string name="hint_playlist_video_add_failed">添加到播放列表失败</string>
     <string name="hint_playlist_video_exists">视频已在播放列表中</string>
@@ -255,5 +280,141 @@
     <string name="migration_stat_shuffles">随机播放状态</string>
     <string name="migration_entry">数据迁移（旧版数据）</string>
     <string name="migration_entry_desc">将旧版本本地数据迁移到新数据库</string>
+
+    <string name="permission_storage_title">需要存储权限</string>
+    <string name="permission_storage_rationale">DyLike 需要读取设备上的视频文件，才能扫描本地媒体、浏览目录并播放。授权后媒体库会自动载入。</string>
+    <string name="permission_storage_denied">存储权限已被拒绝，媒体库与本地文件暂时无法读取。可前往系统设置手动开启。</string>
+    <string name="permission_grant">授予权限</string>
+    <string name="permission_open_settings">去设置</string>
+    <string name="permission_later">稍后</string>
+
+    <!-- 无障碍：卡片的操作标签，不显示在界面上，读屏会念出来 -->
+    <string name="cd_open">打开</string>
+    <string name="cd_open_library">打开媒体库</string>
+    <string name="cd_play">播放</string>
+    <string name="cd_continue_play">继续播放</string>
+    <string name="cd_more_actions">更多操作</string>
+    <string name="cd_play_episode">播放第 %1$d 集</string>
+    <string name="cd_episode_desc">第 %1$d 集，%2$s</string>
+    <string name="cd_episode_last_played">第 %1$d 集，%2$s，上次播放</string>
+
+    <!-- 媒体库详情 -->
+    <string name="detail_load_failed">媒体库加载失败</string>
+    <string name="detail_search_videos">搜索视频</string>
+    <string name="detail_search_episodes">搜索分集标题</string>
+    <string name="detail_no_match_video">没有匹配的视频</string>
+    <string name="detail_no_match_episode">没有匹配的分集</string>
+    <string name="detail_last_played">上次播放</string>
+    <string name="detail_back_to_last_played">回到上次播放</string>
+    <string name="action_retry">重试</string>
+
+    <!-- 设置：分组标题与共用文案 -->
+    <string name="settings_group_appearance">外观</string>
+    <string name="settings_group_icon">应用图标</string>
+    <string name="settings_kernel_title">播放内核</string>
+    <string name="settings_library_title">资源库与显示</string>
+    <string name="settings_danmaku_title">弹幕</string>
+    <string name="settings_lab_title">实验室</string>
+    <string name="settings_lab_note">实验项可能影响兼容性，遇到异常先逐项关掉再反馈；大部分开关在下次开始播放或下次启动时生效。</string>
+    <string name="settings_open">打开</string>
+    <string name="settings_view">查看</string>
+
+    <!-- 设置：入口行（分类入口 + 动作入口都直接放在「我的」页，不再有「全部设置」索引层） -->
+    <string name="settings_group_all">SETTINGS</string>
+    <string name="settings_cat_playback">播放</string>
+    <string name="settings_cat_playback_desc">连播、音频与资源库显示</string>
+    <string name="settings_cat_danmaku_desc">样式、字体、过滤与合并</string>
+    <!-- 旧页的 hint_data_backup_desc 是「备份还原应用数据」，和标题重复，新页面不再复用 -->
+    <string name="settings_backup_desc">导出或恢复应用数据</string>
+    <string name="settings_enter">进入</string>
+
+    <!-- 设置：播放与进度 -->
+    <string name="settings_section_long_video">长视频</string>
+    <string name="settings_section_short_video">短视频</string>
+    <string name="settings_section_audio">音频</string>
+    <string name="settings_playback_duration_500">0.5s</string>
+    <string name="settings_playback_duration_1000">1s</string>
+    <string name="settings_playback_duration_1500">1.5s</string>
+    <string name="settings_playback_duration_2000">2s</string>
+    <string name="settings_playback_notification_denied">未授予通知权限，后台播放可能不显示通知</string>
+
+    <!-- 设置：播放内核 -->
+    <string name="settings_kernel_long_video">长视频内核</string>
+    <string name="settings_kernel_long_video_desc">解码内核，下一次开始播放时生效</string>
+    <string name="settings_kernel_short_video">短视频内核</string>
+    <string name="settings_kernel_short_video_desc">与长视频内核互相独立</string>
+    <string name="settings_kernel_exo">EXO 专属</string>
+    <string name="settings_kernel_mpv">MPV 专属</string>
+    <string name="settings_kernel_exo_network">网络路线</string>
+    <string name="settings_kernel_exo_network_desc">HTTP 数据源实现，串流卡顿时可切换对比</string>
+    <string name="settings_kernel_exo_network_system">系统</string>
+    <string name="settings_kernel_exo_render">渲染方式</string>
+    <string name="settings_kernel_exo_render_desc">Surface 支持 HDR，Texture 兼容性更好</string>
+    <string name="settings_kernel_exo_sharpen_strength">锐化强度 %1$s</string>
+    <string name="settings_kernel_exo_sharpen_strength_desc">0 关闭锐化但仍走 GL 渲染管线</string>
+    <string name="settings_kernel_mpv_output">视频输出（vo）</string>
+    <string name="settings_kernel_mpv_output_desc">gpu-next 是新渲染管线，画面异常时切回 gpu</string>
+    <string name="settings_kernel_mpv_hwdec">硬件解码</string>
+    <string name="settings_kernel_mpv_hwdec_desc">自动会先尝试硬解，失败回退软解</string>
+    <string name="settings_kernel_mpv_hwdec_auto">自动</string>
+    <string name="settings_kernel_mpv_hwdec_off">软解</string>
+    <string name="settings_kernel_note">内核与内核选项在下一次开始播放时生效，播放中修改不会热切换。</string>
+    <string name="settings_kernel_target">配置对象</string>
+    <string name="settings_kernel_target_desc">长视频与短视频的内核及其专属选项互相独立</string>
+    <string name="settings_kernel_short_render">快速滑动渲染</string>
+    <string name="settings_kernel_short_render_desc">滑动时复用 Surface，帧率更稳；仅 Exo 生效</string>
+    <string name="settings_kernel_short_render_standard">通用</string>
+    <string name="settings_kernel_short_render_fast">快速滑动</string>
+    <string name="settings_kernel_short_mpv_note">短视频使用 MPV 时固定走 Surface 渲染，快速滑动渲染不参与。</string>
+
+    <!-- 设置：资源库与显示 -->
+    <string name="settings_library_cover_ratio">媒体库封面比例</string>
+    <string name="settings_library_cover_ratio_desc">详情页、列表与瀑布流封面的显示比例</string>
+    <string name="settings_library_new_home">资源库分类首页</string>
+    <string name="settings_library_new_home_desc">按本地、在线、WebDAV、SMB 分区</string>
+
+    <!-- 设置：弹幕 -->
+    <string name="settings_dm_section_font">字体</string>
+    <string name="settings_dm_section_behavior">显示与过滤</string>
+    <string name="settings_dm_gradient_ratio">渐变描边比例 %1$d</string>
+    <string name="settings_dm_gradient_toggle_desc">描边的渐变范围，当前 %1$s</string>
+    <string name="settings_dm_gradient_ratio_desc">白色弹幕渐变描边的渐变范围</string>
+    <string name="settings_dm_stroke_multiple">描边宽度倍率 %1$s</string>
+    <string name="settings_dm_stroke_multiple_desc">相对单色描边的宽度倍率</string>
+    <string name="settings_dm_merge">合并重复弹幕</string>
+    <string name="settings_dm_merge_desc">相同弹幕合并成 xN 显示</string>
+    <string name="settings_dm_merge_threshold">合并阈值</string>
+    <string name="settings_dm_merge_threshold_desc">合并 ≥%1$d 条为 xN · 转顶部 ≥%2$d 条</string>
+    <string name="settings_dm_merge_threshold_title">弹幕合并显示设置</string>
+    <string name="settings_dm_merge_threshold_note">阈值越小时越容易合并；「转顶部」只影响 xN 弹幕固定到顶部的时机。</string>
+    <string name="settings_dm_show_time">显示发送时间</string>
+    <string name="settings_dm_show_time_desc">弹幕旁显示该条的发送时间</string>
+    <string name="settings_dm_show_fps">显示弹幕帧率</string>
+    <string name="settings_dm_show_fps_desc">调试用，右上角显示弹幕渲染帧率</string>
+    <string name="settings_dm_filter">关键词过滤</string>
+    <string name="settings_dm_filter_desc">按关键词屏蔽不想看的弹幕</string>
+    <string name="settings_dm_font_default">默认</string>
+    <string name="settings_dm_font_pick">字体文件</string>
+    <string name="settings_dm_font_toggle_desc">用下面选择的字体文件渲染弹幕</string>
+    <string name="settings_dm_font_reset">恢复默认字体</string>
+    <string name="settings_dm_font_reset_desc">不再使用已导入的字体文件</string>
+    <string name="action_clear">清除</string>
+    <string name="settings_dm_font_pick_desc">当前：%1$s</string>
+    <string name="settings_dm_filter_words">过滤词表</string>
+    <string name="settings_dm_filter_words_empty">尚未添加关键词</string>
+    <string name="settings_dm_filter_words_count">已启用 %1$d 个关键词</string>
+    <string name="settings_dm_filter_words_title">过滤词表</string>
+    <string name="settings_dm_filter_words_edit_desc">每行一个关键词，弹幕包含任一关键词就会被隐藏</string>
+    <string name="action_select">选择</string>
+    <string name="action_adjust">调整</string>
+
+    <!-- 设置：数据与备份 / 关于 -->
+    <string name="settings_data_section_backup">备份与还原</string>
+    <string name="settings_data_section_migration">数据迁移</string>
+    <string name="settings_about_version">版本</string>
+    <string name="settings_about_icon">桌面图标</string>
+    <string name="settings_about_icon_desc">切换桌面图标样式</string>
+    <string name="settings_about_feedback">反馈与开源</string>
+    <string name="settings_about_feedback_desc">问题反馈、功能建议与开源许可</string>
 
 </resources>

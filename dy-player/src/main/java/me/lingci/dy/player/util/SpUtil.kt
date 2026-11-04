@@ -111,6 +111,14 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var browserShowHide by SPManager.boolean(false)
 
+    var navLabels by SPManager.boolean(false)
+
+    var themeMode by SPManager.int(0)
+
+    var brandHue by SPManager.int(0)
+
+    var dynamicColor by SPManager.boolean(false)
+
     var newHome by SPManager.boolean(false)
 
     var sortRender by SPManager.boolean(false)
@@ -186,6 +194,21 @@ open class SpUtil(context: Context) : SpBase(context) {
      * （app 默认 SharedPreferences）。重命名属性会破坏 MPV 端读取。
      */
     var labMpvSequentialRead by SPManager.boolean(true)
+
+    /**
+     * MPV 视频输出（vo）：gpu / gpu-next。
+     *
+     * 旧版本硬编码 "gpu"，这里只是把已有的两条渲染管线暴露成偏好，默认值保持 gpu，
+     * 不改变已发版用户的实际渲染路径；gpu-next 仅供排查/尝鲜切换。
+     */
+    var mpvVideoOutput by SPManager.string("gpu")
+
+    /**
+     * MPV 硬件解码方式：auto / mediacodec / mediacodec-copy / no。
+     *
+     * 默认 auto，与 MpvMediaPlayer 里 hwdecMode 的默认值一致（先硬解，失败回退软解）。
+     */
+    var mpvHwdec by SPManager.string("auto")
 
     /**
      * 画质增强：开启后给 ExoPlayer 内核挂 GLSurfaceView 渲染管线 + 锐化 shader，

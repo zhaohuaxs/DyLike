@@ -87,6 +87,14 @@
         </activity>
 
         <activity
+            android:name=".ui.compose.MainComposeActivity"
+            android:configChanges="orientation|keyboardHidden|navigation|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:hardwareAccelerated="true"
+            android:theme="@style/Theme.App" />
+
+        <activity
             android:name=".ui.long_video.LongVideoActivity"
             android:configChanges="orientation|keyboardHidden|navigation|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:screenOrientation="landscape"

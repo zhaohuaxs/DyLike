@@ -40,6 +40,10 @@ interface MediaDataDao {
     @Query("SELECT * FROM media_data WHERE media_type = :type AND is_virtual = 0 ORDER BY pinned DESC, pinned_at DESC, last_played_at DESC")
     fun observeByType(type: MediaLibType): Flow<List<MediaData>>
 
+    /** 媒体库总数（响应式，供「我的」统计展示；新增/删除媒体时自动重发） */
+    @Query("SELECT count(*) FROM media_data WHERE media_type IN (1,2,3,4,7) AND is_virtual = 0")
+    fun observeCount(): Flow<Int>
+
     @Query("SELECT * FROM media_data WHERE storage_id = :storageId AND media_type IN (1,2,3,4,7) AND is_virtual = 0")
     fun observeByStorage(storageId: String): Flow<List<MediaData>>
 
@@ -59,6 +63,17 @@ interface MediaDataDao {
     /** 全表快照（备份导出用，含虚拟宿主与 DEFAULT 类型） */
     @Query("SELECT * FROM media_data")
     suspend fun list(): List<MediaData>
+
+    /**
+     * 媒体库全量（与 observeLibraryPage 同一筛选口径，不含虚拟宿主）。
+     * 供入库去重 / 编辑定位使用：去重必须覆盖全库，不能只比前 N 条。
+     */
+    @Query("""
+        SELECT * FROM media_data
+        WHERE media_type IN (1,2,3,4,7) AND is_virtual = 0
+        ORDER BY pinned DESC, pinned_at DESC, last_played_at DESC, `index` DESC
+    """)
+    suspend fun listLibrary(): List<MediaData>
 
     // ---- 写入 ----
 

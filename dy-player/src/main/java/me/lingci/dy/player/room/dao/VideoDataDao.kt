@@ -26,6 +26,21 @@ interface VideoDataDao {
     @Query("SELECT * FROM video_data WHERE media_id = :mediaId ORDER BY sort_index ASC")
     fun observeByMedia(mediaId: String): Flow<List<VideoData>>
 
+    /**
+     * 历史页「文件视图」联查：只有单文件历史（source_type = 2）涉及的视频实体。
+     *
+     * 历史页要按 play_history 的进度渲染，又要拿 VideoData 起播；以前对每条历史调用
+     * `getById`（N+1）。这里一次取回全部实体，进度仍由 `observeStandaloneHistory()` 提供，
+     * 两边在 ViewModel 里按 videoId 合并。
+     */
+    @Query("""
+        SELECT v.* FROM video_data v
+        INNER JOIN play_history p ON v.id = p.video_id
+        WHERE p.source_type = 2
+        GROUP BY v.id
+    """)
+    fun observeStandaloneHistoryVideos(): Flow<List<VideoData>>
+
     @Query("SELECT * FROM video_data WHERE id = :id")
     suspend fun getById(id: String): VideoData?
 
@@ -35,6 +50,9 @@ interface VideoDataDao {
 
     @Upsert
     suspend fun upsert(videoData: VideoData)
+
+    @Upsert
+    suspend fun upsertAll(videoList: List<VideoData>)
 
     @Insert
     suspend fun insertAll(videoList: List<VideoData>)
@@ -49,6 +67,14 @@ interface VideoDataDao {
     /** 媒体重新扫描时，事务内 deleteByMedia + insertAll 完成子表重建（见 LibraryCompat.updateMedia） */
     @Query("DELETE FROM video_data WHERE media_id = :mediaId")
     suspend fun deleteByMedia(mediaId: String)
+
+    /**
+     * 按主键批量删除。
+     * 重建分集时只删「确实已从磁盘消失」的条目，避免整表删除触发 favorite /
+     * playlist_item 的 FK CASCADE 把用户收藏与列表条目一并清掉。
+     */
+    @Query("DELETE FROM video_data WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 
     /** 更新剧集归属（孤儿视频归并到媒体时使用） */
     @Query("UPDATE video_data SET media_id = :mediaId WHERE id = :videoId")

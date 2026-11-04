@@ -10,6 +10,7 @@ import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.entity.HistoryGroupSummary
 import me.lingci.dy.player.room.entity.PlayHistory
 import me.lingci.dy.player.room.entity.PlaySource
+import me.lingci.dy.player.room.entity.ResumeRow
 
 /**
  * PlayHistory DAO接口
@@ -26,18 +27,81 @@ interface PlayHistoryDao {
     @Query("SELECT * FROM play_history ORDER BY updated_at DESC LIMIT :limit OFFSET :offset")
     fun observeRecent(limit: Int, offset: Int): Flow<List<PlayHistory>>
 
+    /** 首页继续观看：仅媒体库来源，按最近播放排序 */
+    @Query("SELECT * FROM play_history WHERE source_type = 0 ORDER BY updated_at DESC LIMIT :limit")
+    fun observeLibraryRecent(limit: Int): Flow<List<PlayHistory>>
+
+    /** 首页继续观看：按媒体库分组，每个媒体库取最新一条 */
+    @Query("""
+        SELECT * FROM play_history
+        WHERE source_type = 0 AND updated_at = (
+            SELECT MAX(p2.updated_at) FROM play_history p2
+            WHERE p2.source_key = play_history.source_key AND p2.source_type = 0
+        )
+        ORDER BY updated_at DESC
+        LIMIT :limit
+    """)
+    fun observeLibraryGroupedRecent(limit: Int): Flow<List<PlayHistory>>
+
+    /**
+     * 首页「继续观看」联查：每个媒体库取最新一条，一次补齐媒体标题与分集名。
+     *
+     * 替代「先查历史、再逐条 getById 查 media / video」的 N+1，缩略图路径由调用方
+     * 用返回的 videoId（即 video_data 主键）换算。
+     */
+    @Query("""
+        SELECT p.video_id AS video_id, p.source_key AS source_key,
+               p.progress AS progress, p.duration AS duration,
+               m.title AS media_title, v.name AS video_name
+        FROM play_history p
+        INNER JOIN media_data m ON m.id = substr(p.source_key, 5)
+        INNER JOIN video_data v ON v.id = p.video_id
+        WHERE p.source_type = 0 AND p.updated_at = (
+            SELECT MAX(p2.updated_at) FROM play_history p2
+            WHERE p2.source_key = p.source_key AND p2.source_type = 0
+        )
+        ORDER BY p.updated_at DESC
+        LIMIT :limit
+    """)
+    fun observeResumeRows(limit: Int): Flow<List<ResumeRow>>
+
     /** 某一来源（某剧/某播放列表）的全部观看记录 */
     @Query("SELECT * FROM play_history WHERE source_type = :source AND source_key = :sourceKey ORDER BY updated_at DESC")
     fun observeBySource(source: PlaySource, sourceKey: String): Flow<List<PlayHistory>>
 
-    /** 历史页聚合视图：LIBRARY/PLAYLIST 按 source_key 分组取最新（标题/封面由业务层补全） */
+    /** 某时间点之后有观看记录的条目数（「我的」本月观看统计；只看最近一次进度时间） */
+    @Query("SELECT COUNT(*) FROM play_history WHERE updated_at >= :since")
+    fun observeCountSince(since: Long): Flow<Int>
+
+    /**
+     * 历史页聚合视图：LIBRARY/PLAYLIST 按 source_key 分组取最新。
+     *
+     * 标题与进度都在 SQL 侧补齐：
+     * - `substr(source_key, 5)` 去掉 `lib:` 前缀（4 字符 + 1），`substr(source_key, 4)` 去掉 `pl:`；
+     * - 两个 LEFT JOIN 各自限定 source_type，另一侧不会误命中；
+     * - 进度取该组最新一条，替代业务层逐组调用 `getLatestBySource`（N+1）。
+     */
     @Query("""
-        SELECT source_type, source_key,
-               MAX(updated_at) AS last_played_at,
-               COUNT(*) AS ep_count
-        FROM play_history
-        WHERE source_type IN (0, 1)
-        GROUP BY source_type, source_key
+        SELECT h.source_type, h.source_key,
+               MAX(h.updated_at) AS last_played_at,
+               COUNT(*) AS ep_count,
+               COALESCE((
+                   SELECT p.progress FROM play_history p
+                   WHERE p.source_type = h.source_type AND p.source_key = h.source_key
+                   ORDER BY p.updated_at DESC LIMIT 1
+               ), 0) AS progress,
+               COALESCE((
+                   SELECT p.duration FROM play_history p
+                   WHERE p.source_type = h.source_type AND p.source_key = h.source_key
+                   ORDER BY p.updated_at DESC LIMIT 1
+               ), 0) AS duration,
+               m.title AS media_title,
+               pl.title AS playlist_title
+        FROM play_history h
+        LEFT JOIN media_data m ON h.source_type = 0 AND m.id = substr(h.source_key, 5)
+        LEFT JOIN playlist pl ON h.source_type = 1 AND pl.id = substr(h.source_key, 4)
+        WHERE h.source_type IN (0, 1)
+        GROUP BY h.source_type, h.source_key
         ORDER BY last_played_at DESC
     """)
     fun observeGroupedHistory(): Flow<List<HistoryGroupSummary>>
@@ -51,6 +115,10 @@ interface PlayHistoryDao {
     /** 续播：同一视频在不同来源下各自进度 */
     @Query("SELECT * FROM play_history WHERE video_id = :videoId AND source_key = :sourceKey LIMIT 1")
     suspend fun getByVideoAndSource(videoId: String, sourceKey: String): PlayHistory?
+
+    /** 某来源的最新一条历史（分组项补全进度/时长） */
+    @Query("SELECT * FROM play_history WHERE source_type = :source AND source_key = :sourceKey ORDER BY updated_at DESC LIMIT 1")
+    suspend fun getLatestBySource(source: PlaySource, sourceKey: String): PlayHistory?
 
     /** 「这剧看到第几集」（替代 media_data.playLast 的 URL 匹配） */
     @Query("SELECT video_id FROM play_history WHERE source_key = :sourceKey ORDER BY updated_at DESC LIMIT 1")

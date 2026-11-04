@@ -25,7 +25,15 @@ navigation-fragment = '2.5.3'
 navigation-ui = '2.5.3'
 window = '1.0.0'
 lifecycle = "2.7.0"
+# Compose 侧的 Lifecycle 集成（collectAsStateWithLifecycle / viewModel()）。
+# 版本需与 activity-compose 1.10.0 传递引入的 lifecycle 2.8.x 对齐，不能沿用上面的 2.7.0，
+# 否则 lifecycle-runtime 被降级会导致运行时 NoSuchMethodError。
+lifecycle-compose = "2.8.7"
 kotlinx-serialization = "1.9.0"
+# Compose
+compose-bom = "2024.12.01"
+activity-compose = "1.10.0"
+navigation-compose = "2.8.5"
 # Room 3.0.3（新包名 androidx.room3）+ androidx.sqlite 2.7.1（AndroidSQLiteDriver），dy-player / app 模块用
 room3 = "3.0.3"
 sqlite = "2.7.1"
@@ -71,10 +79,23 @@ androidx-viewpager2 = { module = "androidx.viewpager2:viewpager2", version.ref =
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
 navigation-fragment = { module = "androidx.navigation:navigation-fragment-ktx", version.ref = "navigation-fragment" }
 navigation-ui = { module = "androidx.navigation:navigation-ui-ktx", version.ref = "navigation-ui" }
+# Compose
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation-compose" }
 androidx-window = { module = "androidx.window:window", version.ref = "window" }
 lifecycle-livedata-ktx = { group = "androidx.lifecycle", name = "lifecycle-livedata-ktx", version.ref = "lifecycle" }
 lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
 lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version = "lifecycle" }
+lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle-compose" }
+lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle-compose" }
 
 androidx-room3-runtime = { module = "androidx.room3:room3-runtime", version.ref = "room3" }
 androidx-room3-compiler = { module = "androidx.room3:room3-compiler", version.ref = "room3" }
@@ -130,6 +151,7 @@ test-mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 okhttp = ["okhttp", "okhttp-logging"]
 android-test = ["test-ext", "test-espresso"]
 androidx-navigation = ["navigation-fragment", "navigation-ui"]
+compose = ["activity-compose", "compose-ui", "compose-ui-graphics", "compose-ui-tooling-preview", "compose-foundation", "compose-material3", "compose-material-icons-extended", "navigation-compose", "lifecycle-runtime-compose", "lifecycle-viewmodel-compose"]
 media3-exo = ["media3-exoplayer", "media3-exoplayer-dash", "media3-exoplayer-hls", "media3-exoplayer-rtsp", "media3-datasource-rtmp", "media3-datasource-okhttp"]
 
 [plugins]
@@ -140,3 +162,4 @@ kotlinx-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", vers
 kotlin-ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 room3 = { id = "androidx.room3", version.ref = "room3" }
 kotlin-parcelize = { id = "org.jetbrains.kotlin.plugin.parcelize", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

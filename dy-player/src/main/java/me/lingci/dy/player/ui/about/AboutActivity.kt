@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import me.lingci.dy.player.BuildConfig
 import me.lingci.dy.player.databinding.ActivityAboutBinding
+import me.lingci.dy.player.ui.compose.MainComposeActivity
 import me.lingci.dy.player.ui.tool.DisplayInfoDialog
 import me.lingci.lib.base.ui.BaseActivity
 import me.lingci.lib.base.util.ToastUtil
@@ -47,6 +48,17 @@ class AboutActivity : BaseActivity() {
         binding.tvProtocol.setOnClickListener {
             displayInfoDialog.show(supportFragmentManager, displayInfoDialog.tag)
             ToastUtil.showToast(this, "等待后续添加")
+        }
+
+        var lastLogoClickTime = 0L
+        binding.ivAppLogo.setOnClickListener {
+            val now = System.currentTimeMillis()
+            if (now - lastLogoClickTime < 500) {
+                startActivity(Intent(this, MainComposeActivity::class.java))
+                lastLogoClickTime = 0L
+            } else {
+                lastLogoClickTime = now
+            }
         }
     }
 

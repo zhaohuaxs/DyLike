@@ -57,6 +57,14 @@ interface FavoriteDao {
     """)
     suspend fun listFavoriteVideos(): List<VideoData>
 
+    /** 收藏列表联查视频实体（Flow 响应式，按收藏时间倒序） */
+    @Query("""
+        SELECT v.* FROM video_data v
+        INNER JOIN favorite f ON v.id = f.video_id
+        ORDER BY f.created_at DESC
+    """)
+    fun observeFavoriteVideos(): Flow<List<VideoData>>
+
     // ---- 写入 ----
 
     /**
