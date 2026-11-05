@@ -15,7 +15,7 @@ import me.lingci.lib.base.storage.entity.StorageType
 /**
  * 资源库页状态。
  *
- * 列表恒有内置源（本地存储 / 串流播放，设备挂了外部存储再加一个），因此没有 Empty 分支：
+ * 列表恒有内置源（本地存储 / 串流播放），因此没有 Empty 分支：
  * 真正的空态只可能出现在内置源也构造不出来时，那种情况按 Error 处理更准确。
  */
 sealed interface SourcesUiState {
@@ -94,42 +94,7 @@ class SourcesViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun buildBuiltinSources(): List<SourceData> {
-        val context = getApplication<Application>()
-        val list = mutableListOf<SourceData>()
-        list.add(
-            SourceData().apply {
-                id = LibraryCompat.builtinLocalId()
-                type = StorageType.LOCAL_STORAGE
-                title = "本地存储"
-                siteUrl = "/storage/emulated/0/"
-                schema = "/storage/emulated/0/"
-            }
-        )
-        context.getExternalFilesDirs(null)?.let { dirs ->
-            if (dirs.size > 1) {
-                runCatching {
-                    val path = dirs[1].path.split("Android/data")[0]
-                    list.add(
-                        SourceData().apply {
-                            id = LibraryCompat.builtinExternalId()
-                            type = StorageType.LOCAL_STORAGE
-                            title = "外部存储"
-                            siteUrl = path
-                            schema = path
-                        }
-                    )
-                }
-            }
-        }
-        list.add(
-            SourceData().apply {
-                id = LibraryCompat.builtinStreamId()
-                type = StorageType.STREAM_LINK
-                title = "串流播放"
-                siteUrl = "https?://media.mp4|.m3u8"
-                schema = "https?://media.mp4|.m3u8"
-            }
-        )
-        return list
+        // 本地存储与外部存储合并为一个入口，内部存储 / 存储卡的切换在浏览页里做
+        return BuiltinSources.all(getApplication())
     }
 }

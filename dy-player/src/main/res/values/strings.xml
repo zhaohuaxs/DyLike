@@ -244,6 +244,12 @@
     <string name="hint_removed_from_like">已移出喜欢列表</string>
     <string name="action_playlist_play_mode">播放类型</string>
     <string name="hint_playlist_mode_changed">播放类型已更新</string>
+    <string name="hint_playlist_picker_count">将添加 %1$d 个视频</string>
+    <string name="hint_playlist_create_desc">新建播放列表并添加 %1$d 个视频</string>
+    <string name="hint_playlist_picker_empty">还没有播放列表，先新建一个</string>
+    <string name="hint_playlist_item_count">包含 %1$d 条媒体</string>
+    <string name="action_create_add">创建并添加</string>
+    <string name="cd_playlist_pick">添加到该播放列表</string>
 
     <string name="hint_timer_close">定时关闭</string>
     <string name="timer_off">不开启</string>
@@ -416,5 +422,38 @@
     <string name="settings_about_icon_desc">切换桌面图标样式</string>
     <string name="settings_about_feedback">反馈与开源</string>
     <string name="settings_about_feedback_desc">问题反馈、功能建议与开源许可</string>
+
+    <!-- 资源库：本地存储（内部存储 / 存储卡合并为一个入口，卷在浏览页内部切换） -->
+    <string name="title_local_storage">本地存储</string>
+    <string name="storage_internal">内部存储</string>
+    <string name="storage_external">存储卡</string>
+    <string name="storage_device">存储设备</string>
+    <string name="storage_capacity">可用 %1$s · 共 %2$s</string>
+    <string name="label_storage_location">存储位置</string>
+    <string name="hint_no_storage_volume">未检测到可用存储</string>
+    <string name="cd_switch_storage">切换存储位置</string>
+    <string name="cd_current_storage">当前存储</string>
+
+    <!-- 浏览页排序 -->
+    <string name="sort_field_name">名称</string>
+    <string name="sort_field_modified">修改时间</string>
+    <string name="sort_field_size">大小</string>
+    <string name="sort_field_kind">类型</string>
+    <string name="cd_sort_field">选择排序字段</string>
+    <string name="cd_sort_ascending">当前升序，点击切换为降序</string>
+    <string name="cd_sort_descending">当前降序，点击切换为升序</string>
+    <string name="browser_item_count">共 %1$d 项</string>
+
+    <!-- 浏览页 -->
+    <string name="cd_back">返回</string>
+    <string name="action_back">返回</string>
+    <string name="browser_search_hint">搜索文件或文件夹</string>
+    <string name="browser_folder">文件夹</string>
+    <string name="browser_empty_title">没有文件</string>
+    <string name="browser_empty_search">试试其他关键词</string>
+    <string name="browser_empty_dir">此目录为空</string>
+    <string name="browser_error_body">请检查资源库配置与网络连接</string>
+    <string name="browser_source_unsupported">资源库不受支持</string>
+    <string name="browser_connect_failed">资源库连接失败</string>
 
 </resources>

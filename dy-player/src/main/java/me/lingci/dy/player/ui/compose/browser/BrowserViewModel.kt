@@ -22,11 +22,13 @@ import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.isVideo
 
-/** 浏览页需要的两项偏好，原先由 Composable 里直接 new SpUtil 读取。 */
+/** 浏览页需要的偏好与本地卷列表，原先由 Composable 里直接 new SpUtil / 读 StatFs。 */
 @Immutable
 data class BrowserPrefs(
     val showHidden: Boolean = false,
-    val longVideoMode: Boolean = true
+    val longVideoMode: Boolean = true,
+    val sortKey: FileSortKey = FileSortKey.Name,
+    val sortAscending: Boolean = true
 )
 
 /** 「添加到媒体库」的三种结果，用于给用户不同的提示。 */
@@ -47,8 +49,20 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     private val _prefs = MutableStateFlow(BrowserPrefs())
     val prefs: StateFlow<BrowserPrefs> = _prefs.asStateFlow()
 
+    /**
+     * 本地存储的卷列表（内部存储 / 存储卡 / U 盘）。
+     *
+     * 资源库把本地与外部存储合并成了一个入口，卷的差异只能在这里体现；检测要读 StatFs，
+     * 所以放在 IO 协程里跑，Screen 只拿结果渲染切换菜单。
+     */
+    private val _volumes = MutableStateFlow<List<StorageVolume>>(emptyList())
+    val volumes: StateFlow<List<StorageVolume>> = _volumes.asStateFlow()
+
+    private var volumesLoaded = false
+
     init {
         reloadPrefs()
+        loadVolumes()
     }
 
     /** 进入页面时刷新一次：播放模式可能在设置页被改过。 */
@@ -56,8 +70,35 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         val sp = SpUtil(getApplication())
         _prefs.value = BrowserPrefs(
             showHidden = sp.browserShowHide,
-            longVideoMode = sp.longVideoMode
+            longVideoMode = sp.longVideoMode,
+            sortKey = sp.browserSortKey
+                ?.let { name -> FileSortKey.entries.firstOrNull { it.name == name } }
+                ?: FileSortKey.Name,
+            sortAscending = sp.browserSortAscending
         )
+    }
+
+    fun setSortKey(key: FileSortKey) {
+        if (_prefs.value.sortKey == key) return
+        SpUtil(getApplication()).browserSortKey = key.name
+        _prefs.value = _prefs.value.copy(sortKey = key)
+    }
+
+    fun toggleSortAscending() {
+        val next = !_prefs.value.sortAscending
+        SpUtil(getApplication()).browserSortAscending = next
+        _prefs.value = _prefs.value.copy(sortAscending = next)
+    }
+
+    /** 首次进入 / 插拔存储卡后重新检测卷；重复调用时只在必要时重扫。 */
+    fun loadVolumes(force: Boolean = false) {
+        if (volumesLoaded && !force) return
+        volumesLoaded = true
+        viewModelScope.launch {
+            _volumes.value = withContext(Dispatchers.IO) {
+                StorageVolumes.detect(getApplication())
+            }
+        }
     }
 
     /**

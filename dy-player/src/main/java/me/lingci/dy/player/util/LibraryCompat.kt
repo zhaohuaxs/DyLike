@@ -37,17 +37,15 @@ object LibraryCompat {
     fun builtinStreamId(): String = BUILTIN_STREAM_ID
 
     /**
-     * 内置存储源数量：本地存储 + 串流播放，设备挂载了外部存储时再加一个。
+     * 内置存储源数量：本地存储 + 串流播放。
+     *
+     * 本地与外部存储已合并为同一个入口（内部存储 / 存储卡在浏览页内部切换），
+     * 所以这个数字不再随是否挂载存储卡变化。
      *
      * 资源库页面的列表由「内置源 + 库内源」拼成（见 SourcesScreen），
      * 统计数字必须同源，否则会出现「页面显示 3 个源、统计显示 0」的矛盾。
      */
-    fun builtinSourceCount(context: Context): Int {
-        var count = 2 // 本地存储 + 串流播放
-        val dirs = context.getExternalFilesDirs(null)
-        if (dirs != null && dirs.size > 1) count++
-        return count
-    }
+    fun builtinSourceCount(@Suppress("UNUSED_PARAMETER") context: Context): Int = 2
 
     /**
      * SP 数据归一化（v2→v3）。仅在旧备份恢复（写回 SP 后重迁移）与迁移执行器预读时调用；

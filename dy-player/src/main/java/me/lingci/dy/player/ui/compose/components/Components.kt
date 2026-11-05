@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material3.*
 
 import androidx.compose.runtime.*
@@ -53,6 +54,7 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -398,6 +400,151 @@ fun StatePill(text: String, selected: Boolean, onClick: () -> Unit) {
             .padding(horizontal = 14.dp, vertical = 6.dp)
             .wrapContentHeight(Alignment.CenterVertically)
     )
+}
+
+data class SortOption<T>(val value: T, val label: String)
+
+/**
+ * 列表页通用排序条：左侧可选文案（数量统计等），右侧「排序字段 + 升降序」两个胶囊。
+ *
+ * 与 `StatePill` 共用一套胶囊样式（圆角、描边、背景透明度），保证同一行里两个控件的
+ * 视觉重量一致；选中态只在弹层里用对勾 + 强调色表示，胶囊本身不染色——否则一行里
+ * 会出现两个「看起来被选中」的控件。
+ */
+@Composable
+fun <T> SortBar(
+    options: List<SortOption<T>>,
+    selected: T,
+    ascending: Boolean,
+    onSelect: (T) -> Unit,
+    onToggleOrder: () -> Unit,
+    modifier: Modifier = Modifier,
+    leading: String? = null
+) {
+    val c = LocalDyLikeColors.current
+    var expanded by remember { mutableStateOf(false) }
+    val currentLabel = options.firstOrNull { it.value == selected }?.label.orEmpty()
+
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (leading != null) {
+            Text(
+                leading,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = c.textTertiary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+
+        Box {
+            Row(
+                Modifier.clip(CircleShape)
+                    .background(c.surfaceRaised.copy(alpha = .68f))
+                    .border(1.dp, c.hairline, CircleShape)
+                    .clickable { expanded = true }
+                    .heightIn(min = 36.dp)
+                    .padding(start = 11.dp, end = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Sort,
+                    contentDescription = null,
+                    tint = c.textTertiary,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    currentLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = c.textPrimary,
+                    maxLines = 1
+                )
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = stringResource(R.string.cd_sort_field),
+                    tint = c.textTertiary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label, style = MaterialTheme.typography.bodyMedium) },
+                        onClick = {
+                            expanded = false
+                            onSelect(option.value)
+                        },
+                        trailingIcon = if (option.value == selected) {
+                            {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = c.accent,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        } else {
+                            null
+                        }
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        Box(
+            Modifier.clip(CircleShape)
+                .background(c.surfaceRaised.copy(alpha = .68f))
+                .border(1.dp, c.hairline, CircleShape)
+                .clickable(onClick = onToggleOrder)
+                .size(36.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                if (ascending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
+                contentDescription = stringResource(
+                    if (ascending) R.string.cd_sort_ascending else R.string.cd_sort_descending
+                ),
+                tint = c.textPrimary,
+                modifier = Modifier.size(15.dp)
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun SortBarPreview() {
+    val options = listOf(
+        SortOption(0, "名称"),
+        SortOption(1, "修改时间"),
+        SortOption(2, "大小")
+    )
+    DyLikeTheme(mode = ThemeMode.Light, brand = BrandHue.Purple, dynamicColor = false) {
+        Column(Modifier.background(LocalDyLikeColors.current.background).padding(20.dp)) {
+            SortBar(
+                options = options,
+                selected = 0,
+                ascending = true,
+                onSelect = {},
+                onToggleOrder = {},
+                leading = "共 12 项"
+            )
+            Spacer(Modifier.height(12.dp))
+            SortBar(
+                options = options,
+                selected = 1,
+                ascending = false,
+                onSelect = {},
+                onToggleOrder = {},
+                leading = "共 128 项"
+            )
+        }
+    }
 }
 
 @Composable

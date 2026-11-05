@@ -109,6 +109,11 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var browserSort by SPManager.int(-1)
 
+    // Compose 浏览页的排序字段（FileSortKey.name）与升降序；旧 browserSort 是 RadioGroup id，语义不同不复用
+    var browserSortKey by SPManager.string("")
+
+    var browserSortAscending by SPManager.boolean(true)
+
     var browserShowHide by SPManager.boolean(false)
 
     var navLabels by SPManager.boolean(false)

@@ -36,6 +36,7 @@ import me.lingci.dy.player.ui.compose.settings.DanmakuSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.KernelSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.LabSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.PlaybackSettingsDetail
+import me.lingci.dy.player.ui.compose.sources.BuiltinSources
 import me.lingci.dy.player.ui.compose.sources.SourceByIdViewModel
 import me.lingci.dy.player.ui.compose.sources.SourcesScreen
 import me.lingci.dy.player.ui.icon.IconSettingActivity
@@ -264,8 +265,8 @@ fun AppNavHost(
             val lookup by vm.state.collectAsStateWithLifecycle()
             LaunchedEffect(sourceId) { vm.load(sourceId) }
 
-            // 内置源（本地/外部/串流）不落库：库内查不到时按 id 现场构造，仍构造不出来才算已删除
-            val ready = lookup.source ?: if (!lookup.loading) builtinSourceById(sourceId, context) else null
+            // 内置源（本地/串流）不落库：库内查不到时按 id 现场构造，仍构造不出来才算已删除
+            val ready = lookup.source ?: if (!lookup.loading) BuiltinSources.byId(sourceId, context) else null
             when {
                 ready != null -> BrowserScreen(
                     sourceData = ready,
@@ -297,35 +298,5 @@ private fun startPlayback(context: android.content.Context, list: List<VideoData
         ShortVideoActivity.start(context, arrayList, index, true)
     } else {
         LongVideoActivity.start(context, arrayList, index, true)
-    }
-}
-
-private fun builtinSourceById(sourceId: String, context: android.content.Context): SourceData? {
-    return when (sourceId) {
-        LibraryCompat.builtinLocalId() -> SourceData().apply {
-            id = LibraryCompat.builtinLocalId()
-            type = StorageType.LOCAL_STORAGE
-            title = "本地存储"
-            siteUrl = "/storage/emulated/0/"
-            schema = "/storage/emulated/0/"
-        }
-        LibraryCompat.builtinExternalId() -> {
-            val dirs = context.getExternalFilesDirs(null)
-            if (dirs != null && dirs.size > 1) {
-                try {
-                    val path = dirs[1].path.split("Android/data")[0]
-                    SourceData().apply {
-                        id = LibraryCompat.builtinExternalId()
-                        type = StorageType.LOCAL_STORAGE
-                        title = "外部存储"
-                        siteUrl = path
-                        schema = path
-                    }
-                } catch (e: Exception) {
-                    null
-                }
-            } else null
-        }
-        else -> null
     }
 }
