@@ -82,8 +82,10 @@ class MainComposeActivity : ComponentActivity() {
 
             // 首帧即检查存储权限：targetSdk=28，读写外部存储属于运行时权限，
             // 未授予时 Room 查询会静默返回空列表，用户只会看到「空的媒体库」而没有任何解释。
-            var storageGranted by rememberSaveable {
-                mutableStateOf(PermissionUtil.checkPermissions(context, PermissionUtil.storagePermissions))
+            // 不能用 rememberSaveable：进程恢复时会把旧的「已授权」带回来，
+            // 而权限可能在后台被撤销（或只被 adb grant 改了运行时位）。
+            var storageGranted by remember {
+                mutableStateOf(PermissionUtil.hasStorageAccess(context))
             }
             var permissionPromptDismissed by rememberSaveable { mutableStateOf(false) }
 
@@ -229,17 +231,24 @@ private fun StoragePermissionDialog(
     val activity = context as? Activity
     val permissions = PermissionUtil.storagePermissions
 
-    // 首次申请前无从判断「是否永久拒绝」，只在收到拒绝结果后置位
-    var permanentlyDenied by rememberSaveable { mutableStateOf(false) }
+    // 运行时权限已授予但 AppOps 被拦时，系统不会再弹授权框，只能去设置里重开
+    var permanentlyDenied by rememberSaveable {
+        mutableStateOf(
+            PermissionUtil.checkPermissions(context, permissions) &&
+                !PermissionUtil.hasStorageAccess(context)
+        )
+    }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result.isNotEmpty() && result.values.all { granted -> granted }) {
+        if (result.isNotEmpty() && result.values.all { granted -> granted } &&
+            PermissionUtil.hasStorageAccess(context)
+        ) {
             onGranted()
         } else {
             permanentlyDenied = activity != null &&
-                permissions.none { activity.shouldShowRequestPermissionRationale(it) }
+                PermissionUtil.storagePermissions.none { activity.shouldShowRequestPermissionRationale(it) }
         }
     }
 
@@ -248,7 +257,7 @@ private fun StoragePermissionDialog(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME &&
-                PermissionUtil.checkPermissions(context, permissions)
+                PermissionUtil.hasStorageAccess(context)
             ) {
                 onGranted()
             }

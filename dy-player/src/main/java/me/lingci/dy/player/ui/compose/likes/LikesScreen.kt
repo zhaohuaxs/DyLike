@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
-import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -47,14 +47,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -68,11 +70,13 @@ import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
 import me.lingci.dy.player.ui.compose.theme.DyLikeType
 import me.lingci.dy.player.ui.compose.theme.LocalDyLikeColors
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
-import me.lingci.dy.player.util.AppUtil
-import me.lingci.dy.player.util.decodeHtmlEntities
-import me.lingci.dy.player.util.loadImage
-import java.io.File
 
+/**
+ * 「我的喜欢」入口。
+ *
+ * 起播走的是一次性事件：状态里只有纯 UI 模型，`List<VideoData>` 由 ViewModel 在事件里补齐，
+ * 再交给播放页——这是播放层的既有契约，不该让 Room 实体回流进 [LikesUiState]。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LikesRoute(
@@ -81,7 +85,19 @@ fun LikesRoute(
     vm: LikesViewModel = viewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    LikesScreen(state = state, onBack = onBack, onPlay = onPlay)
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(lifecycleOwner, vm) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            vm.events.collect { event ->
+                when (event) {
+                    is LikesEvent.Play -> onPlay(event.videos, event.index)
+                }
+            }
+        }
+    }
+
+    LikesScreen(state = state, onBack = onBack, onPlay = vm::play)
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -89,36 +105,44 @@ fun LikesRoute(
 fun LikesScreen(
     state: LikesUiState,
     onBack: () -> Unit,
-    onPlay: (List<VideoData>, Int) -> Unit
+    onPlay: (Int) -> Unit
 ) {
     val c = LocalDyLikeColors.current
-    val context = LocalContext.current
     val gridState = rememberLazyStaggeredGridState()
     var hideText by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
 
-    val videos = state.videos
+    val items = state.items
+    val toggleLabel = stringResource(if (hideText) R.string.action_show_text else R.string.action_hide_text)
 
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(start = 8.dp, top = 8.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AppIconButton(Icons.AutoMirrored.Filled.ArrowBack, "返回", onBack)
+            AppIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.cd_back), onBack)
             Column(Modifier.weight(1f).padding(start = 6.dp)) {
                 Kicker("MY FAVORITES")
-                Text("我的喜欢", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                Text(
+                    stringResource(R.string.title_likes),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = c.textPrimary
+                )
             }
             Text(
-                "${videos.size} 个",
+                stringResource(R.string.likes_count, items.size),
                 style = DyLikeType.meta,
                 color = c.textTertiary
             )
             Box {
-                AppIconButton(Icons.Default.MoreVert, "更多", { menuOpen = true })
+                AppIconButton(
+                    Icons.Default.MoreVert,
+                    stringResource(R.string.cd_more_actions),
+                    { menuOpen = true }
+                )
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text(if (hideText) "显示文本" else "隐藏文本") },
+                        text = { Text(toggleLabel) },
                         leadingIcon = {
                             Icon(
                                 if (hideText) Icons.Default.Visibility else Icons.Default.VisibilityOff,
@@ -133,7 +157,7 @@ fun LikesScreen(
             }
         }
 
-        if (videos.isEmpty()) {
+        if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
@@ -143,7 +167,11 @@ fun LikesScreen(
                         modifier = Modifier.size(48.dp)
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("还没有喜欢的视频", style = DyLikeType.meta, color = c.textTertiary)
+                    Text(
+                        stringResource(R.string.likes_empty),
+                        style = DyLikeType.meta,
+                        color = c.textTertiary
+                    )
                 }
             }
         } else {
@@ -155,44 +183,37 @@ fun LikesScreen(
                 }
                 LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(columns),
-                state = gridState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalItemSpacing = 10.dp
-            ) {
-                itemsIndexed(videos, key = { _, v -> v.md5() }) { index, video ->
-                    LikeCard(
-                        video = video,
-                        context = context,
-                        hideText = hideText,
-                        onClick = { onPlay(videos, index) }
-                    )
+                    state = gridState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalItemSpacing = 10.dp
+                ) {
+                    itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
+                        LikeCard(
+                            item = item,
+                            hideText = hideText,
+                            onClick = { onPlay(index) }
+                        )
+                    }
                 }
             }
         }
-    }
     }
 }
 
 @Composable
 private fun LikeCard(
-    video: VideoData,
-    context: android.content.Context,
+    item: LikeItemUi,
     hideText: Boolean,
     onClick: () -> Unit
 ) {
     val c = LocalDyLikeColors.current
     val shape = RoundedCornerShape(8.dp)
     val playLabel = stringResource(R.string.cd_play)
+    val thumbPath = item.thumbPath
 
-    val thumbFile = AppUtil.buildThumbFile(context, video.md5())
-    val thumbPath = when {
-        thumbFile.exists() -> thumbFile.absolutePath
-        video.preview.isNotBlank() -> video.preview
-        else -> null
-    }
-
+    // 只做宽高测量：解码 bounds 拿不到就按 16:9 兜底，图像加载仍交给 ThumbImage
     val aspectRatio by produceState(16f / 9f, thumbPath) {
         value = if (thumbPath != null) {
             withContext(Dispatchers.IO) {
@@ -212,7 +233,7 @@ private fun LikeCard(
     Column(
         Modifier.fillMaxWidth().clip(shape)
             .semantics(mergeDescendants = true) {
-                contentDescription = video.name.decodeHtmlEntities()
+                contentDescription = item.title
             }
             .clickable(onClickLabel = playLabel, onClick = onClick)
     ) {
@@ -248,7 +269,7 @@ private fun LikeCard(
         if (!hideText) {
             Spacer(Modifier.height(6.dp))
             Text(
-                video.name.decodeHtmlEntities(),
+                item.title,
                 style = MaterialTheme.typography.bodyMedium,
                 color = c.textPrimary,
                 maxLines = 2,
@@ -258,10 +279,29 @@ private fun LikeCard(
         }
     }
 }
+
 @Preview(showBackground = true, backgroundColor = 0xFF101014, heightDp = 640)
 @Composable
 private fun LikesEmptyPreview() {
     DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
-        LikesScreen(state = LikesUiState(phase = LikesPhase.Empty), onBack = {}, onPlay = { _, _ -> })
+        LikesScreen(state = LikesUiState(phase = LikesPhase.Empty), onBack = {}, onPlay = {})
+    }
+}
+
+@Preview(showBackground = true, heightDp = 640)
+@Composable
+private fun LikesGridPreview() {
+    val items = listOf(
+        LikeItemUi("a1", "2024 演唱会 · 第 01 集", null),
+        LikeItemUi("a2", "城市夜景延时摄影", null),
+        LikeItemUi("a3", "第 02 集：返场", null),
+        LikeItemUi("a4", "旅途随拍合集", null)
+    )
+    DyLikeTheme(ThemeMode.Light, BrandHue.Purple, false) {
+        LikesScreen(
+            state = LikesUiState(phase = LikesPhase.Content, items = items),
+            onBack = {},
+            onPlay = {}
+        )
     }
 }

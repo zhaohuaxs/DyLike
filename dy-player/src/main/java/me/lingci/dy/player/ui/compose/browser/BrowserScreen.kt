@@ -31,14 +31,16 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.SdStorage
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,10 +57,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
@@ -69,6 +72,7 @@ import me.lingci.dy.player.ui.compose.components.MetaChip
 import me.lingci.dy.player.ui.compose.components.SearchField
 import me.lingci.dy.player.ui.compose.components.SortBar
 import me.lingci.dy.player.ui.compose.components.SortOption
+import me.lingci.dy.player.ui.compose.components.rememberStoragePermissionRequest
 import me.lingci.dy.player.ui.compose.model.formatFileSize
 import me.lingci.dy.player.ui.compose.playlist.PlaylistPickerSheet
 import me.lingci.dy.player.ui.compose.theme.BrandHue
@@ -78,12 +82,10 @@ import me.lingci.dy.player.ui.compose.theme.LocalDyLikeColors
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
-import me.lingci.lib.base.storage.IStorage
 import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.storage.entity.StorageType
+import me.lingci.lib.base.util.PermissionUtil
 import me.lingci.lib.base.util.ToastUtil
-import me.lingci.lib.base.util.isVideo
-import me.lingci.lib.base.util.notStartDot
 
 /**
  * 资源库浏览页。
@@ -101,6 +103,7 @@ fun BrowserScreen(
     val viewModel: BrowserViewModel = viewModel()
     val prefs by viewModel.prefs.collectAsStateWithLifecycle()
     val volumes by viewModel.volumes.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
 
     // 只有本地存储有「卷」的概念；WebDAV / SMB 的根恒等于配置里那一份
     val isLocal = sourceData.storageType() == StorageType.LOCAL_STORAGE
@@ -118,72 +121,39 @@ fun BrowserScreen(
         }
     }
 
-    var storage by remember { mutableStateOf<IStorage?>(null) }
-    var connected by remember { mutableStateOf(false) }
-    var connectionError by remember { mutableStateOf<String?>(null) }
-    var breadcrumbs by remember { mutableStateOf<List<FileEntity>>(emptyList()) }
-    var rawFiles by remember { mutableStateOf<List<FileEntity>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     // 待加入播放列表的视频；非 null 即展示弹层（弹层挂在本页，不挂 item）
     var playlistVideos by remember { mutableStateOf<List<VideoData>?>(null) }
 
-    val storage0 = remember(rootSource) { rootSource.toStorage() }
-    DisposableEffect(storage0) {
-        onDispose { storage0?.release() }
+    // 本地浏览失败最常见的原因是存储权限被拒；直接给「授予权限」，授权后原地重连。
+    val requestStoragePermission = rememberStoragePermissionRequest {
+        viewModel.open(rootSource, force = true)
     }
-
-    // 文案在组合作用域取好，LaunchedEffect 里只做判断赋值
-    val unsupportedMessage = stringResource(R.string.browser_source_unsupported)
-    val connectFailedMessage = stringResource(R.string.browser_connect_failed)
-
-    LaunchedEffect(storage0) {
-        viewModel.reloadPrefs()
-        connectionError = null
-        connected = false
-        if (storage0 == null) {
-            connectionError = unsupportedMessage
-            return@LaunchedEffect
-        }
-        storage = storage0
-        val ok = withContext(Dispatchers.IO) { storage0.testConnect() }
-        if (!ok) {
-            connectionError = connectFailedMessage
-        } else {
-            connected = true
-            breadcrumbs = listOf(storage0.rootFile())
-        }
-    }
-
-    val currentPath = breadcrumbs.lastOrNull()?.path ?: "/"
-    LaunchedEffect(currentPath, connected, prefs.showHidden) {
-        if (connected && storage != null) {
-            isLoading = true
-            rawFiles = emptyList()
-            val items = mutableListOf<FileEntity>()
-            withContext(Dispatchers.IO) {
-                storage!!.listFile(currentPath, false).collect { item ->
-                    if ((!item.isFile && (prefs.showHidden || item.name.notStartDot())) || item.name.isVideo()) {
-                        items.add(item)
-                    }
-                }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, isLocal, rootSource) {
+        if (!isLocal) return@LaunchedEffect
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (state.error == BrowserError.StoragePermission &&
+                PermissionUtil.hasStorageAccess(context)
+            ) {
+                viewModel.open(rootSource, force = true)
             }
-            rawFiles = items
-            isLoading = false
         }
+    }
+
+    // 连接由 ViewModel 持有且幂等：换卷会重连，从详情页返回则直接复用
+    LaunchedEffect(rootSource) {
+        viewModel.reloadPrefs()
+        viewModel.open(rootSource)
     }
 
     BackHandler {
-        if (breadcrumbs.size > 1) {
-            breadcrumbs = breadcrumbs.dropLast(1)
-        } else {
-            onBack()
-        }
+        if (!viewModel.navigateUp()) onBack()
     }
 
     // 排序 / 搜索都是纯函数派生：原始列表只保留一次 IO 结果，换排序不重新读盘
-    val displayFiles = remember(rawFiles, searchQuery, prefs.sortKey, prefs.sortAscending) {
-        val matched = rawFiles.filter { item ->
+    val displayFiles = remember(state.files, searchQuery, prefs.sortKey, prefs.sortAscending) {
+        val matched = state.files.filter { item ->
             searchQuery.isBlank() || item.name.contains(searchQuery, ignoreCase = true)
         }
         sortFiles(matched, prefs.sortKey, prefs.sortAscending)
@@ -194,35 +164,40 @@ fun BrowserScreen(
         rootLabel = activeVolume?.label ?: sourceData.title,
         volumes = localVolumes,
         activeVolume = activeVolume,
-        breadcrumbs = breadcrumbs,
+        breadcrumbs = state.breadcrumbs,
         files = displayFiles,
         query = searchQuery,
-        isLoading = isLoading,
-        errorMessage = connectionError,
+        // 连接阶段也算「加载中」：否则首帧 files 为空会先闪一下「没有文件」空态
+        isLoading = state.loading || state.phase == BrowserPhase.Loading,
+        error = state.error,
         sortKey = prefs.sortKey,
         sortAscending = prefs.sortAscending,
         onBack = onBack,
         onSelectVolume = { volume ->
+            // 换卷即换根：清掉搜索词，连接与列表由 open() 在新 rootSource 上整体重置
             volumeId = volume.id
             searchQuery = ""
-            // 先断开连接再清列表：否则新根路径还没接上时，旧 IStorage 会按 "/" 把上一个卷的内容列出来
-            connected = false
-            breadcrumbs = emptyList()
-            rawFiles = emptyList()
         },
-        onCrumbClick = { index -> breadcrumbs = breadcrumbs.take(index + 1) },
+        onRequestPermission = requestStoragePermission,
+        onCrumbClick = viewModel::navigateTo,
         onQueryChange = { searchQuery = it },
         onSortKey = viewModel::setSortKey,
         onToggleSortOrder = viewModel::toggleSortAscending,
         onOpenFile = { item ->
             if (item.isFile) {
-                playVideo(item, displayFiles, rootSource, storage, prefs.longVideoMode, context)
+                viewModel.buildPlayList(displayFiles, item)?.let { (list, position) ->
+                    if (prefs.longVideoMode) {
+                        LongVideoActivity.start(context, list, position, false)
+                    } else {
+                        ShortVideoActivity.start(context, list, position, false)
+                    }
+                }
             } else {
-                breadcrumbs = breadcrumbs + item
+                viewModel.openFolder(item)
             }
         },
         onAddToLibrary = { item ->
-            viewModel.addToLibrary(rootSource, item) { result ->
+            viewModel.addToLibrary(item) { result ->
                 ToastUtil.showToast(
                     context,
                     context.getString(
@@ -236,13 +211,11 @@ fun BrowserScreen(
             }
         },
         onAddToPlaylist = { item ->
-            storage?.let { storageNow ->
-                viewModel.videosInFolder(storageNow, item, rootSource) { videos ->
-                    if (videos.isEmpty()) {
-                        ToastUtil.showToast(context, context.getString(R.string.folder_no_video))
-                    } else {
-                        playlistVideos = videos
-                    }
+            viewModel.videosInFolder(item) { videos ->
+                if (videos.isEmpty()) {
+                    ToastUtil.showToast(context, context.getString(R.string.folder_no_video))
+                } else {
+                    playlistVideos = videos
                 }
             }
         }
@@ -257,8 +230,9 @@ fun BrowserScreen(
 }
 
 /**
- * 浏览页的静态内容：只吃状态与回调，不碰 [IStorage]、不读偏好，便于单独预览。
+ * 浏览页的静态内容：只吃状态与回调，不碰存储连接、不读偏好，便于单独预览。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BrowserContent(
     title: String,
@@ -269,11 +243,12 @@ private fun BrowserContent(
     files: List<FileEntity>,
     query: String,
     isLoading: Boolean,
-    errorMessage: String?,
+    error: BrowserError?,
     sortKey: FileSortKey,
     sortAscending: Boolean,
     onBack: () -> Unit,
     onSelectVolume: (StorageVolume) -> Unit,
+    onRequestPermission: () -> Unit,
     onCrumbClick: (Int) -> Unit,
     onQueryChange: (String) -> Unit,
     onSortKey: (FileSortKey) -> Unit,
@@ -284,6 +259,8 @@ private fun BrowserContent(
 ) {
     val c = LocalDyLikeColors.current
     val sortOptions = FileSortKey.entries.map { SortOption(it, stringResource(it.labelRes)) }
+    // 行菜单的目标提升到页面层：放在行内会随 item 回收一起销毁
+    var menuFile by remember { mutableStateOf<FileEntity?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -355,13 +332,27 @@ private fun BrowserContent(
             leading = stringResource(R.string.browser_item_count, files.size)
         )
 
-        if (errorMessage != null) {
+        if (error != null) {
+            val permissionDenied = error == BrowserError.StoragePermission
+            val message = stringResource(
+                when (error) {
+                    BrowserError.UnsupportedSource -> R.string.browser_source_unsupported
+                    BrowserError.ConnectFailed -> R.string.browser_connect_failed
+                    BrowserError.StoragePermission -> R.string.permission_storage_title
+                }
+            )
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyState(
-                    errorMessage,
-                    stringResource(R.string.browser_error_body),
-                    stringResource(R.string.action_back),
-                    onBack
+                    message,
+                    stringResource(
+                        if (permissionDenied) R.string.permission_storage_rationale
+                        else R.string.browser_error_body
+                    ),
+                    stringResource(
+                        if (permissionDenied) R.string.permission_grant
+                        else R.string.action_back
+                    ),
+                    if (permissionDenied) onRequestPermission else onBack
                 )
             }
             return@Column
@@ -393,8 +384,7 @@ private fun BrowserContent(
                 FileRow(
                     item = item,
                     onClick = { onOpenFile(item) },
-                    onAddToLibrary = { onAddToLibrary(item) },
-                    onAddToPlaylist = { onAddToPlaylist(item) }
+                    onMore = { menuFile = item }
                 )
                 HorizontalDivider(
                     modifier = Modifier.padding(start = 71.dp, end = 20.dp),
@@ -403,6 +393,56 @@ private fun BrowserContent(
             }
             item { Spacer(Modifier.height(20.dp)) }
         }
+    }
+
+    val target = menuFile
+    if (target != null) {
+        ModalBottomSheet(
+            onDismissRequest = { menuFile = null },
+            sheetState = rememberModalBottomSheetState(),
+            containerColor = c.surface
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                Text(
+                    target.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = c.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+                SheetAction(Icons.Default.Movie, stringResource(R.string.hint_add_to_media)) {
+                    menuFile = null
+                    onAddToLibrary(target)
+                }
+                SheetAction(
+                    Icons.AutoMirrored.Filled.PlaylistPlay,
+                    stringResource(R.string.hint_add_to_playlist)
+                ) {
+                    menuFile = null
+                    onAddToPlaylist(target)
+                }
+            }
+        }
+    }
+}
+
+/** 底部动作行：与播放列表页的长按菜单同一套视觉 */
+@Composable
+private fun SheetAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    val c = LocalDyLikeColors.current
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = c.textSecondary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = c.textPrimary)
     }
 }
 
@@ -519,11 +559,9 @@ private fun VolumeSwitcher(
 private fun FileRow(
     item: FileEntity,
     onClick: () -> Unit,
-    onAddToLibrary: () -> Unit,
-    onAddToPlaylist: () -> Unit
+    onMore: () -> Unit
 ) {
     val c = LocalDyLikeColors.current
-    var menuOpen by remember { mutableStateOf(false) }
 
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick)
@@ -569,56 +607,12 @@ private fun FileRow(
             )
         } else {
             // 与旧版一致：只有目录行有「更多」，文件行直接点播放
-            Box {
-                AppIconButton(
-                    Icons.Default.MoreVert,
-                    stringResource(R.string.cd_more_actions),
-                    onClick = { menuOpen = true }
-                )
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.hint_add_to_media)) },
-                        onClick = {
-                            menuOpen = false
-                            onAddToLibrary()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.hint_add_to_playlist)) },
-                        onClick = {
-                            menuOpen = false
-                            onAddToPlaylist()
-                        }
-                    )
-                }
-            }
+            AppIconButton(
+                Icons.Default.MoreVert,
+                stringResource(R.string.cd_more_actions),
+                onClick = onMore
+            )
         }
-    }
-}
-
-private fun playVideo(
-    clicked: FileEntity,
-    allFiles: List<FileEntity>,
-    sourceData: SourceData,
-    storage: IStorage?,
-    longVideoMode: Boolean,
-    context: android.content.Context
-) {
-    if (storage == null) return
-    val list = ArrayList<VideoData>()
-    var position = 0
-    allFiles.forEach { fileBean ->
-        if (fileBean.isFile) {
-            list.add(fileBean.toVideoData(storage, sourceData))
-            if (fileBean.name == clicked.name) {
-                position = list.size - 1
-            }
-        }
-    }
-    if (longVideoMode) {
-        LongVideoActivity.start(context, list, position, false)
-    } else {
-        ShortVideoActivity.start(context, list, position, false)
     }
 }
 
@@ -656,11 +650,12 @@ private fun BrowserContentPreview() {
             files = files,
             query = "",
             isLoading = false,
-            errorMessage = null,
+            error = null,
             sortKey = FileSortKey.Name,
             sortAscending = true,
             onBack = {},
             onSelectVolume = {},
+            onRequestPermission = {},
             onCrumbClick = {},
             onQueryChange = {},
             onSortKey = {},
@@ -680,14 +675,12 @@ private fun FileRowPreview() {
             FileRow(
                 item = FileEntity(name = "第 01 集.mp4", path = "/video/a/第 01 集.mp4", isFile = true, size = 734_003_200),
                 onClick = {},
-                onAddToLibrary = {},
-                onAddToPlaylist = {}
+                onMore = {}
             )
             FileRow(
                 item = FileEntity(name = "2024 演唱会", path = "/video/b", isFile = false),
                 onClick = {},
-                onAddToLibrary = {},
-                onAddToPlaylist = {}
+                onMore = {}
             )
         }
     }

@@ -41,6 +41,8 @@ import me.lingci.dy.player.util.decodeHtmlEntities
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.Log
+import me.lingci.lib.base.util.PermissionUtil
+import me.lingci.lib.base.util.isVideo
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -100,8 +102,12 @@ data class DetailUiState(
     /** 「上次播放」在 [entries] / [playList] 里的下标；没有记录或被搜索过滤掉时为 null */
     val lastPlayedIndex: Int? = null,
     /** 正在补页以便跳到 [lastPlayedIndex]：按钮据此显示进度并防重复点击 */
-    val jumpingToLastPlayed: Boolean = false
+    val jumpingToLastPlayed: Boolean = false,
+    /** 本地媒体库缺少存储权限：空列表不是「没有视频」，而是根本读不到 */
+    val needsStoragePermission: Boolean = false
 )
+
+private class StoragePermissionRequiredException : Exception()
 
 class DetailViewModel(private val app: Application) : ViewModel() {
 
@@ -173,6 +179,12 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                 withContext(Dispatchers.IO) { readBase(mediaId) }
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: StoragePermissionRequiredException) {
+                _state.value = DetailUiState(
+                    phase = DetailPhase.Error,
+                    needsStoragePermission = true
+                )
+                return@launch
             } catch (t: Throwable) {
                 null
             }
@@ -297,6 +309,47 @@ class DetailViewModel(private val app: Application) : ViewModel() {
     /** 「上次播放」在给定顺序里的下标；被搜索过滤掉或没有记录时返回 null。 */
     private fun lastPlayedIndexOf(source: List<VideoRow>): Int? =
         source.indexOfFirst { it.video.lastPlay }.takeIf { it >= 0 }
+
+    /**
+     * 从播放页回来时刷新「上次播放」。
+     *
+     * 播放页是独立 Activity，把 `play_last` 写进数据库后就结束了；Compose 页面不会被重建
+     * （`LaunchedEffect(mediaId)` 也不会重跑），所以这里只重读库里的 `play_last`，
+     * 更新内存标记与「上次播放」下标——不重建列表、不动滚动位置、不重新解析卡片。
+     */
+    fun refreshLastPlayed() {
+        val current = _state.value
+        if (current.phase != DetailPhase.Content) return
+        val media = current.media ?: return
+        // 实体 id 理论上就是路由参数；两者都为空说明这个库根本落不了库（如内置聚合页），直接跳过
+        val mediaId = media.id.takeIf { it.isNotBlank() } ?: loadedId?.takeIf { it.isNotBlank() } ?: return
+        val gen = generation
+        viewModelScope.launch {
+            val playLast = try {
+                withContext(Dispatchers.IO) {
+                    DatabaseManager.mediaDataDao.getById(mediaId)?.playLast
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                null
+            } ?: return@launch
+            // 没变化就直接退出：避免每次回到页面都推一次等价状态
+            if (playLast == media.playLast || gen != generation) return@launch
+            media.playLast = playLast
+            val source = ordered
+            rows.forEach { it.video.lastPlay = playLast.isNotBlank() && it.video.videoUrl == playLast }
+            val entries = _state.value.entries.map { entry ->
+                entry.copy(lastPlay = source.getOrNull(entry.playIndex)?.video?.lastPlay == true)
+            }
+            _state.value = _state.value.copy(
+                playList = source.map { it.video },
+                entries = entries,
+                lastPlayedIndex = lastPlayedIndexOf(source)
+            )
+            Log.d(TAG, "上次播放已刷新 index=${_state.value.lastPlayedIndex}")
+        }
+    }
 
     fun setQuery(query: String) {
         if (query == _state.value.query) return
@@ -519,10 +572,49 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                 LibraryCompat.sortByParentPath(items.toMutableList())
             }
             MediaLibType.DEFAULT, MediaLibType.LOCAL -> {
+                // 权限被拒时 File.listFiles 返回 null，不能当成「空媒体库」推给 UI
+                if (!PermissionUtil.hasStorageAccess(app)) {
+                    throw StoragePermissionRequiredException()
+                }
                 val path = media.path.ifBlank { FileOperator.movieFolder.path }
                 FileOperator.getSortedFiles(File(path), FileOperator.VIDEO_EXTENSIONS).map { VideoData(it) }
             }
+            // 浏览器“添加到媒体库”只落 MediaData，不会把远端目录扫进 video_data；
+            // 这里按绑定资源库实时列目录，与旧版 MediaDetailActivity.handleRemoteStorage 一致。
+            MediaLibType.WEBDAV, MediaLibType.SMB -> loadRemoteVideos(media)
             else -> DatabaseManager.videoDataDao.listByMedia(media.id)
+        }
+    }
+
+    private suspend fun loadRemoteVideos(media: MediaData): List<VideoData> {
+        val sources = DatabaseManager.sourceDataDao.list()
+        val storageId = LibraryCompat.effectiveStorageId(media, sources) ?: return emptyList()
+        val source = sources.firstOrNull { it.id == storageId } ?: return emptyList()
+        val storage = source.toStorage() ?: return emptyList()
+        return try {
+            if (!storage.testConnect()) return emptyList()
+            val videos = mutableListOf<VideoData>()
+            storage.listFile(media.path, false).collect { item ->
+                if (item.isFile && item.name.isVideo()) {
+                    videos += VideoData().apply {
+                        name = item.name
+                        videoUrl = storage.fullPath(item.path)
+                        putToken(storage.getToken())
+                        type = source.storageType()
+                        parentPath = item.path.substringBeforeLast("/").substringAfterLast("/")
+                        mediaId = media.id
+                        id = md5()
+                    }
+                }
+            }
+            videos
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d(TAG, "加载远端媒体库失败: ${media.title} ${e.message}")
+            emptyList()
+        } finally {
+            storage.release()
         }
     }
 

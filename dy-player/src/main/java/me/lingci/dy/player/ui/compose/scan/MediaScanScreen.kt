@@ -27,14 +27,15 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -121,6 +123,7 @@ fun MediaScanRoute(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MediaScanScreen(
     state: MediaScanUiState,
@@ -136,7 +139,7 @@ fun MediaScanScreen(
     onSave: () -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
-    var storageMenuExpanded by remember { mutableStateOf(false) }
+    var showStorageSheet by remember { mutableStateOf(false) }
 
     LazyColumn(Modifier.fillMaxSize()) {
         item {
@@ -153,32 +156,25 @@ fun MediaScanScreen(
         }
         item {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
-                Text("选择存储", style = DyLikeType.meta, color = c.textSecondary)
+                Text(
+                    stringResource(R.string.title_select_storage),
+                    style = DyLikeType.meta,
+                    color = c.textSecondary
+                )
                 Spacer(Modifier.height(4.dp))
                 Box {
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { storageMenuExpanded = true }
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { showStorageSheet = true }
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            state.selectedStorage?.title ?: "本地存储",
+                            state.selectedStorage?.title ?: stringResource(R.string.title_local_storage),
                             Modifier.weight(1f),
                             style = MaterialTheme.typography.bodyLarge,
                             color = c.textPrimary
                         )
                         Icon(Icons.Default.ArrowDropDown, null, tint = c.textSecondary)
-                    }
-                    DropdownMenu(expanded = storageMenuExpanded, onDismissRequest = { storageMenuExpanded = false }) {
-                        state.storageOptions.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option.title) },
-                                onClick = {
-                                    onSelectStorage(option)
-                                    storageMenuExpanded = false
-                                }
-                            )
-                        }
                     }
                 }
             }
@@ -297,6 +293,45 @@ fun MediaScanScreen(
             }
         }
         item { Spacer(Modifier.height(96.dp)) }
+    }
+
+    // 存储选择提升到页面级：放在 item 内会随该项滚出屏幕被回收
+    if (showStorageSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showStorageSheet = false },
+            sheetState = rememberModalBottomSheetState(),
+            containerColor = c.surface
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                Text(
+                    stringResource(R.string.title_select_storage),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = c.textPrimary,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+                state.storageOptions.forEach { option ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                showStorageSheet = false
+                                onSelectStorage(option)
+                            }
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            option.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = c.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (option == state.selectedStorage) {
+                            Icon(Icons.Default.CheckCircle, null, tint = c.accent, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

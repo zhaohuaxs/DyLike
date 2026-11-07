@@ -75,6 +75,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.lingci.dy.player.R
+import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.entity.formatTime
@@ -83,6 +84,7 @@ import me.lingci.dy.player.ui.compose.components.CoverImage
 import me.lingci.dy.player.ui.compose.components.Kicker
 import me.lingci.dy.player.ui.compose.components.SearchField
 import me.lingci.dy.player.ui.compose.components.ThumbImage
+import me.lingci.dy.player.ui.compose.components.rememberStoragePermissionRequest
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
 import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
@@ -118,7 +120,11 @@ private val JUMP_BUTTON_GAP = 20.dp
 fun DetailRoute(
     mediaId: String,
     onBack: () -> Unit = {},
-    onPlay: (List<VideoData>, Int, Boolean) -> Unit = { _, _, _ -> }
+    /**
+     * [MediaData] 只在这里透传给播放页：播放页要靠它写回 `play_last` / 历史 / 进度，
+     * 不传的话从详情页起播就是「无媒体上下文」，记录会全部丢失。
+     */
+    onPlay: (MediaData?, List<VideoData>, Int, Boolean) -> Unit = { _, _, _, _ -> }
 ) {
     val vm: DetailViewModel = viewModel(factory = DetailViewModel.Factory)
     val state by vm.state.collectAsStateWithLifecycle()
@@ -137,12 +143,20 @@ fun DetailRoute(
         }
     }
 
+    // 播放页返回时重读 play_last：详情页不会被重建，不主动刷新就一直是进页面那一刻的快照。
+    // 每次 RESUMED 都会执行（首帧那次 phase 还是 Loading，VM 内部会直接跳过）。
+    LaunchedEffect(lifecycleOwner, vm) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            vm.refreshLastPlayed()
+        }
+    }
+
     DetailScreen(
         state = state,
         scrollRequest = scrollRequest,
         onScrollConsumed = { scrollRequest = null },
         onBack = onBack,
-        onPlay = onPlay,
+        onPlay = { videos, index, isShort -> onPlay(state.media, videos, index, isShort) },
         onRetry = { vm.load(mediaId, force = true) },
         onOpEd = vm::updateOpEd,
         onQueryChange = vm::setQuery,
@@ -246,6 +260,31 @@ fun DetailScreen(
             return
         }
         DetailPhase.Error -> {
+            if (state.needsStoragePermission) {
+                val requestStoragePermission = rememberStoragePermissionRequest(onGranted = onRetry)
+                Column(
+                    Modifier.fillMaxSize().padding(horizontal = 32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        stringResource(R.string.permission_storage_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = c.textPrimary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        stringResource(R.string.permission_storage_rationale),
+                        style = DyLikeType.meta,
+                        color = c.textTertiary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(requestStoragePermission) {
+                        Text(stringResource(R.string.permission_grant))
+                    }
+                }
+                return
+            }
             Column(
                 Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,

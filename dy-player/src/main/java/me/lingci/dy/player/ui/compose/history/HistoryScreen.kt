@@ -21,8 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -113,30 +111,31 @@ fun HistoryScreen(
                 Modifier.fillMaxWidth().padding(start = 8.dp, top = 8.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                AppIconButton(Icons.AutoMirrored.Filled.ArrowBack, "返回", onBack)
+                AppIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back), onBack)
                 Column(Modifier.weight(1f).padding(start = 6.dp)) {
                     Kicker("WATCH HISTORY")
-                    Text("播放历史", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                    Text(
+                        stringResource(R.string.title_history),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = c.textPrimary
+                    )
                 }
-                var headerMenu by remember { mutableStateOf(false) }
-                Box {
-                    AppIconButton(Icons.Default.MoreVert, "更多", { headerMenu = true })
-                    DropdownMenu(expanded = headerMenu, onDismissRequest = { headerMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("清空播放历史") },
-                            onClick = {
-                                headerMenu = false
-                                showClearAll = true
-                            }
-                        )
-                    }
-                }
+                // 只有「清空历史」一个动作，不必再套一层下拉菜单（下拉菜单在 item 内还会随回收销毁）
+                AppIconButton(
+                    Icons.Default.MoreVert,
+                    stringResource(R.string.action_more),
+                    { showClearAll = true }
+                )
             }
         }
         if (state.phase == HistoryPhase.Empty) {
             item {
                 Box(Modifier.fillMaxWidth().padding(top = 80.dp), contentAlignment = Alignment.Center) {
-                    Text("还没有观看记录", style = MaterialTheme.typography.bodyLarge, color = c.textTertiary)
+                    Text(
+                        stringResource(R.string.hint_history_empty),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = c.textTertiary
+                    )
                 }
             }
         } else {
@@ -164,12 +163,12 @@ fun HistoryScreen(
     if (target != null) {
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
-            title = { Text("删除提醒") },
+            title = { Text(stringResource(R.string.dialog_delete_title)) },
             text = {
                 Text(
                     when (target) {
-                        is HistoryItemUi.Group -> "删除该组全部播放记录？"
-                        is HistoryItemUi.Single -> "删除该播放记录？"
+                        is HistoryItemUi.Group -> stringResource(R.string.hint_history_delete_group)
+                        is HistoryItemUi.Single -> stringResource(R.string.hint_history_delete_single)
                     }
                 )
             },
@@ -177,10 +176,12 @@ fun HistoryScreen(
                 TextButton(onClick = {
                     deleteTarget = null
                     onDelete(target)
-                }) { Text("确认") }
+                }) { Text(stringResource(R.string.action_confirmed)) }
             },
             dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -188,16 +189,18 @@ fun HistoryScreen(
     if (showClearAll) {
         AlertDialog(
             onDismissRequest = { showClearAll = false },
-            title = { Text("清空播放历史") },
-            text = { Text("清空全部播放记录？该操作不可恢复。") },
+            title = { Text(stringResource(R.string.menu_history_clear_all)) },
+            text = { Text(stringResource(R.string.hint_history_clear_all)) },
             confirmButton = {
                 TextButton(onClick = {
                     showClearAll = false
                     onClearAll()
-                }) { Text("确认") }
+                }) { Text(stringResource(R.string.action_confirmed)) }
             },
             dismissButton = {
-                TextButton(onClick = { showClearAll = false }) { Text("取消") }
+                TextButton(onClick = { showClearAll = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -220,9 +223,11 @@ private fun HistoryRow(
     val progressRatio = if (entry.duration > 0) {
         (entry.progress.toFloat() / entry.duration).coerceIn(0f, 1f)
     } else 0f
-    val remaining = if (entry.duration > entry.progress) formatDuration(entry.duration - entry.progress) else "已看完"
-
-    var rowMenu by remember { mutableStateOf(false) }
+    val remaining = if (entry.duration > entry.progress) {
+        formatDuration(entry.duration - entry.progress)
+    } else {
+        stringResource(R.string.history_finished)
+    }
     val openLabel = stringResource(R.string.cd_open)
 
     Row(
@@ -262,18 +267,12 @@ private fun HistoryRow(
                 Text(remaining, style = DyLikeType.micro, color = c.textTertiary)
             }
         }
-        Box {
-            AppIconButton(Icons.Default.MoreVert, "更多", { rowMenu = true })
-            DropdownMenu(expanded = rowMenu, onDismissRequest = { rowMenu = false }) {
-                DropdownMenuItem(
-                    text = { Text("删除") },
-                    onClick = {
-                        rowMenu = false
-                        onDelete()
-                    }
-                )
-            }
-        }
+        // 行内只有「删除」一个动作：直接开确认框，不为一个选项挂一个 DropdownMenu
+        AppIconButton(
+            Icons.Default.MoreVert,
+            stringResource(R.string.action_more),
+            onDelete
+        )
     }
 }
 

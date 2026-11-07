@@ -52,11 +52,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import me.lingci.dy.player.entity.MediaLibType
+import me.lingci.dy.player.R
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
 import me.lingci.dy.player.ui.compose.model.formatDuration
 import me.lingci.dy.player.ui.compose.model.mediaTypeLabel
@@ -136,6 +138,8 @@ fun LibraryScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("全部") }
     var menuMedia by remember { mutableStateOf<MediaUiModel?>(null) }
+    // 顶栏菜单状态放在列表外：item 滚出屏幕会被回收，状态跟着丢
+    var headerMenu by remember { mutableStateOf(false) }
 
     val filteredList = remember(state.media, query, filter) {
         val byQuery = if (query.isBlank()) {
@@ -204,22 +208,21 @@ fun LibraryScreen(
                         )
                     }
                     AppIconButton(Icons.Default.Add, "添加本地媒体库", onClick = onAddLocalMedia, tint = c.accent)
-                    var headerMenu by remember { mutableStateOf(false) }
                     Box {
                         AppIconButton(Icons.Default.MoreVert, "更多", { headerMenu = true })
                         DropdownMenu(expanded = headerMenu, onDismissRequest = { headerMenu = false }) {
                             DropdownMenuItem(
-                                text = { Text("扫描媒体库") },
+                                text = { Text(stringResource(R.string.hint_media_scan)) },
                                 leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(20.dp)) },
                                 onClick = { headerMenu = false; onScanMedia() }
                             )
                             DropdownMenuItem(
-                                text = { Text("导入在线媒体库") },
+                                text = { Text(stringResource(R.string.hint_media_link_input)) },
                                 leadingIcon = { Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(20.dp)) },
                                 onClick = { headerMenu = false; onImportOnlineMedia() }
                             )
                             DropdownMenuItem(
-                                text = { Text("添加在线媒体库") },
+                                text = { Text(stringResource(R.string.hint_media_link_add)) },
                                 leadingIcon = { Icon(Icons.Default.Link, null, modifier = Modifier.size(20.dp)) },
                                 onClick = { headerMenu = false; onAddOnlineMedia() }
                             )
@@ -319,9 +322,9 @@ fun LibraryScreen(
             ) {
                 Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
                     listOf(
-                        "编辑媒体库" to { menuMedia = null; onEditMedia(target) },
-                        "删除媒体库" to { menuMedia = null; onDeleteMedia(target) },
-                        "置顶/取消置顶" to { menuMedia = null; onTogglePin(target) }
+                        stringResource(R.string.hint_media_edit) to { menuMedia = null; onEditMedia(target) },
+                        stringResource(R.string.hint_media_delete) to { menuMedia = null; onDeleteMedia(target) },
+                        stringResource(R.string.hint_media_pin) to { menuMedia = null; onTogglePin(target) }
                     ).forEach { (label, action) ->
                         Row(
                             Modifier.fillMaxWidth().clickable(onClick = action)

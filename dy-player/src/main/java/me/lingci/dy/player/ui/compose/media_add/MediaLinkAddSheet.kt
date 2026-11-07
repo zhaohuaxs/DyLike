@@ -21,8 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -120,8 +120,8 @@ fun MediaLinkAddSheetContent(
 ) {
     val c = LocalDyLikeColors.current
     val sheetState = rememberModalBottomSheetState()
-    // 长按菜单的目标位置：逐项持有布尔量的话，删掉一项后其余项的状态会串位
-    var menuIndex by remember { mutableIntStateOf(-1) }
+    // 长按删除的目标位置：逐项持有布尔量的话，删掉一项后其余项的状态会串位
+    var deleteIndex by remember { mutableIntStateOf(-1) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -224,7 +224,7 @@ fun MediaLinkAddSheetContent(
                         .background(c.surfaceRaised)
                         .combinedClickable(
                             onClick = {},
-                            onLongClick = { menuIndex = index }
+                            onLongClick = { deleteIndex = index }
                         )
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 ) {
@@ -235,28 +235,38 @@ fun MediaLinkAddSheetContent(
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis
                     )
-                    DropdownMenu(
-                        expanded = menuIndex == index,
-                        onDismissRequest = { menuIndex = -1 }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("删除当前") },
-                            onClick = {
-                                menuIndex = -1
-                                onRemove(index)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("清除全部") },
-                            onClick = {
-                                menuIndex = -1
-                                onClearAll()
-                            }
-                        )
-                    }
                 }
             }
+
+            // 「清除全部」原在长按菜单里，菜单撤掉后单独给一个入口
+            if (state.itemNames.size > 1) {
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    onClick = onClearAll,
+                    modifier = Modifier.align(Alignment.End)
+                ) { Text(stringResource(R.string.action_clear_all)) }
+            }
         }
+    }
+
+    // 删除确认放在 Sheet 之外：AlertDialog 自带窗口，不挂在条目上
+    val target = deleteIndex
+    if (target >= 0) {
+        AlertDialog(
+            onDismissRequest = { deleteIndex = -1 },
+            text = { Text(stringResource(R.string.hint_media_link_delete_item)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteIndex = -1
+                    onRemove(target)
+                }) { Text(stringResource(R.string.action_confirmed)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteIndex = -1 }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
     }
 }
 

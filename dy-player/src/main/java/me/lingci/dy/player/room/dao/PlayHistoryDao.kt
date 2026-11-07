@@ -4,6 +4,7 @@ import androidx.room3.Dao
 import androidx.room3.Insert
 import androidx.room3.OnConflictStrategy
 import androidx.room3.Query
+import androidx.room3.Transaction
 import androidx.room3.Upsert
 import kotlinx.coroutines.flow.Flow
 import me.lingci.dy.player.entity.VideoData
@@ -179,32 +180,71 @@ interface PlayHistoryDao {
     suspend fun insertAll(historyList: List<PlayHistory>)
 
     /**
-     * 开播打点（对应 PlayHelper.saveHistory）：单条 INSERT ... ON CONFLICT 完成"存在则只刷
-     * updated_at、不存在则插入"，不覆盖已有 progress/duration。
-     * 用单语句而非"SELECT + @Upsert"是为了避免 saveHistory 与进度刷新并发时的读改写竞态：
-     * 两者都跑在 Dispatchers.IO 上，谁先谁后无法保证，UPDATE 抢在 INSERT 前会静默影响 0 行。
+     * 开播打点（对应 PlayHelper.saveHistory）：存在则只刷 updated_at，不存在则插入，
+     * 不覆盖已有 progress/duration。
+     *
+     * 不用 `INSERT ... ON CONFLICT`：部分 ROM（实测 MIUI 12.5 / Android 10 内置
+     * SQLite 3.22.0）不支持 UPSERT 语法，会把语句直接判为语法错误。
+     * 改为事务内 INSERT OR IGNORE + UPDATE，语义等价且兼容旧 SQLite。
      */
     @Query("""
-        INSERT INTO play_history (video_id, source_type, source_key, progress, duration, created_at, updated_at)
+        INSERT OR IGNORE INTO play_history
+            (video_id, source_type, source_key, progress, duration, created_at, updated_at)
         VALUES (:videoId, :sourceType, :sourceKey, 0, 0, :now, :now)
-        ON CONFLICT(video_id, source_key) DO UPDATE SET
-            updated_at = excluded.updated_at
     """)
-    suspend fun touch(videoId: String, sourceType: Int, sourceKey: String, now: Long)
+    suspend fun insertTouch(videoId: String, sourceType: Int, sourceKey: String, now: Long): Long
+
+    @Query("""
+        UPDATE play_history SET updated_at = :now
+        WHERE video_id = :videoId AND source_key = :sourceKey
+    """)
+    suspend fun updateTouch(videoId: String, sourceKey: String, now: Long): Int
+
+    @Transaction
+    suspend fun touch(videoId: String, sourceType: Int, sourceKey: String, now: Long) {
+        insertTouch(videoId, sourceType, sourceKey, now)
+        updateTouch(videoId, sourceKey, now)
+    }
 
     /**
-     * 进度刷新（对应 PlayHelper.updateHistoryProgress）：同 [touch] 的原子写法，
-     * 但冲突时更新 progress/duration/updated_at；行尚不存在时直接插入（省掉一次写事务）。
+     * 进度刷新（对应 PlayHelper.updateHistoryProgress）：行不存在时插入，存在则更新
+     * progress/duration/updated_at，语义同原 UPSERT。
      * 注意：插入分支会触发 video_id → video_data 外键，调用方必须先确保父行已落库。
      */
     @Query("""
-        INSERT INTO play_history (video_id, source_type, source_key, progress, duration, created_at, updated_at)
+        INSERT OR IGNORE INTO play_history
+            (video_id, source_type, source_key, progress, duration, created_at, updated_at)
         VALUES (:videoId, :sourceType, :sourceKey, :progress, :duration, :now, :now)
-        ON CONFLICT(video_id, source_key) DO UPDATE SET
-            progress = excluded.progress,
-            duration = excluded.duration,
-            updated_at = excluded.updated_at
     """)
+    suspend fun insertProgress(
+        videoId: String,
+        sourceType: Int,
+        sourceKey: String,
+        progress: Long,
+        duration: Long,
+        now: Long
+    ): Long
+
+    /**
+     * duration 传 0 表示调用方拿不到有效时长（如退出播放器时已释放），
+     * 此时保留库内原值，避免把已写入的总时长覆盖成 0 导致历史显示“已看完”。
+     */
+    @Query("""
+        UPDATE play_history
+        SET progress = :progress,
+            duration = CASE WHEN :duration > 0 THEN :duration ELSE duration END,
+            updated_at = :now
+        WHERE video_id = :videoId AND source_key = :sourceKey
+    """)
+    suspend fun updateProgress(
+        videoId: String,
+        sourceKey: String,
+        progress: Long,
+        duration: Long,
+        now: Long
+    ): Int
+
+    @Transaction
     suspend fun upsertProgress(
         videoId: String,
         sourceType: Int,
@@ -212,16 +252,29 @@ interface PlayHistoryDao {
         progress: Long,
         duration: Long,
         now: Long
-    )
+    ) {
+        insertProgress(videoId, sourceType, sourceKey, progress, duration, now)
+        updateProgress(videoId, sourceKey, progress, duration, now)
+    }
 
     /** 播放完成清零进度（对应 PlayHelper.resetPlaySeek）
      *  若目标行不存在（开播打点被删/尚未写入）则补插一条，保证"看完后重新播放"不会被旧进度 seek 回去 */
     @Query("""
-        INSERT INTO play_history (video_id, source_type, source_key, progress, duration, created_at, updated_at)
+        INSERT OR IGNORE INTO play_history
+            (video_id, source_type, source_key, progress, duration, created_at, updated_at)
         VALUES (:videoId, :sourceType, :sourceKey, 0, 0, :now, :now)
-        ON CONFLICT(video_id, source_key) DO UPDATE SET
-            progress = 0,
-            updated_at = excluded.updated_at
     """)
-    suspend fun resetProgress(videoId: String, sourceType: Int, sourceKey: String, now: Long)
+    suspend fun insertReset(videoId: String, sourceType: Int, sourceKey: String, now: Long): Long
+
+    @Query("""
+        UPDATE play_history SET progress = 0, updated_at = :now
+        WHERE video_id = :videoId AND source_key = :sourceKey
+    """)
+    suspend fun updateReset(videoId: String, sourceKey: String, now: Long): Int
+
+    @Transaction
+    suspend fun resetProgress(videoId: String, sourceType: Int, sourceKey: String, now: Long) {
+        insertReset(videoId, sourceType, sourceKey, now)
+        updateReset(videoId, sourceKey, now)
+    }
 }

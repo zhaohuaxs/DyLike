@@ -113,6 +113,12 @@
     <string name="hint_scan_permission_denied">未授予存储权限</string>
     <string name="hint_media_link_add">添加在线媒体库</string>
     <string name="hint_media_link_input">导入在线媒体库</string>
+    <string name="hint_media_scan">扫描媒体库</string>
+    <string name="hint_media_delete">删除媒体库</string>
+    <string name="hint_media_pin">置顶/取消置顶</string>
+    <string name="hint_media_link_delete_item">删除该条媒体？</string>
+    <string name="action_clear_all">清除全部</string>
+    <string name="title_select_storage">选择存储</string>
     <string name="hint_media_link_local">在线媒体库文件</string>
     <string name="hint_media_op_ed_set">片头片尾设置</string>
     <string name="hint_media_op_ed_offset">片头: %s\n片尾: %s</string>
@@ -455,5 +461,14 @@
     <string name="browser_error_body">请检查资源库配置与网络连接</string>
     <string name="browser_source_unsupported">资源库不受支持</string>
     <string name="browser_connect_failed">资源库连接失败</string>
+
+    <!-- 喜欢页 -->
+    <string name="title_likes">我的喜欢</string>
+    <string name="likes_empty">还没有喜欢的视频</string>
+    <string name="likes_count">%1$d 个</string>
+
+    <!-- 卡片文字开关（喜欢页 / 媒体库详情共用） -->
+    <string name="action_show_text">显示文本</string>
+    <string name="action_hide_text">隐藏文本</string>
 
 </resources>

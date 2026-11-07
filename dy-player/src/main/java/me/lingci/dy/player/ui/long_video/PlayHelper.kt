@@ -156,6 +156,7 @@ object PlayHelper {
     ) {
         scope.launch(Dispatchers.IO) {
             val file = AppFile(context).buildCache(".thumb/${videoData.videoUrl.md5()}.${AppUtil.THUMB_TYPE}")
+            file.parentFile?.mkdirs()
             if (file.exists() && file.length() < 20480) {
                 file.delete()
             }

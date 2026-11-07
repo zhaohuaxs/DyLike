@@ -27,6 +27,10 @@ class SmbDataSource(
     private val cifsContext: CIFSContext = SingletonContext.getInstance()
 ) : BaseDataSource(true) {
 
+    private companion object {
+        const val READ_AHEAD_SIZE = 512 * 1024
+    }
+
     @UnstableApi
     open class Factory(
         private val headers: Map<String, String>? = null
@@ -49,6 +53,12 @@ class SmbDataSource(
     private var bytesRemaining: Long = 0
     private var opened = false
 
+    // ExoPlayer 的解析读取通常只有几 KB，直接 read 会变成每块一次 SMB 往返；
+    // 预读整块后顺序读走内存，把往返次数从 per-read 降到 per-block。
+    private var readBuffer: ByteArray? = null
+    private var readBufferOffset = 0
+    private var readBufferLength = 0
+
     @Throws(IOException::class)
     override fun open(dataSpec: DataSpec): Long {
         uri = dataSpec.uri
@@ -66,6 +76,8 @@ class SmbDataSource(
             }
 
             randomAccessFile = raf
+            readBufferOffset = 0
+            readBufferLength = 0
 
             val fileLength = raf.length()
             bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
@@ -87,36 +99,62 @@ class SmbDataSource(
         if (readLength == 0) return 0
         if (bytesRemaining == 0L) return C.RESULT_END_OF_INPUT
 
-        val bytesToRead = if (bytesRemaining == C.LENGTH_UNSET.toLong()) {
-            readLength
-        } else {
-            bytesRemaining.coerceAtMost(readLength.toLong()).toInt()
+        if (readBufferOffset >= readBufferLength && !fillReadBuffer()) {
+            return C.RESULT_END_OF_INPUT
         }
 
-        val bytesRead = try {
-            randomAccessFile?.read(buffer, offset, bytesToRead) ?: -1
+        val buffered = readBuffer ?: return C.RESULT_END_OF_INPUT
+        val count = minOf(
+            readLength,
+            readBufferLength - readBufferOffset,
+            bytesRemaining.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        )
+        System.arraycopy(buffered, readBufferOffset, buffer, offset, count)
+        readBufferOffset += count
+        bytesRemaining -= count
+        bytesTransferred(count)
+        return count
+    }
+
+    /** 顺序预读一块；返回 false 表示已到文件末尾。 */
+    private fun fillReadBuffer(): Boolean {
+        val raf = randomAccessFile ?: return false
+        val target = minOf(READ_AHEAD_SIZE.toLong(), bytesRemaining).toInt()
+        if (target <= 0) return false
+
+        val buffer = readBuffer ?: ByteArray(READ_AHEAD_SIZE).also { readBuffer = it }
+        var filled = 0
+        try {
+            // 单次 SMB read 可能被协议缓冲上限截断，循环补齐以减少上层小块读取。
+            while (filled < target) {
+                val read = raf.read(buffer, filled, target - filled)
+                if (read <= 0) break
+                filled += read
+            }
         } catch (e: SmbException) {
             // On read failure, close the handle to prevent leak.
             // ExoPlayer retries by creating a new DataSource via Factory.
-            try { randomAccessFile?.close() } catch (_: Exception) {}
+            try { raf.close() } catch (_: Exception) {}
             randomAccessFile = null
+            readBuffer = null
+            readBufferOffset = 0
+            readBufferLength = 0
             throw IOException("SMB read failed", e)
         }
 
-        if (bytesRead == -1) return C.RESULT_END_OF_INPUT
-
-        if (bytesRemaining != C.LENGTH_UNSET.toLong()) {
-            bytesRemaining -= bytesRead
-        }
-
-        bytesTransferred(bytesRead)
-        return bytesRead
+        if (filled <= 0) return false
+        readBufferOffset = 0
+        readBufferLength = filled
+        return true
     }
 
     override fun getUri(): Uri? = uri
 
     override fun close() {
         uri = null
+        readBuffer = null
+        readBufferOffset = 0
+        readBufferLength = 0
         try {
             randomAccessFile?.close()
         } catch (_: SmbException) {

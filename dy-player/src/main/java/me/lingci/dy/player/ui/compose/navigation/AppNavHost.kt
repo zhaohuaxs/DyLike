@@ -1,5 +1,6 @@
 package me.lingci.dy.player.ui.compose.navigation
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
+import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.migrate.MigrationActivity
@@ -198,8 +200,8 @@ fun AppNavHost(
             DetailRoute(
                 mediaId = mediaId,
                 onBack = { navController.popBackStack() },
-                onPlay = { videos, index, isShort ->
-                    startPlayback(context, videos, index, isShort)
+                onPlay = { media, videos, index, isShort ->
+                    startPlayback(context, media, videos, index, isShort)
                 }
             )
         }
@@ -209,7 +211,8 @@ fun AppNavHost(
                 onBack = { navController.popBackStack() },
                 onOpenDetail = { mediaId -> navController.navigate("${Dest.Detail}/${Uri.encode(mediaId)}") },
                 onPlay = { videos, index, isShort ->
-                    startPlayback(context, videos, index, isShort)
+                    // 历史页是重播入口：不写回媒体库的「上次播放」
+                    startPlayback(context, null, videos, index, isShort, history = true)
                 }
             )
         }
@@ -218,7 +221,7 @@ fun AppNavHost(
             LikesRoute(
                 onBack = { navController.popBackStack() },
                 onPlay = { videos, index ->
-                    startPlayback(context, videos, index, true)
+                    startPlayback(context, null, videos, index, true, history = true)
                 }
             )
         }
@@ -291,12 +294,26 @@ private fun Placeholder(label: String) {
         Text(label, style = MaterialTheme.typography.headlineSmall)
     }
 }
-private fun startPlayback(context: android.content.Context, list: List<VideoData>, index: Int, isShort: Boolean) {
+/**
+ * 起播统一入口。
+ *
+ * [media] 决定播放页能不能写回「上次播放」：两个播放页都只在 `!history` 时才接收 KEY_MEDIA，
+ * 而写入 `play_last` / 历史 / 进度都依赖它，所以媒体库进入必须带上下文、且 `history = false`。
+ * 历史页本身是重播入口（`history = true`，不带上下文），避免把历史页当成媒体库再写一次。
+ */
+private fun startPlayback(
+    context: Context,
+    media: MediaData?,
+    list: List<VideoData>,
+    index: Int,
+    isShort: Boolean,
+    history: Boolean = media?.isHistory() == true
+) {
     if (list.isEmpty()) return
     val arrayList = ArrayList(list)
     if (isShort) {
-        ShortVideoActivity.start(context, arrayList, index, true)
+        ShortVideoActivity.start(context, media, arrayList, index, history)
     } else {
-        LongVideoActivity.start(context, arrayList, index, true)
+        LongVideoActivity.start(context, media, arrayList, index, history)
     }
 }
