@@ -31,7 +31,7 @@ object FileOperator {
 
     private const val XML_EXTENSION: String = ".xml"
     val VIDEO_EXTENSIONS = arrayListOf(
-        ".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".3gp", ".m4a", ".m4v", ".m4s"
+        ".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".3gp", ".m4a", ".m4v", ".m4s", ".rmvb"
     )
     val IMAGE_EXTENSIONS = arrayListOf(".jpg", ".jpeg", ".png", ".gif", ".webp")
     val XML_EXTENSIONS = arrayListOf(XML_EXTENSION)

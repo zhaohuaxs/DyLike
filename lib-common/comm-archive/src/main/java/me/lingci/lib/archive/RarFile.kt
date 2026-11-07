@@ -4,6 +4,8 @@ import me.lingci.lib.base.util.Log
 import net.sf.sevenzipjbinding.ExtractAskMode
 import net.sf.sevenzipjbinding.ExtractOperationResult
 import net.sf.sevenzipjbinding.IArchiveExtractCallback
+import net.sf.sevenzipjbinding.IArchiveOpenCallback
+import net.sf.sevenzipjbinding.ICryptoGetTextPassword
 import net.sf.sevenzipjbinding.IInArchive
 import net.sf.sevenzipjbinding.ISequentialOutStream
 import net.sf.sevenzipjbinding.PropID
@@ -13,6 +15,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.RandomAccessFile
+import java.util.Date
 
 /**
  * 最终优化版
@@ -27,15 +30,40 @@ object RarFile {
     }
 
     /**
+     * 打开阶段的密码回调：记录 7-Zip 是否索要过密码。
+     * 头加密包会触发该回调；文件损坏/非压缩包不会，借此区分两类打开失败。
+     */
+    private class OpenCallback(private val password: String?) :
+        IArchiveOpenCallback, ICryptoGetTextPassword {
+
+        var passwordRequested = false
+            private set
+
+        override fun setTotal(files: Long?, bytes: Long?) {}
+        override fun setCompleted(files: Long?, bytes: Long?) {}
+
+        override fun cryptoGetTextPassword(): String? {
+            passwordRequested = true
+            return password
+        }
+    }
+
+    /**
      * 一次性打开 Archive，自动管理资源生命周期
      */
-    private inline fun <T> withArchive(path: String, password: String?, block: (IInArchive) -> T?): T? {
+    private inline fun <T> withArchive(
+        path: String,
+        password: String?,
+        onOpenFailure: (Exception, Boolean) -> Unit = { _, _ -> },
+        block: (IInArchive) -> T?
+    ): T? {
+        val openCallback = OpenCallback(password)
         return try {
             // 注意：这里不能在 block 执行完就 close，必须等 extract 结束
             // 但为了防止内存泄漏，这里使用 RAII 模式，block 内部必须同步执行完 extract
             val raf = RandomAccessFile(path, "r")
             val inStream = RandomAccessFileInStream(raf)
-            val archive = SevenZip.openInArchive(null, inStream, password)
+            val archive = SevenZip.openInArchive(null, inStream, openCallback)
 
             try {
                 block(archive)
@@ -46,7 +74,31 @@ object RarFile {
             }
         } catch (e: Exception) {
             Log.d(this, "withArchive failed", e)
+            // 回调打开失败的异常与是否索要过密码，供调用方区分「密码问题」与「文件损坏」
+            onOpenFailure(e, openCallback.passwordRequested)
             null
+        }
+    }
+
+    /** 读取最后修改时间（epoch 毫秒），属性不可用时返回 0 */
+    private fun readLastModified(archive: IInArchive, index: Int): Long {
+        return try {
+            (archive.getProperty(index, PropID.LAST_MODIFICATION_TIME) as? Date)?.time ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    /** 读取条目加密标记，属性不可用时按未加密处理 */
+    private fun readEncrypted(archive: IInArchive, index: Int): Boolean {
+        return try {
+            when (val value = archive.getProperty(index, PropID.ENCRYPTED)) {
+                is Boolean -> value
+                is String -> value == "+" || value.equals("true", ignoreCase = true)
+                else -> false
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -58,7 +110,10 @@ object RarFile {
                     ZArchiveEntry(
                         name = TextFixer.fixGarbledFilename(archive.getStringProperty(i, PropID.PATH)),
                         isDirectory = archive.getProperty(i, PropID.IS_FOLDER) as? Boolean ?: false,
-                        size = archive.getStringProperty(i, PropID.SIZE)?.toLongOrNull() ?: 0L
+                        size = archive.getStringProperty(i, PropID.SIZE)?.toLongOrNull() ?: 0L,
+                        index = i,
+                        lastModified = readLastModified(archive, i),
+                        encrypted = readEncrypted(archive, i)
                     )
                 )
             }
@@ -94,13 +149,22 @@ object RarFile {
     }
 
     fun verifyPassword(zPath: String, password: String): ArchivePasswordVerifyResult {
-        return withArchive(zPath, password.ifBlank { null }) { archive ->
+        var openError: Exception? = null
+        var openRequested = false
+        val result = withArchive(
+            zPath,
+            password.ifBlank { null },
+            { error, requested -> openError = error; openRequested = requested }
+        ) { archive ->
             val testIndex = (0 until archive.numberOfItems).find {
                 archive.getProperty(it, PropID.IS_FOLDER) as? Boolean == false
             } ?: return@withArchive ArchivePasswordVerifyResult.ENTRY_NOT_FOUND
 
             var status = ArchivePasswordVerifyResult.ERROR
-            val callback = object : IArchiveExtractCallback {
+            val callback = object : IArchiveExtractCallback, ICryptoGetTextPassword {
+                // 提取阶段 7-Zip 会再次索要密码（RAR 条目加密场景）
+                override fun cryptoGetTextPassword(): String? = password
+
                 override fun getStream(index: Int, extractAskMode: ExtractAskMode?) =
                     ISequentialOutStream { data -> data?.size ?: 0 }
 
@@ -130,7 +194,16 @@ object RarFile {
             }
 
             status
-        } ?: ArchivePasswordVerifyResult.ERROR
+        }
+        if (result == null) {
+            // 打开阶段就失败：头加密包会在打开阶段索要密码；文件损坏/非压缩包不会
+            return if (openRequested || (openError != null && isPasswordError(openError!!))) {
+                ArchivePasswordVerifyResult.WRONG_PASSWORD
+            } else {
+                ArchivePasswordVerifyResult.ERROR
+            }
+        }
+        return result
     }
 
     fun openZEntry(zPath: String, password: String, entryName: String): InputStream? {
@@ -141,7 +214,13 @@ object RarFile {
     }
 
     fun openZEntryResult(zPath: String, password: String, entryName: String): ArchiveEntryOpenResult {
-        return withArchive(zPath, password.ifBlank { null }) { archive ->
+        var openError: Exception? = null
+        var openRequested = false
+        val entryResult = withArchive(
+            zPath,
+            password.ifBlank { null },
+            { error, requested -> openError = error; openRequested = requested }
+        ) { archive ->
             var result: ArchiveEntryOpenResult = ArchiveEntryOpenResult.Error
 
             // 1. 查找目标索引
@@ -159,7 +238,10 @@ object RarFile {
             val buffer = ByteArrayOutputStream()
 
             // 3. 定义回调：当解压器读到数据时，写入 buffer
-            val callback = object : IArchiveExtractCallback {
+            val callback = object : IArchiveExtractCallback, ICryptoGetTextPassword {
+                // 提取阶段 7-Zip 会再次索要密码（RAR 条目加密场景）
+                override fun cryptoGetTextPassword(): String? = password
+
                 override fun getStream(index: Int, extractAskMode: ExtractAskMode?): ISequentialOutStream {
                     return ISequentialOutStream { data ->
                         if (index == targetIndex) {
@@ -202,7 +284,16 @@ object RarFile {
             }
 
             result
-        } ?: ArchiveEntryOpenResult.Error
+        }
+        if (entryResult == null) {
+            // 打开阶段就失败：头加密包会在打开阶段索要密码；文件损坏/非压缩包不会
+            return if (openRequested || (openError != null && isPasswordError(openError!!))) {
+                ArchiveEntryOpenResult.WrongPassword
+            } else {
+                ArchiveEntryOpenResult.Error
+            }
+        }
+        return entryResult
     }
 
 }
