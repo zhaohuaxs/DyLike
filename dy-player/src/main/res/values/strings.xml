@@ -370,6 +370,8 @@
     <string name="settings_kernel_mpv_hwdec_desc">自动会先尝试硬解，失败回退软解</string>
     <string name="settings_kernel_mpv_hwdec_auto">自动</string>
     <string name="settings_kernel_mpv_hwdec_off">软解</string>
+    <string name="settings_kernel_skip_tls_verify">跳过 TLS 证书校验</string>
+    <string name="settings_kernel_skip_tls_verify_desc">自签证书、证书链不全的站点可开启；Exo 内核会自动改用 OkHttp 数据源。会失去中间人防护，仅建议在可信网络下临时使用</string>
     <string name="settings_kernel_note">内核与内核选项在下一次开始播放时生效，播放中修改不会热切换。</string>
     <string name="settings_kernel_target">配置对象</string>
     <string name="settings_kernel_target_desc">长视频与短视频的内核及其专属选项互相独立</string>

@@ -71,62 +71,57 @@ class MpvMediaSourceHelper(private val context: Context) {
     }
     
     /**
-     * 配置缓存设置
+     * 配置缓存设置。
+     *
+     * 只用内存缓存：移动端开 `cache-on-disk` 会额外占存储且随机 IO 更差，实测对流式播放无收益，
+     * 因此这里不再设置该选项（mpv 默认即不落盘）。
+     *
      * @param cacheEnabled 是否启用缓存
      * @param cacheSize 缓存大小（MB）
      */
     fun setupCache(mpv: MPV, cacheEnabled: Boolean, cacheSize: Int = 64) {
         try {
-            try {
-                if (cacheEnabled) {
-                    // 设置缓存大小
-                    val cacheBytes = cacheSize * 1024 * 1024L
-                    mpv.setOptionString("demuxer-max-bytes", cacheBytes.toString())
-                    mpv.setOptionString("demuxer-max-back-bytes", (cacheBytes / 2).toString())
-                    
-                    // 开启网络缓存
-                    mpv.setOptionString("cache", "yes")
-                    mpv.setOptionString("cache-on-disk", "yes")
-                    
-                    L.d("Cache enabled, size: ${cacheSize}MB")
-                } else {
-                    // 禁用缓存
-                    mpv.setOptionString("cache", "no")
-                    mpv.setOptionString("cache-on-disk", "no")
-                    L.d("Cache disabled")
-                }
-            } catch (e: Exception) {
-                L.e("Failed to setup cache: ${e.message}")
+            if (cacheEnabled) {
+                val cacheBytes = cacheSize * 1024 * 1024L
+                // 开启网络缓存（auto 已是默认，这里显式声明，避免被用户 config 关掉）
+                mpv.setOptionString("cache", "yes")
+                mpv.setOptionString("demuxer-max-bytes", cacheBytes.toString())
+                // 回看缓存减半：拖回退时仍可复用，但不与前瞻缓抢占内存
+                mpv.setOptionString("demuxer-max-back-bytes", (cacheBytes / 2).toString())
+                L.d("Cache enabled, size: ${cacheSize}MB")
+            } else {
+                mpv.setOptionString("cache", "no")
+                L.d("Cache disabled")
             }
         } catch (e: Exception) {
-            L.e("Failed to setup network settings: ${e.message}")
+            L.e("Failed to setup cache: ${e.message}")
         }
     }
     
     /**
-     * 配置网络设置
-     * @param timeout 超时时间（秒）
+     * 配置网络设置。
+     *
+     * 注意 `network-timeout` 的单位是**秒**（mpv 默认 60），旧实现按毫秒传 `timeout * 1000`，
+     * 等于把超时放大 1000 倍，网络无响应时会一直挂着，这里修正为秒。
+     *
+     * @param timeout 首字节超时时间（秒）
      * @param lowLatency 是否低延迟模式
      */
-    fun setupNetworkSettings(mpv: MPV, timeout: Int = 10, lowLatency: Boolean = false) {
+    fun setupNetworkSettings(mpv: MPV, timeout: Int = 15, lowLatency: Boolean = false) {
         try {
-            try {
-                // 设置网络超时
-                mpv.setOptionString("network-timeout", (timeout * 1000).toString())
-                
-                if (lowLatency) {
-                    // 低延迟模式设置
-                    mpv.setOptionString("demuxer-readahead-secs", "0.5")
-                    mpv.setOptionString("hr-seek-framedrop", "no")
-                    mpv.setOptionString("cache-secs", "1")
-                    L.d("Low latency mode enabled")
-                } else {
-                    // 正常模式设置
-                    mpv.setOptionString("demuxer-readahead-secs", "5")
-                    mpv.setOptionString("cache-secs", "30")
-                }
-            } catch (e: Exception) {
-                L.e("Failed to setup network settings: ${e.message}")
+            if (lowLatency) {
+                // 低延迟模式设置
+                mpv.setOptionString("network-timeout", timeout.toString())
+                mpv.setOptionString("demuxer-readahead-secs", "0.5")
+                mpv.setOptionString("hr-seek-framedrop", "no")
+                mpv.setOptionString("cache-secs", "1")
+                L.d("Network: timeout=${timeout}s, low latency")
+            } else {
+                // 正常模式：前读 5s、最多缓存 30s 内容，起播后尽快有可播数据
+                mpv.setOptionString("network-timeout", timeout.toString())
+                mpv.setOptionString("demuxer-readahead-secs", "5")
+                mpv.setOptionString("cache-secs", "30")
+                L.d("Network: timeout=${timeout}s")
             }
         } catch (e: Exception) {
             L.e("Failed to setup network settings: ${e.message}")

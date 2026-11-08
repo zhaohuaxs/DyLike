@@ -10,7 +10,6 @@ import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.logging.HttpLoggingInterceptor
 import java.io.IOException
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -47,11 +46,11 @@ object OkUtil {
             readTimeout(TIMEOUT_READ, TimeUnit.SECONDS)
             writeTimeout(TIMEOUT_READ, TimeUnit.SECONDS)
 
-            // 日志拦截器
+            // 日志拦截器：文本类响应才打印内容（最多 8KB），
+            // 二进制只输出类型与大小。原 BODY 级别会把整个响应体读进内存，
+            // 媒体请求等于「文件下完才起播」，大文件直接 OOM。
             if (BuildConfig.DEBUG) {
-                addInterceptor(HttpLoggingInterceptor().apply {
-                    level = HttpLoggingInterceptor.Level.BODY
-                })
+                addInterceptor(HttpLogInterceptor())
             }
 
             if (unsafe) {

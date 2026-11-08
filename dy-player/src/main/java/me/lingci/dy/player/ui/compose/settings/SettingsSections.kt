@@ -305,6 +305,16 @@ fun LazyListScope.kernelSettings(
         }
     }
 
+    // TLS 证书校验是两个内核共用的开关：MPV 侧是 tls-verify，Exo 侧只有 OkHttp 数据源能改证书校验，
+    // 所以放在内核分组之外，切内核不会把它藏起来。
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_kernel_skip_tls_verify),
+            stringResource(R.string.settings_kernel_skip_tls_verify_desc),
+            state.skipTlsVerify
+        ) { onChange(state.copy(skipTlsVerify = it)) }
+    }
+
     item { SettingsNoteLine(stringResource(R.string.settings_kernel_note)) }
 }
 

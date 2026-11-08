@@ -70,7 +70,14 @@ data class KernelSettingsState(
     val mpvSequentialRead: Boolean = true,
     val mpvSpecialRender: Boolean = true,
     /** 短视频专属：快速滑动时复用 Surface 的渲染管线（旧 sortRender），仅 Exo 生效 */
-    val shortFastRender: Boolean = false
+    val shortFastRender: Boolean = false,
+    /**
+     * 跳过 TLS 证书校验（自签 / 证书链异常的站点）。
+     *
+     * 两个内核共用：MPV 走 `tls-verify=no`；Exo 只有 OkHttp 数据源能关校验，
+     * 走 System（DefaultHttpDataSource）时不生效。落盘 key 沿用 `labMpvSkipTlsVerify`。
+     */
+    val skipTlsVerify: Boolean = false
 )
 
 @Immutable

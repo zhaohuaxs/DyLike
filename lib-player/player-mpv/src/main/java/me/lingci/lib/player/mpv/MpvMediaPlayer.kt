@@ -163,6 +163,15 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     private val SP_KEY_MPV_VIDEO_OUTPUT = "mpvVideoOutput"
     private val SP_KEY_MPV_HWDEC = "mpvHwdec"
 
+    /**
+     * 跳过 TLS 证书校验的跨模块 SP key（由 dy-player.SpUtil.labMpvSkipTlsVerify 写入）。
+     *
+     * 默认 false：只有用户在「内核 → MPV 专属」里主动打开才生效，切到 `tls-verify=no`。
+     * 用于自签证书 / 证书链不全的 NAS、WebDAV。
+     */
+    private val SP_KEY_LAB_MPV_SKIP_TLS_VERIFY = "labMpvSkipTlsVerify"
+    private val SP_LAB_MPV_SKIP_TLS_VERIFY_DEFAULT = false
+
     // HDR模式
     enum class HdrMode {
         SDR_MAPPING,       // 稳定优先：映射到 SDR 目标显示。
@@ -1122,6 +1131,10 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     private fun setInitOptions() {
         if (isReleasing || isReleased || isNativeDestroyed) return
         mpv.setOptionString("profile", "fast")
+
+        // 本播放器只播直链/本地文件，不接 yt-dlp 的站点解析。
+        // 关掉后打开失败不会再串行尝试 yt-dlp / ytdl_x86 / youtube-dl 三个子进程（实测白费 ~0.5s）。
+        mpv.setOptionString("ytdl", "no")
         
         // GPU上下文
         mpv.setOptionString("gpu-context", "android")
@@ -1133,10 +1146,17 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
         L.d("Display ${disp.displayId} reports FPS of $refreshRate")
         mpv.setOptionString("display-fps-override", refreshRate.toString())
         
-        // 缓存大小
-        val bytes = cacheSize * 1024 * 1024L
-        mpv.setOptionString("demuxer-max-bytes", bytes.toString())
-        mpv.setOptionString("demuxer-max-back-bytes", bytes.toString())
+        // 缓存与网络：demuxer-max-bytes / cache / network-timeout / 前读秒数统一在 helper 里设置，
+        // 避免两处各写一份后互相覆盖（旧实现里 setupCache / setupNetworkSettings 根本没有调用点）。
+        mMediaSourceHelper.setupCache(mpv, cacheEnabled = true, cacheSize = cacheSize)
+        mMediaSourceHelper.setupNetworkSettings(mpv, timeout = NETWORK_TIMEOUT_SECONDS)
+
+        // 跳过 TLS 证书校验：只影响播放链路（mpv → ffmpeg 的 https），默认关闭。
+        // 由「设置 → 内核 → MPV 专属 → 跳过 TLS 证书校验」控制，下一次 init 生效。
+        if (isSkipTlsVerifyEnabled()) {
+            mpv.setOptionString("tls-verify", "no")
+            L.d("MPV tls-verify disabled")
+        }
 
         // MPV 顺序读优化：禁用 ffmpeg mov demuxer 的 interleaved_read，避免 badly-interleaved
         // MP4 over HTTP 触发 seek 风暴。跨模块读 dy-player 写入的 labMpvSequentialRead。
@@ -1155,6 +1175,19 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     /**
      * 运行时选项（可以在mpv.init()之后设置）
      */
+    /**
+     * 是否跳过 TLS 证书校验（用户在「内核 → MPV 专属」里打开的开关）。
+     *
+     * 读不到偏好（首次安装 / 读异常）时返回默认值 false，保持标准校验。
+     */
+    private fun isSkipTlsVerifyEnabled(): Boolean = try {
+        PreferenceManager.getDefaultSharedPreferences(appContext)
+            .getBoolean(SP_KEY_LAB_MPV_SKIP_TLS_VERIFY, SP_LAB_MPV_SKIP_TLS_VERIFY_DEFAULT)
+    } catch (e: Exception) {
+        L.e("Failed to read mpv skip tls preference: ${e.message}")
+        SP_LAB_MPV_SKIP_TLS_VERIFY_DEFAULT
+    }
+
     /**
      * 从 SP 同步 vo / hwdec。只在初始化选项时同步一次，之后仍可被 setVo() / setHwdec() 覆盖。
      */
@@ -1223,19 +1256,17 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     }
 
     override fun getTcpSpeed(): Long {
-        // 尝试获取网络速度
         if (!isMpvInitialized || isNativeDestroyed) return 0
-        
-        try {
-            val networkSpeed = mpv.getPropertyInt("network-bandwidth")
-            if (networkSpeed != null) {
-                // 转换为KB/s
-                return networkSpeed / 1024L
-            }
+
+        return try {
+            // mpv 没有 network-bandwidth 属性（旧实现读它，永远拿到 null → 网速恒为 0）。
+            // cache-speed 是 demuxer 每秒填充缓存的字节数，正是"当前网络下载速度"，单位 B/s。
+            val bytesPerSecond = mpv.getPropertyDouble("cache-speed") ?: 0.0
+            if (bytesPerSecond <= 0.0) 0L else (bytesPerSecond / 1024.0).toLong()
         } catch (e: Exception) {
             L.e("Error getting network speed: ${e.message}")
+            0
         }
-        return 0
     }
 
     // 处理播放状态变化（用于when中未明确处理的事件）
@@ -1596,6 +1627,12 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     private companion object {
         private const val BACKEND_MPV = "mpv"
         private val assetsCopied = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        /**
+         * 网络流首字节超时（秒）。mpv 默认 60s，对一个已经不可达的 WebDAV 会让用户白等一分钟；
+         * 15s 覆盖实测最慢的正常响应（9.5s），又能让坏链路尽快报错。
+         */
+        private const val NETWORK_TIMEOUT_SECONDS = 15
     }
 
     private fun refreshVideoGeometryFromMpv() {

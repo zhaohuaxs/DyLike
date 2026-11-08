@@ -110,6 +110,11 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         if (updated.mpvSpecialRender != current.mpvSpecialRender) {
             sp.labMpvSpecialRender = updated.mpvSpecialRender
         }
+        if (updated.skipTlsVerify != current.skipTlsVerify) {
+            // key 名沿用 labMpvSkipTlsVerify：MpvMediaPlayer / ExoMediaSourceHelper 都按这个字符串读，
+            // 改名会让已经打开的开关失效，而且 MPV 那边是跨模块字符串约定。
+            sp.labMpvSkipTlsVerify = updated.skipTlsVerify
+        }
         if (updated.shortFastRender != current.shortFastRender) sp.sortRender = updated.shortFastRender
 
         update { it.copy(kernel = updated) }
@@ -230,7 +235,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         mpvOutput = MpvVideoOutput.fromValue(sp.mpvVideoOutput),
         mpvHwdec = MpvHwdec.fromValue(sp.mpvHwdec),
         mpvSequentialRead = sp.labMpvSequentialRead,
-        mpvSpecialRender = sp.labMpvSpecialRender
+        mpvSpecialRender = sp.labMpvSpecialRender,
+        skipTlsVerify = sp.labMpvSkipTlsVerify
     )
 
     private fun readDanmaku() = DanmakuSettingsState(

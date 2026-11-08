@@ -201,6 +201,17 @@ open class SpUtil(context: Context) : SpBase(context) {
     var labMpvSequentialRead by SPManager.boolean(true)
 
     /**
+     * MPV 跳过 TLS 证书校验（对应 mpv 的 `tls-verify=no`）。
+     *
+     * 场景：自签名证书、证书链不全、企业内网代理的 NAS / WebDAV。默认关闭。
+     * 只作用于播放链路（mpv → ffmpeg 的 https），WebDAV 列目录走 OkHttp，本身已信任全部证书。
+     *
+     * ⚠️ 跨模块约定：此 key 由 lib-player/player-mpv/MpvMediaPlayer 在 init 时直接读取
+     * （app 默认 SharedPreferences）。重命名属性会破坏 MPV 端读取。
+     */
+    var labMpvSkipTlsVerify by SPManager.boolean(false)
+
+    /**
      * MPV 视频输出（vo）：gpu / gpu-next。
      *
      * 旧版本硬编码 "gpu"，这里只是把已有的两条渲染管线暴露成偏好，默认值保持 gpu，

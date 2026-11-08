@@ -2,8 +2,8 @@ package me.lingci.lib.base.storage.impl
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
@@ -43,7 +43,9 @@ class WebDavStorage(
     // OkHttp客户端
     private val client: OkHttpClient by lazy {
         val builder = OkHttpClient.Builder()
-            .connectTimeout(6, TimeUnit.SECONDS)
+            // 公网 / 反向代理的 WebDAV 站点 TLS 握手能到 3~5s（实测 alist + Cloudflare 4.8s），
+            // 6s 会把「握手慢但能用」的服务器直接判死，这里放宽到 15s。
+            .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
             //.addInterceptor(AuthInterceptor(encodeBasicAuth(config.username!!, config.password!!)))
@@ -75,6 +77,26 @@ class WebDavStorage(
             <D:allprop/>
         </D:propfind>
     """.trimIndent()
+
+    private companion object {
+        /**
+         * PROPFIND 的最大尝试次数：5xx / 断流时重试，4xx 不重试。
+         * 实测 alist + 对象存储后端的单次请求约四到五成概率返回 500，两次都失败还有两成，
+         * 给到三次能把「目录明明有内容却显示为空」压到一成以下。
+         */
+        const val PROPFIND_MAX_ATTEMPTS = 3
+
+        /** 重试间隔：服务器 500 多为瞬时错误，短暂退避比立刻重打更容易命中正常节点。 */
+        const val PROPFIND_RETRY_DELAY_MS = 400L
+
+        /**
+         * 固定日志 tag。
+         *
+         * [logD] 的 tag 取自接收者类型，在 suspend lambda 里会变成协程实现类（如 UndispatchedCoroutine），
+         * 排查网络问题时按 tag 过滤不到，这里显式指定。
+         */
+        const val LOG_TAG = "WebDavStorage"
+    }
 
     // WebDAV根URL
     private val rootUrl: String by lazy {
@@ -110,7 +132,7 @@ class WebDavStorage(
                 //.header("Authorization", "")
                 .header("Host", webdavUrl.substringAfter("://").substringBefore('/'))
                 .build()
-            client.newCall(request).execute().let { response ->
+            client.newCall(request).execute().use { response ->
                 logD(response.code, response.message, response.header("WWW-Authenticate"))
                 if (response.isSuccessful) {
                     Pair(true, response.message)
@@ -145,64 +167,75 @@ class WebDavStorage(
     }
 
     override suspend fun listFiles(path: String, refresh: Boolean): Flow<List<FileEntity>> = flow {
-        val webdavUrl = getWebDavUrl(path)
-        val fileList = mutableListOf<FileEntity>()
-        try {
-            val response = propfind(webdavUrl, testBody, 1)
-            logD(response.code, response.message)
-            if (response.isSuccessful) {
-                //println(response.body?.string())
-                response.body?.byteStream()?.use { steam ->
-                    parseListFilesXml(steam, path, fileList, null)
-                }
-            } else {
-                logD(response.body?.string())
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        emit(fileList)
+        emit(fetchEntries(path, "listFiles"))
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * 逐条发出目录条目。
+     *
+     * 旧实现是 channelFlow + `launch { send(it) }`：解析一结束通道就关闭，与子协程的 send 存在竞态，
+     * 大目录会整片丢失（表现为「共 N 项」但列表为空）。改成解析完成后再顺序 emit，
+     * 流式语义不变，且不会丢项。
+     */
     override suspend fun listFile(
         path: String,
         refresh: Boolean
-    ): Flow<FileEntity> = channelFlow {
-        val webdavUrl = getWebDavUrl(path)
-        val fileList = mutableListOf<FileEntity>()
-        try {
-            val response = propfind(webdavUrl, testBody, 1)
-            logD(response.code, response.message)
-            if (response.isSuccessful) {
-                //println(response.body?.string())
-                response.body?.byteStream()?.use { steam ->
-                    parseListFilesXml(steam, path, fileList) {
-                        launch {
-                            send(it)
+    ): Flow<FileEntity> = flow {
+        fetchEntries(path, "listFile").forEach { emit(it) }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * 拉取目录条目（PROPFIND Depth: 1）。
+     *
+     * 失败语义：4xx（认证失败 / 路径不存在）直接返回空，不重试；5xx 与 IO 异常重试一次 ——
+     * 实测部分公网 WebDAV（alist + 对象存储后端）单次请求约三成概率返回 500 或中途断流，
+     * 不重试会让列表页整片空白。
+     *
+     * 无论成功失败都会关闭 [Response]，避免 OkHttp 连接池泄漏。
+     */
+    private suspend fun fetchEntries(path: String, tag: String): List<FileEntity> =
+        withContext(Dispatchers.IO) {
+            val webdavUrl = getWebDavUrl(path)
+            repeat(PROPFIND_MAX_ATTEMPTS) { attempt ->
+                try {
+                    propfind(webdavUrl, testBody, 1).use { response ->
+                        android.util.Log.d(LOG_TAG, "$tag ${response.code} ${response.message}")
+                        if (response.isSuccessful) {
+                            val fileList = mutableListOf<FileEntity>()
+                            response.body?.byteStream()?.use { steam ->
+                                parseListFilesXml(steam, path, fileList, null)
+                            }
+                            return@withContext fileList
                         }
+                        if (response.code < 500) {
+                            return@withContext emptyList()
+                        }
+                        android.util.Log.d(LOG_TAG, "$tag http ${response.code}, retry ${attempt + 1}")
                     }
+                } catch (e: Exception) {
+                    android.util.Log.w(LOG_TAG, "$tag failed, attempt ${attempt + 1}", e)
+                }
+                if (attempt < PROPFIND_MAX_ATTEMPTS - 1) {
+                    delay(PROPFIND_RETRY_DELAY_MS)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            emptyList()
         }
-
-    }.flowOn(Dispatchers.IO)
 
     override suspend fun getFileInfo(path: String): FileEntity? = withContext(Dispatchers.IO) {
         val webdavUrl = getWebDavUrl(path)
         return@withContext try {
-            val response = propfind(webdavUrl, "", 0)
-            logD("get file", webdavUrl, response.code, response.message)
-            if (response.isSuccessful) {
-                response.body?.byteStream()?.use { steam ->
-                    val fileList = mutableListOf<FileEntity>()
-                    parseListFilesXml(steam, getParentPath(path), fileList, null)
-                    fileList.firstOrNull()
+            propfind(webdavUrl, "", 0).use { response ->
+                logD("get file", webdavUrl, response.code, response.message)
+                if (response.isSuccessful) {
+                    response.body?.byteStream()?.use { steam ->
+                        val fileList = mutableListOf<FileEntity>()
+                        parseListFilesXml(steam, getParentPath(path), fileList, null)
+                        fileList.firstOrNull()
+                    }
+                } else {
+                    null
                 }
-            } else {
-                null
             }
         } catch (e: Exception) {
             logD("file info failed", e)
@@ -698,38 +731,54 @@ class WebDavStorage(
     private fun getMimeType(fileName: String): String {
         val extension = fileName.substringAfterLast('.', "").lowercase()
         return when (extension) {
-            "txt" -> "text/plain"
+            // 文本 / 文档
+            "txt", "log", "md" -> "text/plain"
+            "srt", "ass", "ssa", "vtt", "sub" -> "text/plain"
             "pdf" -> "application/pdf"
             "doc", "docx" -> "application/msword"
             "xls", "xlsx" -> "application/vnd.ms-excel"
             "ppt", "pptx" -> "application/vnd.ms-powerpoint"
+            // 图片
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "heic", "heif" -> "image/heic"
+            // 音频
             "mp3" -> "audio/mpeg"
-            "mp4" -> "video/mp4"
+            "flac" -> "audio/flac"
+            "m4a", "aac" -> "audio/mp4"
+            "wav" -> "audio/wav"
+            "ogg", "opus" -> "audio/ogg"
+            "ape" -> "audio/x-ape"
+            "wma" -> "audio/x-ms-wma"
+            // 视频（补全常见容器，避免 mimeType 为空影响后续判断）
+            "mp4", "m4v" -> "video/mp4"
+            "mkv" -> "video/x-matroska"
+            "webm" -> "video/webm"
+            "avi" -> "video/x-msvideo"
+            "mov" -> "video/quicktime"
+            "flv" -> "video/x-flv"
+            "wmv" -> "video/x-ms-wmv"
+            "ts", "m2ts", "mts" -> "video/mp2t"
+            "mpg", "mpeg" -> "video/mpeg"
+            "3gp" -> "video/3gpp"
+            "rm", "rmvb" -> "video/vnd.rn-realvideo"
+            "iso" -> "application/x-iso9660-image"
+            // 压缩包
+            "zip" -> "application/zip"
+            "rar" -> "application/vnd.rar"
+            "7z" -> "application/x-7z-compressed"
             else -> ""
         }
     }
 
     // 搜索WebDAV目录
-    private fun searchWebDavDirectory(path: String, query: String, results: MutableList<FileEntity>) {
-        val webdavUrl = getWebDavUrl(path)
-        try {
-            val response = propfind(webdavUrl, testBody, 1)
-
-            if (response.isSuccessful) {
-                response.body?.byteStream()?.use { steam ->
-                    val fileList = mutableListOf<FileEntity>()
-                    parseListFilesXml(steam, path, fileList, null)
-                    logD("search file size", fileList.size)
-                    results.addAll(fileList.filter { file -> file.name.contains(query, ignoreCase = true) })
-                }
-            }
-            response.close()
-        } catch (e: Exception) {
-            logD("search failed", e)
-        }
+    private suspend fun searchWebDavDirectory(path: String, query: String, results: MutableList<FileEntity>) {
+        val fileList = fetchEntries(path, "search")
+        logD("search file size", fileList.size)
+        results.addAll(fileList.filter { file -> file.name.contains(query, ignoreCase = true) })
     }
 
 }

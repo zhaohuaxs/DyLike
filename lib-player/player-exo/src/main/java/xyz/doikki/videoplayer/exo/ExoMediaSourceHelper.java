@@ -2,6 +2,7 @@ package xyz.doikki.videoplayer.exo;
 
 import android.content.Context;
 import android.net.Uri;
+import android.preference.PreferenceManager;
 import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
@@ -35,8 +36,10 @@ import java.util.Map;
 import me.lingci.lib.base.okhttp.OkUtil;
 import me.lingci.lib.base.util.HttpUtil;
 import me.lingci.lib.base.util.Log;
+import me.lingci.lib.player.exo.datasource.RetryDataSource;
 import me.lingci.lib.player.exo.smb.SmbDataSource;
 import okhttp3.Call;
+import okhttp3.OkHttpClient;
 import okhttp3.Request;
 
 @UnstableApi
@@ -51,6 +54,14 @@ public final class ExoMediaSourceHelper {
     private Cache mCache;
 
     private Boolean useOkhttp = false;
+
+    /**
+     * 跳过 TLS 证书校验的 SP key，与 dy-player.SpUtil.labMpvSkipTlsVerify、MpvMediaPlayer 共用同一个键。
+     * player-exo 不能依赖 dy-player，所以按字符串读默认 SharedPreferences。
+     */
+    private static final String SP_KEY_SKIP_TLS_VERIFY = "labMpvSkipTlsVerify";
+
+    private static final String TAG_TLS = "ExoMediaSourceHelper";
 
     @OptIn(markerClass = UnstableApi.class)
     private ExoMediaSourceHelper(Context context) {
@@ -100,7 +111,9 @@ public final class ExoMediaSourceHelper {
         } else {
             factory = getDataSourceFactory();
         }
-        if (useOkhttp) {
+        // headers 必须下发给「实际用到的那个工厂」：跳过 TLS 校验时会强制走 OkHttp，
+        // 若仍按 useOkhttp 判断，鉴权头会被设到没被使用的 Http 工厂上，表现为 401。
+        if (useOkhttp || isSkipTlsVerify()) {
             if (mOkHttpDataSourceFactory != null) {
                 setOkHeaders(headers);
             }
@@ -140,24 +153,30 @@ public final class ExoMediaSourceHelper {
             requestUserAgent = mUserAgent;
         }
 
+        boolean skipTls = isSkipTlsVerify();
+
         DataSource.Factory upstream;
-        if (useOkhttp) {
+        // 打开「跳过 TLS 证书校验」时强制走 OkHttp：DefaultHttpDataSource 基于 HttpURLConnection，
+        // 没有任何关闭证书校验的入口，继续走 System 会让这个开关形同虚设。
+        if (useOkhttp || skipTls) {
             OkHttpDataSource.Factory okFactory = new OkHttpDataSource.Factory(new Call.Factory() {
                 @NonNull
                 @Override
                 public Call newCall(@NonNull Request request) {
-                    return OkUtil.INSTANCE.getUnsafeClient().newCall(request);
+                    return okClient().newCall(request);
                 }
             });
             okFactory.setUserAgent(requestUserAgent);
             okFactory.setDefaultRequestProperties(requestHeaders);
-            upstream = new DefaultDataSource.Factory(mAppContext, okFactory);
+            // 只在 HTTP 层加重试：DefaultDataSource 对 file/content/asset 仍走原生的本地数据源，
+            // 不给本地文件付出重试代价。
+            upstream = new DefaultDataSource.Factory(mAppContext, new RetryDataSource.Factory(okFactory));
         } else {
             DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
                     .setUserAgent(requestUserAgent)
                     .setAllowCrossProtocolRedirects(true)
                     .setDefaultRequestProperties(requestHeaders);
-            upstream = new DefaultDataSource.Factory(mAppContext, httpFactory);
+            upstream = new DefaultDataSource.Factory(mAppContext, new RetryDataSource.Factory(httpFactory));
         }
 
         if (!isCache) {
@@ -208,10 +227,17 @@ public final class ExoMediaSourceHelper {
      * @return A new DataSource factory.
      */
     private DataSource.Factory getDataSourceFactory() {
-        if (useOkhttp) {
-            return new DefaultDataSource.Factory(mAppContext, getOkHttpDataSourceFactory());
+        // 与 getDataSourceFactory(uri, headers, isCache) 保持一致：跳过 TLS 校验时必须走 OkHttp
+        boolean skipTls = isSkipTlsVerify();
+        // 每次起播一行，方便排查「自签证书站点为什么还是失败」：能看到实际选的数据源与开关状态
+        Log.d(TAG_TLS, "dataSource okhttp=" + (useOkhttp || skipTls) + " skipTls=" + skipTls
+                + " retry=" + RetryDataSource.DEFAULT_MAX_ATTEMPTS);
+        if (useOkhttp || skipTls) {
+            return new DefaultDataSource.Factory(mAppContext,
+                    new RetryDataSource.Factory(getOkHttpDataSourceFactory()));
         }
-        return new DefaultDataSource.Factory(mAppContext, getHttpDataSourceFactory());
+        return new DefaultDataSource.Factory(mAppContext,
+                new RetryDataSource.Factory(getHttpDataSourceFactory()));
     }
 
     /**
@@ -244,7 +270,7 @@ public final class ExoMediaSourceHelper {
                     request.headers().forEach(pair ->
                             Log.d("okhttp " + pair.getFirst() + " " + pair.getSecond())
                     );
-                    return OkUtil.INSTANCE.getUnsafeClient().newCall(request);
+                    return okClient().newCall(request);
                 }
             });
             mOkHttpDataSourceFactory.setUserAgent(mUserAgent);
@@ -297,6 +323,29 @@ public final class ExoMediaSourceHelper {
 
     public void setUseOkhttp(Boolean used) {
         this.useOkhttp = used;
+    }
+
+    /**
+     * 播放用的 OkHttp 客户端。
+     *
+     * 默认走系统信任链（[OkUtil.client]）；只有用户在内核设置里打开「跳过 TLS 证书校验」
+     * 才切到信任全部的 [OkUtil.unsafeClient]。自签证书 / 证书链不全的站点靠这个开关救回来。
+     *
+     * 注意：这里判断的是「每次发起请求时」的开关状态，所以改完设置不需要重建 factory，
+     * 下一次播放（甚至下一次 seek 重连）就按新值走。
+     */
+    private OkHttpClient okClient() {
+        return isSkipTlsVerify() ? OkUtil.INSTANCE.getUnsafeClient() : OkUtil.INSTANCE.getClient();
+    }
+
+    private boolean isSkipTlsVerify() {
+        try {
+            return PreferenceManager.getDefaultSharedPreferences(mAppContext)
+                    .getBoolean(SP_KEY_SKIP_TLS_VERIFY, false);
+        } catch (Exception e) {
+            Log.d(TAG_TLS, "read skip tls preference failed", e);
+            return false;
+        }
     }
 
 }
