@@ -37,6 +37,14 @@
 -dontwarn org.openjsse.**
 
 # ============================================================
+# 2.1 BouncyCastle（jcifs-ng 的 MD4 Provider）
+# ============================================================
+# jcifs-ng 通过 JCE 按名字查找 "MD4"，Provider 内部也用类名注册摘要实现；
+# R8 看不到这条引用链，release 会报 NoSuchAlgorithmException: MD4 for provider BC，
+# 表现为 SMB 认证失败。目前只被 SMB 使用。
+-keep class org.bouncycastle.** { *; }
+
+# ============================================================
 # 3. Glide
 # ============================================================
 -keep public class * implements com.bumptech.glide.module.GlideModule
