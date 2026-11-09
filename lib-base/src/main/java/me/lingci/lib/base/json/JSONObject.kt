@@ -3,108 +3,74 @@ package me.lingci.lib.base.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.float
 import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import me.lingci.lib.base.util.Log
 
 /**
  *   @author : happyc
  *   time    : 2023/07/19
- *   desc    :
- *   version : 1.0
+ *   desc    : JSON 对象包装（底层 kotlinx.serialization.JsonObject）
+ *   version : 2.0
  */
 class JSONObject {
 
-    private var jsonObject: JsonObject
+    // 有序可变 Map 承载数据：单次 put 为 O(1)，并保持字段写入顺序
+    private val values = LinkedHashMap<String, JsonElement>()
 
-    constructor() {
-        this.jsonObject = JsonObject(mapOf())
-    }
+    constructor()
 
     constructor(json: String) {
-        this.jsonObject = try {
-            Json.parseToJsonElement(json).jsonObject
-        } catch (_: Exception) {
-            JsonObject(mapOf())
+        try {
+            values.putAll(Json.parseToJsonElement(json).jsonObject)
+        } catch (e: Exception) {
+            // 与原实现保持一致：解析失败返回空对象，额外补日志便于排查脏数据
+            Log.d(this, "parse object failed", e.message)
         }
     }
 
     constructor(jsonObject: JsonObject) {
-        this.jsonObject = jsonObject
+        values.putAll(jsonObject)
     }
 
     constructor(map: Map<*, *>) {
-        this.jsonObject = JsonObject(mapOf())
-        map.forEach {
-            putValue(it.key.toString(), it.value.toString())
+        // 逐值递归转换，修复原实现 value.toString() 导致嵌套结构被压成字符串的问题
+        map.forEach { (key, value) ->
+            values[key.toString()] = JsonValueConverter.toElement(value)
         }
     }
 
+    /** 取底层 JsonObject（快照） */
     fun original(): JsonObject {
-        return jsonObject
+        return JsonObject(values)
     }
 
     fun hasKey(key: String): Boolean {
-        return jsonObject.containsKey(key)
-    }
-
-    fun noHasKey(key: String): Boolean {
-        return !hasKey(key)
-    }
-
-    fun isObject(key: String): Boolean {
-        return try {
-            jsonObject[key] is JsonPrimitive
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    fun isJsonObject(key: String): Boolean {
-        return try {
-            jsonObject[key] is JsonObject
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    fun isJsonArray(key: String): Boolean {
-        return try {
-            jsonObject[key] is JsonArray
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    fun get(key: String): JsonElement {
-        return jsonObject[key]!!
+        return values.containsKey(key)
     }
 
     fun getJSONObject(key: String): JSONObject {
-        return try {
-            if (jsonObject[key] is JsonObject) {
-                return JSONObject(jsonObject[key]!!.jsonObject)
-            }
-            JSONObject(jsonObject[key]!!.jsonPrimitive.content)
-        } catch (e: Exception) {
-            JSONObject()
+        return when (val element = values[key]) {
+            is JsonObject -> JSONObject(element)
+            // 兼容历史数据中"对象被存成 JSON 字符串"的情况
+            is JsonPrimitive -> if (element.isJsonLike('{')) JSONObject(element.content) else JSONObject()
+            else -> JSONObject()
         }
     }
 
     fun getJSONArray(key: String): JSONArray {
-        return try {
-            JSONArray(jsonObject[key]!!.jsonArray)
-        } catch (e: Exception) {
-            JSONArray()
+        return when (val element = values[key]) {
+            is JsonArray -> JSONArray(element)
+            // 兼容历史数据中"数组被存成 JSON 字符串"的情况
+            is JsonPrimitive -> if (element.isJsonLike('[')) JSONArray(element.content) else JSONArray()
+            else -> JSONArray()
         }
     }
 
@@ -113,11 +79,7 @@ class JSONObject {
     }
 
     fun getString(key: String, default: String): String {
-        return try {
-            jsonObject[key]!!.jsonPrimitive.content
-        } catch (e: Exception) {
-            default
-        }
+        return primitive(key)?.content ?: default
     }
 
     fun getInt(key: String): Int {
@@ -126,7 +88,7 @@ class JSONObject {
 
     fun getInt(key: String, default: Int): Int {
         return try {
-            jsonObject[key]!!.jsonPrimitive.int
+            primitive(key)?.int ?: default
         } catch (e: Exception) {
             default
         }
@@ -138,7 +100,7 @@ class JSONObject {
 
     fun getLong(key: String, default: Long): Long {
         return try {
-            jsonObject[key]!!.jsonPrimitive.long
+            primitive(key)?.long ?: default
         } catch (e: Exception) {
             default
         }
@@ -150,7 +112,7 @@ class JSONObject {
 
     fun getFloat(key: String, default: Float): Float {
         return try {
-            jsonObject[key]!!.jsonPrimitive.float
+            primitive(key)?.float ?: default
         } catch (e: Exception) {
             default
         }
@@ -162,7 +124,7 @@ class JSONObject {
 
     fun getDouble(key: String, default: Double): Double {
         return try {
-            jsonObject[key]!!.jsonPrimitive.double
+            primitive(key)?.double ?: default
         } catch (e: Exception) {
             default
         }
@@ -174,48 +136,45 @@ class JSONObject {
 
     fun getBoolean(key: String, default: Boolean): Boolean {
         return try {
-            jsonObject[key]!!.jsonPrimitive.boolean
+            primitive(key)?.boolean ?: default
         } catch (e: Exception) {
             default
         }
     }
 
-    fun putValue(key: String, value: Any) {
-        jsonObject = buildJsonObject {
-            jsonObject.forEach {
-                put(it.key, it.value)
-            }
-            when (value) {
-                is Number -> put(key, JsonPrimitive(value))
-                is Boolean -> put(key, JsonPrimitive(value))
-                is String -> put(key, JsonPrimitive(value))
-                is JsonElement -> put(key, value)
-                is JSONObject -> put(key, value.original())
-                is JSONArray -> put(key, value.original())
-                else -> Log.d(this, "类型不满足")
-            }
-        }
+    /** 写入任意值，支持 null（写成 JSON null）与嵌套对象/集合 */
+    fun putValue(key: String, value: Any?) {
+        values[key] = JsonValueConverter.toElement(value)
     }
 
     fun keys(): Set<String> {
-        return jsonObject.keys
+        return values.keys
     }
 
     fun isEmpty(): Boolean {
-        return jsonObject.isEmpty()
+        return values.isEmpty()
     }
 
     fun isNotEmpty(): Boolean {
-        return jsonObject.isNotEmpty()
+        return values.isNotEmpty()
     }
 
     fun toJsonStr(): String {
-        return jsonObject.toString()
-        //return "{${jsonObject.entries.joinToString(",") { "\"${it.key}\":${it.value}" }}}"
+        return JsonObject(values).toString()
     }
 
     override fun toString(): String {
         return toJsonStr()
     }
 
+    /** 取原始值；显式 null（JsonNull）与缺失一律视为不可用 */
+    private fun primitive(key: String): JsonPrimitive? {
+        val element = values[key] as? JsonPrimitive ?: return null
+        return if (element is JsonNull) null else element
+    }
+
+    /** 判断该原始值是否是"被序列化成字符串的 JSON 片段" */
+    private fun JsonPrimitive.isJsonLike(prefix: Char): Boolean {
+        return isString && content.trimStart().startsWith(prefix)
+    }
 }

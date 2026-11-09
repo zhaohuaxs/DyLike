@@ -3,104 +3,80 @@ package me.lingci.lib.base.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import me.lingci.lib.base.util.Log
 
 
 /**
  *   @author : happyc
  *   time    : 2023/07/19
- *   desc    :
- *   version : 1.0
+ *   desc    : JSON 数组包装（底层 kotlinx.serialization.JsonArray）
+ *   version : 2.0
  */
 class JSONArray {
 
-    private var jsonArray: JsonArray
+    private val items = mutableListOf<JsonElement>()
 
-    constructor() {
-        this.jsonArray = JsonArray(listOf())
-    }
+    constructor()
 
     constructor(json: String) {
-        this.jsonArray = try {
-            Json.parseToJsonElement(json).jsonArray
+        try {
+            items.addAll(Json.parseToJsonElement(json).jsonArray)
         } catch (e: Exception) {
             Log.d(this, "init failed", e.message)
-            JsonArray(listOf())
         }
     }
 
     constructor(jsonArray: JsonArray) {
-        this.jsonArray = jsonArray
+        items.addAll(jsonArray)
     }
 
     constructor(list: List<JsonElement>) {
-        this.jsonArray = JsonArray(list)
+        items.addAll(list)
     }
 
+    /** 取底层 JsonArray（快照） */
     fun original(): JsonArray {
-        return jsonArray
+        return JsonArray(items)
     }
 
     fun itemIsArray(index: Int): Boolean {
-        if (index > jsonArray.size) return false
-        return jsonArray[index] is JsonArray
+        // 原实现使用 index > size，index == size 时会越界崩溃
+        return index in items.indices && items[index] is JsonArray
     }
 
     fun itemIsObj(index: Int): Boolean {
-        if (index > jsonArray.size) return false
-        return jsonArray[index] is JsonObject
+        return index in items.indices && items[index] is JsonObject
     }
 
     fun firstJSONObject(): JSONObject {
-        return try {
-            JSONObject(jsonArray.first().jsonObject)
-        } catch (e : Exception) {
-            Log.d(this, "first object failed", e.message)
-            JSONObject()
-        }
+        return (items.firstOrNull() as? JsonObject)?.let { JSONObject(it) } ?: JSONObject()
     }
 
     fun getJSONObject(index: Int): JSONObject {
-        return try {
-            JSONObject(jsonArray[index].jsonObject)
-        } catch (e: Exception) {
-            Log.d(this, "get object failed", e.message)
-            JSONObject()
-        }
+        return (items.getOrNull(index) as? JsonObject)?.let { JSONObject(it) } ?: JSONObject()
     }
 
     fun getJSONArray(index: Int): JSONArray {
-        return try {
-            JSONArray(jsonArray[index].jsonArray)
-        } catch (e: Exception) {
-            Log.d(this, "first array failed", e.message)
-            JSONArray()
-        }
+        return (items.getOrNull(index) as? JsonArray)?.let { JSONArray(it) } ?: JSONArray()
     }
 
     fun getStringArray(index: Int): List<String> {
-        return try {
-            jsonArray[index].jsonArray.map { it.jsonPrimitive.content }
-        } catch (e: Exception) {
-            Log.d(this, "get string array failed", e.message)
-            emptyList()
+        val array = items.getOrNull(index) as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            (element as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
         }
     }
 
-    fun getString(index: Int) : String {
-        return try {
-            jsonArray[index].jsonPrimitive.content
-        } catch (e: Exception) {
-            ""
-        }
+    fun getString(index: Int): String {
+        return (items.getOrNull(index) as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content ?: ""
     }
 
     fun size(): Int {
-        return jsonArray.size
+        return items.size
     }
 
     fun length(): Int {
@@ -108,26 +84,29 @@ class JSONArray {
     }
 
     override fun toString(): String {
-        return jsonArray.toString()
+        return JsonArray(items).toString()
     }
 
     fun isEmpty(): Boolean {
-        return jsonArray.isEmpty()
+        return items.isEmpty()
     }
 
     fun isNotEmpty(): Boolean {
-        return jsonArray.isNotEmpty()
+        return items.isNotEmpty()
     }
 
 }
 
 fun JSONArray.forEach(action: (JSONObject) -> Unit) {
-    original().forEach { action.invoke(JSONObject(it.jsonObject)) }
+    // 非对象元素直接跳过，避免原实现 element.jsonObject 抛异常
+    original().forEach { element ->
+        (element as? JsonObject)?.let { action(JSONObject(it)) }
+    }
 }
 
 fun JSONArray.forEach2(item: (jsonObject: JSONObject) -> Unit) {
     for (i in 0 until this.size()) {
-        if(this.itemIsObj(i)) {
+        if (this.itemIsObj(i)) {
             item(this.getJSONObject(i))
         }
     }

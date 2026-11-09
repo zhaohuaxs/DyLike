@@ -1,7 +1,6 @@
 package me.lingci.lib.base.util
 
 import me.lingci.lib.base.BuildConfig
-import me.lingci.lib.base.json.JSONObject
 import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.nio.charset.StandardCharsets
@@ -89,18 +88,10 @@ object Log {
         if (any is Throwable) {
             return "${any.message}"
         }
-        if (any is Map<*, *>) {
-            return JSONObject(any).toJsonStr()
-        }
         /*if (any.javaClass.isAnnotationPresent(Serializable::class.java)) {
             return JsonUtil.toJsonString(any)
         }*/
-        if (any is Array<*>) {
-            return "[${any.joinToString(",") { AnyToJson.toString(it) }}]"
-        }
-        if (any is Collection<*>) {
-            return "[${any.joinToString(",") { AnyToJson.toString(it) }}]"
-        }
+        // Map / Array / Collection 统一交给 AnyToJson 处理，保证嵌套结构输出为合法 JSON
         return AnyToJson.toString(any)
     }
 

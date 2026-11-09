@@ -4,9 +4,8 @@ import android.graphics.Color
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
-import org.json.JSONArray
-import org.json.JSONException
-import org.json.JSONObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import java.util.regex.Pattern
 
 /**
@@ -16,6 +15,11 @@ import java.util.regex.Pattern
  *   version : 1.0
  */
 object JsonTextHelper {
+
+    /** 仅用于格式化展示，prettyPrint 默认缩进为 4 个空格 */
+    private val prettyJson = Json {
+        prettyPrint = true
+    }
 
     /**
      * 格式化并高亮 JSON 字符串
@@ -33,16 +37,12 @@ object JsonTextHelper {
      * @return 格式化后的 JSON 字符串
      */
     private fun formatJson(json: String): String {
-        try {
-            if (json.startsWith("{")) {
-                return JSONObject(json).toString(4)
-            } else if (json.startsWith("[")) {
-                return JSONArray(json).toString(4)
-            }
-        } catch (e: JSONException) {
-            e.printStackTrace()
+        return try {
+            // 等价于原 org.json 的 toString(4)：4 空格缩进
+            prettyJson.encodeToString(JsonElement.serializer(), Json.parseToJsonElement(json))
+        } catch (e: Exception) {
+            json
         }
-        return json
     }
 
     /**

@@ -1,7 +1,13 @@
 package me.lingci.lib.base.storage.smb
 
 import android.util.Base64
-import org.json.JSONObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 
 object SmbAuthToken {
 
@@ -15,11 +21,11 @@ object SmbAuthToken {
 
     fun encode(username: String?, password: String?, domain: String? = null): String {
         val credentials = normalize(username, password, domain)
-        val json = JSONObject()
-            .put("username", credentials.username.orEmpty())
-            .put("password", credentials.password.orEmpty())
-            .put("domain", credentials.domain.orEmpty())
-            .toString()
+        val json = buildJsonObject {
+            put("username", credentials.username.orEmpty())
+            put("password", credentials.password.orEmpty())
+            put("domain", credentials.domain.orEmpty())
+        }.toString()
         val payload = Base64.encodeToString(
             json.toByteArray(Charsets.UTF_8),
             Base64.URL_SAFE or Base64.NO_WRAP
@@ -34,7 +40,7 @@ object SmbAuthToken {
                 Base64.decode(value.removePrefix(PREFIX), Base64.URL_SAFE or Base64.NO_WRAP),
                 Charsets.UTF_8
             )
-            val obj = JSONObject(json)
+            val obj = Json.parseToJsonElement(json).jsonObject
             Credentials(
                 username = obj.optString("username").takeIf { it.isNotBlank() },
                 password = obj.optString("password").takeIf { it.isNotBlank() },
@@ -43,6 +49,12 @@ object SmbAuthToken {
         } catch (_: Exception) {
             null
         }
+    }
+
+    /** 与原 org.json 的 optString 行为一致：缺失或 JSON null 均返回空串 */
+    private fun JsonObject.optString(key: String): String {
+        val element = this[key] as? JsonPrimitive ?: return ""
+        return if (element is JsonNull) "" else element.content
     }
 
     fun normalize(username: String?, password: String?, domain: String? = null): Credentials {
