@@ -43,6 +43,9 @@ private class ArchiveHandle(
 
 object ZArchiveFile {
 
+    /** 十六进制字符表（rawNameHex 用） */
+    private const val HEX_CHARS = "0123456789abcdef"
+
     /**
      * 打开阶段的密码回调：7-Zip 在解析加密头（如 7z header 加密）时会通过
      * [ICryptoGetTextPassword] 索要密码，这里返回调用方传入的密码。
@@ -108,16 +111,16 @@ object ZArchiveFile {
                 val sizeStr = inArchive.getStringProperty(i, PropID.SIZE)
                 val size = sizeStr?.toLongOrNull() ?: 0L
 
+                val rawPath = inArchive.getStringProperty(i, PropID.PATH)
                 list.add(
                     ZArchiveEntry(
-                        name = TextFixer.fixGarbledFilename(
-                            inArchive.getStringProperty(i, PropID.PATH)
-                        ),
+                        name = TextFixer.fixGarbledFilename(rawPath),
                         isDirectory = inArchive.getProperty(i, PropID.IS_FOLDER) as? Boolean ?: false,
                         size = size,
                         index = i,
                         lastModified = readLastModified(inArchive, i),
-                        encrypted = readEncryptedProperty(inArchive, i) ?: false
+                        encrypted = readEncryptedProperty(inArchive, i) ?: false,
+                        rawName = rawNameHex(rawPath)
                     )
                 )
             }
@@ -245,6 +248,34 @@ object ZArchiveFile {
         }
     }
 
+    /**
+     * 带条目 key 的回退打开（新增重载，旧三参调用行为不变）：
+     * raw 原始字节 → 名称精确 → 名称忽略大小写/空白 → 索引（校验后） → 旧 title。
+     * 用于兼容旧持久化数据：旧记录可能只有 title，或因 TextFixer 版本变化导致名称失配。
+     */
+    fun openZEntryResult(
+        zPath: String,
+        password: String,
+        entryName: String,
+        entryRaw: String,
+        entryIndex: Int,
+        legacyTitle: String
+    ): ArchiveEntryOpenResult {
+        val lowerPath = zPath.lowercase()
+        return when {
+            lowerPath.endsWith(".zip") -> openSevenZEntryResultByKey(
+                zPath, password, entryName, entryRaw, entryIndex, legacyTitle
+            )
+            lowerPath.endsWith(".7z") -> openSevenZEntryResultByKey(
+                zPath, password, entryName, entryRaw, entryIndex, legacyTitle
+            )
+            lowerPath.endsWith(".rar") -> RarFile.openZEntryResult(
+                zPath, password, entryName, entryRaw, entryIndex, legacyTitle
+            )
+            else -> ArchiveEntryOpenResult.Error
+        }
+    }
+
     fun openZEntry(zPath: String, password: String, entryName: String): InputStream? {
         return when (val result = openZEntryResult(zPath, password, entryName)) {
             is ArchiveEntryOpenResult.Success -> result.stream
@@ -319,7 +350,123 @@ object ZArchiveFile {
         password: String,
         entryName: String
     ): ArchiveEntryOpenResult {
-        Log.d(this, "open", zipPath, entryName)
+        return openSevenZEntryResultInternal(zipPath, password) { inArchive ->
+            findEntryIndexForName(inArchive, entryName)
+        }
+    }
+
+    private fun openSevenZEntryResultByKey(
+        zipPath: String,
+        password: String,
+        entryName: String,
+        entryRaw: String,
+        entryIndex: Int,
+        legacyTitle: String
+    ): ArchiveEntryOpenResult {
+        return openSevenZEntryResultInternal(zipPath, password) { inArchive ->
+            findEntryIndex(inArchive, entryName, entryRaw, entryIndex, legacyTitle)
+        }
+    }
+
+    /** 旧三参路径的名称匹配：与改造前一致（只精确匹配 TextFixer 修复后的名称） */
+    private fun findEntryIndexForName(archive: IInArchive, entryName: String): Int {
+        for (i in 0 until archive.numberOfItems) {
+            val path = TextFixer.fixGarbledFilename(archive.getStringProperty(i, PropID.PATH))
+            if (path == entryName) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    /**
+     * zip/7z/rar 共用的条目回退匹配：raw → 名称精确 → 名称忽略大小写/空白 → 索引（校验后） → 旧 title。
+     * 找不到返回 -1。
+     */
+    internal fun findEntryIndex(
+        archive: IInArchive,
+        entryName: String,
+        entryRaw: String,
+        entryIndex: Int,
+        legacyTitle: String
+    ): Int {
+        val count = archive.numberOfItems
+        fun fixedName(i: Int): String =
+            TextFixer.fixGarbledFilename(archive.getStringProperty(i, PropID.PATH))
+
+        // 1. 原始字节 key：跨 TextFixer 版本最稳定
+        if (entryRaw.isNotBlank()) {
+            for (i in 0 until count) {
+                if (rawNameHex(archive.getStringProperty(i, PropID.PATH)).equals(entryRaw, true)) {
+                    return i
+                }
+            }
+        }
+        // 2. 名称精确匹配
+        if (entryName.isNotBlank()) {
+            for (i in 0 until count) {
+                if (fixedName(i) == entryName) {
+                    return i
+                }
+            }
+        }
+        // 3. 名称忽略大小写/空白
+        val normalizedName = normalizeEntryName(entryName)
+        if (normalizedName.isNotEmpty()) {
+            for (i in 0 until count) {
+                if (normalizeEntryName(fixedName(i)) == normalizedName) {
+                    return i
+                }
+            }
+        }
+        // 4. 索引：校验范围与目录属性，避免拿到目录或越界索引
+        if (entryIndex in 0 until count &&
+            !(archive.getProperty(entryIndex, PropID.IS_FOLDER) as? Boolean ?: false)
+        ) {
+            return entryIndex
+        }
+        // 5. 旧 title（旧数据 title 即条目名）
+        if (legacyTitle.isNotBlank() && legacyTitle != entryName) {
+            for (i in 0 until count) {
+                if (fixedName(i) == legacyTitle) {
+                    return i
+                }
+            }
+            val normalizedTitle = normalizeEntryName(legacyTitle)
+            if (normalizedTitle.isNotEmpty()) {
+                for (i in 0 until count) {
+                    if (normalizeEntryName(fixedName(i)) == normalizedTitle) {
+                        return i
+                    }
+                }
+            }
+        }
+        return -1
+    }
+
+    /** 名称归一化：统一分隔符、忽略大小写与空白，用于宽松回退匹配 */
+    internal fun normalizeEntryName(value: String): String {
+        return value.trim().replace('\\', '/').lowercase().filterNot { it.isWhitespace() }
+    }
+
+    /** 原始路径名转十六进制 key；ISO-8859-1 是 7-Zip String 的无损字节视图 */
+    internal fun rawNameHex(rawPath: String?): String {
+        if (rawPath.isNullOrEmpty()) return ""
+        val bytes = rawPath.toByteArray(Charsets.ISO_8859_1)
+        val builder = StringBuilder(bytes.size * 2)
+        for (byte in bytes) {
+            val value = byte.toInt() and 0xFF
+            builder.append(HEX_CHARS[value ushr 4]).append(HEX_CHARS[value and 0x0F])
+        }
+        return builder.toString()
+    }
+
+    private fun openSevenZEntryResultInternal(
+        zipPath: String,
+        password: String,
+        findIndex: (IInArchive) -> Int
+    ): ArchiveEntryOpenResult {
+        Log.d(this, "open", zipPath)
 
         var openError: Exception? = null
         val openCallback = PasswordOpenCallback(password.ifBlank { null })
@@ -337,19 +484,10 @@ object ZArchiveFile {
 
         return openedHandle.use { handle ->
             val inArchive = handle.archive
-            var targetIndex = -1
-
-            // 查找目标文件
-            for (i in 0 until inArchive.numberOfItems) {
-                val path = TextFixer.fixGarbledFilename(inArchive.getStringProperty(i, PropID.PATH))
-                if (path == entryName) {
-                    targetIndex = i
-                    break
-                }
-            }
+            val targetIndex = findIndex(inArchive)
 
             if (targetIndex == -1) {
-                Log.d(this, "Entry not found", entryName)
+                Log.d(this, "Entry not found")
                 return@use ArchiveEntryOpenResult.EntryNotFound
             }
 

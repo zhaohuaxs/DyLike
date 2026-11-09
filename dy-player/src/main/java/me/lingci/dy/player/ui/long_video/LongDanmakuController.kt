@@ -250,13 +250,44 @@ class LongDanmakuController(
         return false
     }
 
-    /** 恢复历史播放信息里的弹幕轨道列表，只接收当前仍存在的文件。 */
-    fun addTracks(tracks: List<DmTrack>) {
-        for (track in tracks) {
+    /**
+     * 恢复历史播放信息里的弹幕轨道列表。
+     * 旧数据惰性迁移：压缩包轨道缺少 archiveEntryName 时，用旧 title（旧版本 title 即条目名）回填并写回；
+     * title 等于包文件名表示历史“整包绑定”，无法推断条目，不做猜测，加载时会提示用户重选。
+     */
+    fun addTracks(info: PlayInfo) {
+        val migratedTracks = info.dmTrack.map { migrateTrack(it) }
+        val needPersist = migratedTracks.zip(info.dmTrack)
+            .any { (newTrack, oldTrack) -> newTrack.archiveEntryName != oldTrack.archiveEntryName }
+        var missingCount = 0
+        for (track in migratedTracks) {
             if (File(track.path).exists()) {
                 dmTrackView.addDmTrack(track)
+            } else {
+                missingCount++
             }
         }
+        if (missingCount > 0) {
+            // 不再静默丢弃：明确告诉用户哪些轨道因文件不可用被跳过
+            longVideoControlView.showTips("有 $missingCount 个弹幕文件不存在，已跳过")
+        }
+        if (needPersist) {
+            val videoData = currentVideoData() ?: return
+            scope.launch(Dispatchers.IO) {
+                PlayHelper.saveInfoSync(
+                    context,
+                    videoData,
+                    info.copy(dmTrack = migratedTracks.toMutableList())
+                )
+            }
+        }
+    }
+
+    /** 旧轨道惰性迁移：只补写可安全推断的 archiveEntryName，不做任何名称猜测 */
+    private fun migrateTrack(track: DmTrack): DmTrack {
+        if (!track.isArchiveTrack() || track.archiveEntryName.isNotBlank()) return track
+        if (track.isUnresolvedLegacyArchive()) return track
+        return track.copy(archiveEntryName = track.title.trim())
     }
 
     /** 当前是否存在可加载的弹幕轨道。 */
@@ -302,7 +333,7 @@ class LongDanmakuController(
     /** 根据轨道类型加载 XML 或 ZIP 内的弹幕内容。 */
     private fun loadTrack(track: DmTrack) {
         danmakuView.release()
-        if (track.mineType == ZipXmlLoader.ZIP) {
+        if (track.isArchiveTrack()) {
             loadZipTrack(track)
         } else {
             danmakuView.loadDanMu(track.path)
@@ -322,16 +353,41 @@ class LongDanmakuController(
         dmConfView.applyOffset(track.offset)
     }
 
-    /** 异步读取 ZIP 内的 XML 弹幕，并把错误状态转换为用户可见提示。 */
+    /** 异步读取压缩包内的 XML 弹幕，并把错误状态转换为用户可见提示。 */
     private fun loadZipTrack(track: DmTrack) {
+        val entryName = track.resolvedArchiveEntryName()
+        if (entryName.isBlank()) {
+            // 旧数据只有包名（整包绑定），无法知道该打开哪个条目：不猜测，提示用户重选
+            postOnMain {
+                clearPanels()
+                longVideoControlView.showTips("该压缩包弹幕缺少包内条目信息，请重新选择")
+            }
+            return
+        }
         scope.launch(Dispatchers.IO) {
             val fileEntity = FileEntity(
-                name = track.title,
+                name = entryName,
                 title = track.title,
                 path = track.path,
-                mimeType = track.mineType
+                mimeType = track.normalizedMineType()
             )
-            val result = ZipXmlLoader.loadXmlFromZipResult(fileEntity, track.password)
+            var usedPassword = track.password
+            var result = openZip(fileEntity, usedPassword, track)
+            var retriedWithCached = false
+            if (result.state == ZipXmlLoader.OpenResultState.WRONG_PASSWORD) {
+                // 播放侧优先使用该包在 SP 中的最近一次有效密码，不同才重试一次
+                val cachedPassword = dmSelectView.archivePassword(track.path)
+                if (cachedPassword.isNotBlank() && cachedPassword != usedPassword) {
+                    usedPassword = cachedPassword
+                    retriedWithCached = true
+                    result = openZip(fileEntity, usedPassword, track)
+                }
+            }
+            if (result.state == ZipXmlLoader.OpenResultState.SUCCESS && retriedWithCached) {
+                // 重试成功：回写轨道与 SP，后续切换轨道不再重复试错
+                track.password = usedPassword
+                dmSelectView.updateArchivePassword(track.path, usedPassword)
+            }
             when (result.state) {
                 ZipXmlLoader.OpenResultState.SUCCESS -> {
                     val byteArray = result.stream?.use { it.readBytes() }
@@ -348,13 +404,28 @@ class LongDanmakuController(
                         // loadDanMu 会重置 offsetPosition=0，此处重新应用轨道持久化偏移
                         applyTrackOffset(track)
                         applyList(dmList)
+                        if (retriedWithCached) {
+                            // 持久化重试成功后的密码，避免下次恢复再试错
+                            saveCacheInfo(videoView.currentPosition, false, track)
+                        }
                     }
                 }
 
                 ZipXmlLoader.OpenResultState.WRONG_PASSWORD -> {
+                    // 失败后清掉失效缓存，引导用户重新输入
+                    dmSelectView.clearArchivePassword(track.path)
                     withContext(Dispatchers.Main) {
                         clearPanels()
-                        longVideoControlView.showTips("弹幕密码错误，请重新选择")
+                        longVideoControlView.showTips(
+                            // 只有真正用缓存密码重试过才提示「已使用…」；缓存与轨道密码相同未重试时不出现该文案
+                            if (retriedWithCached) {
+                                "弹幕密码错误，已使用该压缩包最近一次有效密码，请在弹幕选择面板重新输入"
+                            } else {
+                                "弹幕密码错误，请在弹幕选择面板重新输入"
+                            }
+                        )
+                        // “重新选择”：直接打开弹幕选择面板并预填该压缩包路径
+                        dmSelectView.selectArchive(track.path)
                     }
                 }
 
@@ -380,6 +451,21 @@ class LongDanmakuController(
                 }
             }
         }
+    }
+
+    /** 按条目 key 打开压缩包内 XML（P1 的密码重试也复用此入口）。 */
+    private fun openZip(
+        fileEntity: FileEntity,
+        password: String,
+        track: DmTrack
+    ): ZipXmlLoader.OpenResult {
+        return ZipXmlLoader.loadXmlFromZipResult(
+            fileEntity,
+            password,
+            track.archiveEntryRaw,
+            track.archiveEntryIndex,
+            track.title
+        )
     }
 
     /** 异步解析 XML 文件并刷新弹幕列表/密度曲线。 */

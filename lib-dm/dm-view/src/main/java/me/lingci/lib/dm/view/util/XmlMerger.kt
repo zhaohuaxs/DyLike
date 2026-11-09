@@ -82,7 +82,7 @@ object XmlMerger {
 
             // 处理每个输入文件
             inputFiles.forEach { track ->
-                if (track.mineType == "zip") {
+                if (track.isArchiveTrack()) {
                     processZipFile(track, factory, serializer, parentTag, childTag, onLog)
                 } else {
                     processSingleFile(File(track.path), factory, serializer, parentTag, childTag, track.offset, onLog)
@@ -176,14 +176,23 @@ object XmlMerger {
             onLog?.invoke(file.name, "文件不存在或无法读取，已跳过")
             return
         }
+        // 旧数据 archiveEntryName 为空时回落到 title（旧版本 title 即条目名）
+        val entryName = track.resolvedArchiveEntryName()
+        if (entryName.isBlank()) {
+            onLog?.invoke(track.title, "压缩包缺少包内条目信息，已跳过")
+            return
+        }
         val openResult = ZipXmlLoader.loadXmlFromZipResult(
             FileEntity(
-                name = track.title,
+                name = entryName,
                 title = track.title,
                 path = track.path,
-                mimeType = track.mineType
+                mimeType = track.normalizedMineType()
             ),
-            track.password
+            track.password,
+            track.archiveEntryRaw,
+            track.archiveEntryIndex,
+            track.title
         )
 
         if (openResult.state != ZipXmlLoader.OpenResultState.SUCCESS || openResult.stream == null) {

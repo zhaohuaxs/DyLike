@@ -113,7 +113,8 @@ object RarFile {
                         size = archive.getStringProperty(i, PropID.SIZE)?.toLongOrNull() ?: 0L,
                         index = i,
                         lastModified = readLastModified(archive, i),
-                        encrypted = readEncrypted(archive, i)
+                        encrypted = readEncrypted(archive, i),
+                        rawName = ZArchiveFile.rawNameHex(archive.getStringProperty(i, PropID.PATH))
                     )
                 )
             }
@@ -214,6 +215,32 @@ object RarFile {
     }
 
     fun openZEntryResult(zPath: String, password: String, entryName: String): ArchiveEntryOpenResult {
+        return openZEntryResultInternal(zPath, password) { archive ->
+            (0 until archive.numberOfItems).firstOrNull { i ->
+                TextFixer.fixGarbledFilename(archive.getStringProperty(i, PropID.PATH)) == entryName
+            } ?: -1
+        }
+    }
+
+    /** 带条目 key 的回退打开（新增重载，旧三参调用行为不变） */
+    fun openZEntryResult(
+        zPath: String,
+        password: String,
+        entryName: String,
+        entryRaw: String,
+        entryIndex: Int,
+        legacyTitle: String
+    ): ArchiveEntryOpenResult {
+        return openZEntryResultInternal(zPath, password) { archive ->
+            ZArchiveFile.findEntryIndex(archive, entryName, entryRaw, entryIndex, legacyTitle)
+        }
+    }
+
+    private fun openZEntryResultInternal(
+        zPath: String,
+        password: String,
+        findIndex: (IInArchive) -> Int
+    ): ArchiveEntryOpenResult {
         var openError: Exception? = null
         var openRequested = false
         val entryResult = withArchive(
@@ -224,12 +251,10 @@ object RarFile {
             var result: ArchiveEntryOpenResult = ArchiveEntryOpenResult.Error
 
             // 1. 查找目标索引
-            val targetIndex = (0 until archive.numberOfItems).find { i ->
-                TextFixer.fixGarbledFilename(archive.getStringProperty(i, PropID.PATH)) == entryName
-            }
+            val targetIndex = findIndex(archive)
 
-            if (targetIndex == null) {
-                Log.d(this, "Entry not found: $entryName")
+            if (targetIndex == -1) {
+                Log.d(this, "Entry not found")
                 return@withArchive ArchiveEntryOpenResult.EntryNotFound
             }
 
@@ -255,10 +280,10 @@ object RarFile {
                     if (operationResult == ExtractOperationResult.OK && buffer.size() > 0) {
                         result = ArchiveEntryOpenResult.Success(ByteArrayInputStream(buffer.toByteArray()))
                     } else if (operationResult == ExtractOperationResult.WRONG_PASSWORD) {
-                        Log.d(this, "Wrong password for $entryName")
+                        Log.d(this, "Wrong password for entry $targetIndex")
                         result = ArchiveEntryOpenResult.WrongPassword
                     } else if (operationResult == ExtractOperationResult.UNSUPPORTEDMETHOD) {
-                        Log.d(this, "Unsupported method for $entryName")
+                        Log.d(this, "Unsupported method for entry $targetIndex")
                         result = ArchiveEntryOpenResult.UnsupportedMethod
                     } else {
                         result = ArchiveEntryOpenResult.Error

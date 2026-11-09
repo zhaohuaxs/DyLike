@@ -974,13 +974,11 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             }
             var unLoadDm = true
             if (info != null) {
-                info.dmTrack.let { list ->
-                    // 弹幕轨道恢复细节由 controller 处理，Activity 只决定何时触发恢复。
-                    longDanmakuController.addTracks(list)
-                    if (longDanmakuController.hasTracks()) {
-                        unLoadDm = false
-                        longDanmakuController.restoreSavedTrack(info)
-                    }
+                // 弹幕轨道恢复细节由 controller 处理，Activity 只决定何时触发恢复。
+                longDanmakuController.addTracks(info)
+                if (longDanmakuController.hasTracks()) {
+                    unLoadDm = false
+                    longDanmakuController.restoreSavedTrack(info)
                 }
             }
             if (unLoadDm) {

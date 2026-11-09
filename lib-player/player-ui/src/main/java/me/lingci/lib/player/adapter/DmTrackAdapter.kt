@@ -165,10 +165,30 @@ class DmTrackAdapter(private var items: ArrayList<DmTrack>) :
         notifyAllData()
     }
 
+    /**
+     * 判等包含压缩包条目级 key，避免同一压缩包内不同条目被判为同一轨道。
+     * mineType 用归一化值比较，兼容旧数据的大小写差异。
+     */
     private fun sameTrack(first: DmTrack, second: DmTrack): Boolean {
         return first.path == second.path
             && first.title == second.title
-            && first.mineType == second.mineType
+            && first.normalizedMineType() == second.normalizedMineType()
+            && first.archiveEntryName == second.archiveEntryName
+            && first.archiveEntryRaw == second.archiveEntryRaw
+            && first.archiveEntryIndex == second.archiveEntryIndex
+    }
+
+    /**
+     * 旧数据升级判定：同文件同标题，但已有轨道缺少条目字段（旧版本只存了 title），
+     * 而新选中轨道带有条目 key。命中时在旧轨道上补齐字段，避免产生重复项。
+     */
+    private fun isLegacyEntryUpgrade(old: DmTrack, incoming: DmTrack): Boolean {
+        if (old.path != incoming.path) return false
+        if (old.title != incoming.title) return false
+        if (old.normalizedMineType() != incoming.normalizedMineType()) return false
+        val oldComplete = old.archiveEntryName.isNotBlank() && old.archiveEntryIndex >= 0
+        val incomingComplete = incoming.archiveEntryName.isNotBlank() && incoming.archiveEntryIndex >= 0
+        return !oldComplete && incomingComplete
     }
 
     fun findData(dmTrack: DmTrack): Boolean {
@@ -181,6 +201,17 @@ class DmTrackAdapter(private var items: ArrayList<DmTrack>) :
 
     fun addData(dmTrack: DmTrack) {
         if (findData(dmTrack)) {
+            return
+        }
+        // 旧轨道重新选中同一条目：原地补齐条目 key，调用方随后的保存即完成持久化升级
+        val legacyIndex = items.indexOfFirst { isLegacyEntryUpgrade(it, dmTrack) }
+        if (legacyIndex > -1) {
+            val legacy = items[legacyIndex]
+            legacy.archiveEntryName = dmTrack.archiveEntryName
+            legacy.archiveEntryRaw = dmTrack.archiveEntryRaw
+            legacy.archiveEntryIndex = dmTrack.archiveEntryIndex
+            Log.d(this@DmTrackAdapter, "upgrade legacy entry", legacy.title, legacy.archiveEntryIndex)
+            notifyItemChanged(legacyIndex)
             return
         }
         items.add(dmTrack)

@@ -194,15 +194,21 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                     .filter { it.isUsableBindingTrack() }
                     .map { it.bindingCopy() }
                     .toMutableList()
-                val lastTrackPath = info?.lastDmTrack?.path.orEmpty()
+                // 主弹幕使用条目级 key，避免同一压缩包内不同条目互相覆盖
+                val lastTrackKey = info?.lastDmTrack?.bindingKey().orEmpty()
+                val unresolvedArchiveCount = tracks.count { it.isUnresolvedLegacyArchive() }
                 DanmakuBindingMediaItem(
                     videoData = video,
                     originalInfo = info,
                     originalTracks = tracks.map { it.bindingCopy() }.toMutableList(),
-                    originalLastTrackPath = lastTrackPath,
+                    originalLastTrackKey = lastTrackKey,
                     workingTracks = tracks,
-                    lastTrackPath = lastTrackPath,
-                    matchHint = if (tracks.isEmpty()) "未绑定" else "已绑定 ${tracks.size} 个弹幕"
+                    lastTrackKey = lastTrackKey,
+                    matchHint = when {
+                        unresolvedArchiveCount > 0 -> "有 $unresolvedArchiveCount 个压缩包弹幕需在播放器内重选"
+                        tracks.isEmpty() -> "未绑定"
+                        else -> "已绑定 ${tracks.size} 个弹幕"
+                    }
                 )
             }.toMutableList()
             val cachedFolder = loadDmFolderFromMedia()
@@ -299,7 +305,7 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
         selectedFolderPath = ""
         mediaItems.forEach {
             it.workingTracks = it.originalTracks.map { track -> track.bindingCopy() }.toMutableList()
-            it.lastTrackPath = it.originalLastTrackPath
+            it.lastTrackKey = it.originalLastTrackKey
             it.matchHint = if (it.workingTracks.isEmpty()) "未绑定" else "已绑定 ${it.workingTracks.size} 个弹幕"
         }
         refreshAll()
@@ -314,7 +320,8 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                         title = it.name,
                         name = it.name,
                         path = it.path,
-                        mimeType = if (it.extension.equals("zip", true)) ZipXmlLoader.ZIP else ""
+                        // 压缩包统一标记 zip/7z/rar，绑定页会禁止整包绑定
+                        mimeType = ZipXmlLoader.archiveMimeType(it.path)
                     )
                 }
             withContext(Dispatchers.Main) {
@@ -344,7 +351,7 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
     private fun clearAllBindings() {
         mediaItems.forEach { media ->
             media.workingTracks.clear()
-            media.lastTrackPath = ""
+            media.lastTrackKey = ""
             media.matchHint = "未绑定"
         }
         refreshAll()
@@ -356,6 +363,8 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
             ToastUtil.showToast(this, "请先选择弹幕文件夹")
             return
         }
+        // 压缩包包含多个弹幕条目，绑定页无法确定条目，自动匹配时排除
+        val matchableFiles = danmakuFiles.filterNot { it.isArchiveFile() }
         val usedPaths = mutableSetOf<String>()
         mediaItems.forEach { media ->
             media.workingTracks.filter { it.path.isNotBlank() }.forEach { usedPaths += it.path.normalizeBindingPath() }
@@ -367,7 +376,7 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
             }
             val candidates = DanmakuBindingMatcher.match(
                 media.videoData,
-                danmakuFiles.filterNot { usedPaths.contains(it.path.normalizeBindingPath()) }
+                matchableFiles.filterNot { usedPaths.contains(it.path.normalizeBindingPath()) }
             )
             val first = candidates.firstOrNull()
             if (first == null) {
@@ -377,7 +386,7 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
             if (DanmakuBindingMatcher.shouldAutoBind(candidates)) {
                 val track = first.file.toDmTrack(selected = true)
                 media.workingTracks = mutableListOf(track)
-                media.lastTrackPath = track.path
+                media.lastTrackKey = track.bindingKey()
                 media.matchHint = "自动匹配 ${first.file.name}"
                 usedPaths += track.path.normalizeBindingPath()
             } else {
@@ -402,7 +411,7 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
     private fun clearCurrentBinding() {
         val media = mediaItems.getOrNull(selectedMediaIndex) ?: return
         media.workingTracks.clear()
-        media.lastTrackPath = ""
+        media.lastTrackKey = ""
         media.matchHint = "未绑定"
         refreshAll()
     }
@@ -413,16 +422,22 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
         if (media == null || file == null) {
             return
         }
-        if (media.hasTrack(file.path)) {
-            media.lastTrackPath = file.path
+        // 压缩包整包绑定无法确定包内条目，引导用户到播放器内弹幕选择面板
+        if (file.isArchiveFile()) {
+            ToastUtil.showToast(this, "压缩包含多个弹幕条目，请在播放器内通过弹幕选择面板绑定")
+            return
+        }
+        val key = file.bindingKey()
+        if (media.hasTrack(key)) {
+            media.lastTrackKey = key
             media.workingTracks = media.workingTracks.map { track ->
-                track.bindingCopy().copy(selected = track.path.samePath(file.path))
+                track.bindingCopy().copy(selected = track.bindingKey() == key)
             }.toMutableList()
             media.matchHint = "主弹幕切换为 ${file.displayNameWithoutExtension()}"
             refreshAll()
             return
         }
-        val owner = mediaItems.firstOrNull { it !== media && it.hasTrack(file.path) }
+        val owner = mediaItems.firstOrNull { it !== media && it.hasTrack(key) }
         if (owner != null) {
             showRebindConfirm(media, owner, file)
             return
@@ -436,7 +451,12 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
         if (selectedMedia == null || file == null) {
             return
         }
-        val owner = mediaItems.firstOrNull { it.hasTrack(file.path) }
+        if (file.isArchiveFile()) {
+            ToastUtil.showToast(this, "压缩包含多个弹幕条目，请在播放器内通过弹幕选择面板绑定")
+            return
+        }
+        val key = file.bindingKey()
+        val owner = mediaItems.firstOrNull { it.hasTrack(key) }
         when {
             owner == null -> {
                 MaterialAlertDialogBuilder(this)
@@ -454,9 +474,12 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                 MaterialAlertDialogBuilder(this)
                     .setTitle(file.displayNameWithoutExtension())
                     .setItems(actions.toTypedArray()) { _, which ->
+                        val track = selectedMedia.workingTracks.firstOrNull {
+                            it.bindingKey() == key
+                        }
                         when (which) {
-                            0 -> setPrimaryTrack(selectedMedia, file.path)
-                            1 -> removeTrackFromMedia(selectedMedia, file.path)
+                            0 -> track?.let { setPrimaryTrack(selectedMedia, it) }
+                            1 -> track?.let { removeTrackFromMedia(selectedMedia, it) }
                         }
                     }
                     .setNegativeButton(me.lingci.lib.base.R.string.action_negative, null)
@@ -487,29 +510,30 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
             .setTitle("重新绑定弹幕")
             .setMessage("${file.displayNameWithoutExtension()} 已绑定到 ${owner.videoData.name.removeExtensionForDisplay()}，是否改绑到 ${selectedMedia.videoData.name.removeExtensionForDisplay()}？")
             .setPositiveButton(me.lingci.lib.base.R.string.action_positive) { _, _ ->
-                removeTrackFromMedia(owner, file.path)
+                owner.workingTracks.firstOrNull { it.bindingKey() == file.bindingKey() }?.let {
+                    removeTrackFromMedia(owner, it)
+                }
                 attachTrack(selectedMedia, file)
             }
             .setNegativeButton(me.lingci.lib.base.R.string.action_negative, null)
             .show()
     }
 
-    private fun setPrimaryTrack(media: DanmakuBindingMediaItem, trackPath: String) {
-        media.lastTrackPath = trackPath
+    private fun setPrimaryTrack(media: DanmakuBindingMediaItem, track: DmTrack) {
+        val key = track.bindingKey()
+        media.lastTrackKey = key
         media.workingTracks = media.workingTracks.map { current ->
-            current.bindingCopy().copy(selected = current.path.samePath(trackPath))
+            current.bindingCopy().copy(selected = current.bindingKey() == key)
         }.toMutableList()
-        val currentName = media.workingTracks.firstOrNull { it.path.samePath(trackPath) }
-            ?.displayNameWithoutExtension()
-            .orEmpty()
-        media.matchHint = if (currentName.isBlank()) "主弹幕已更新" else "主弹幕切换为 $currentName"
+        media.matchHint = "主弹幕切换为 ${track.displayNameWithoutExtension()}"
         refreshAll()
     }
 
-    private fun removeTrackFromMedia(media: DanmakuBindingMediaItem, trackPath: String) {
-        media.workingTracks.removeAll { it.path.samePath(trackPath) }
-        if (media.lastTrackPath.samePath(trackPath)) {
-            media.lastTrackPath = media.primaryTrack()?.path.orEmpty()
+    private fun removeTrackFromMedia(media: DanmakuBindingMediaItem, track: DmTrack) {
+        val key = track.bindingKey()
+        media.workingTracks.removeAll { it.bindingKey() == key }
+        if (media.lastTrackKey == key) {
+            media.lastTrackKey = media.primaryTrack()?.bindingKey().orEmpty()
         }
         media.matchHint = if (media.workingTracks.isEmpty()) {
             "未绑定"
@@ -520,10 +544,14 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
     }
 
     private fun attachTrack(media: DanmakuBindingMediaItem, file: FileEntity) {
+        if (file.isArchiveFile()) {
+            ToastUtil.showToast(this, "压缩包含多个弹幕条目，请在播放器内通过弹幕选择面板绑定")
+            return
+        }
         val track = file.toDmTrack(selected = true)
         media.workingTracks.forEach { it.selected = false }
         media.workingTracks.add(track)
-        media.lastTrackPath = track.path
+        media.lastTrackKey = track.bindingKey()
         media.matchHint = "手动绑定 ${file.displayNameWithoutExtension()}"
         refreshAll()
     }
@@ -536,7 +564,7 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
         }
         val tracks = media.workingTracks.toList()
         val options = tracks.map { track ->
-            val prefix = if (track.path.samePath(media.lastTrackPath)) "[主弹幕] " else ""
+            val prefix = if (track.bindingKey() == media.lastTrackKey) "[主弹幕] " else ""
             "$prefix${track.displayNameWithoutExtension()}"
         }.toTypedArray()
         MaterialAlertDialogBuilder(this)
@@ -555,10 +583,10 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
             .setItems(actions) { _, which ->
                 when (which) {
                     0 -> {
-                        setPrimaryTrack(media, track.path)
+                        setPrimaryTrack(media, track)
                     }
                     1 -> {
-                        removeTrackFromMedia(media, track.path)
+                        removeTrackFromMedia(media, track)
                     }
                 }
             }
@@ -573,10 +601,11 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                 if (!media.hasChanges()) {
                     return@forEach
                 }
+                val primaryKey = media.primaryTrack()?.bindingKey().orEmpty()
                 val sanitized = media.workingTracks.map { track ->
-                    track.bindingCopy().copy(selected = track.path.samePath(media.lastTrackPath))
+                    track.bindingCopy().copy(selected = track.bindingKey() == primaryKey)
                 }.toMutableList()
-                val primaryTrack = sanitized.firstOrNull { it.path.samePath(media.lastTrackPath) }
+                val primaryTrack = sanitized.firstOrNull { it.bindingKey() == primaryKey }
                     ?: sanitized.firstOrNull()
                 val info = (media.originalInfo ?: PlayInfo()).copy(
                     dmTrack = sanitized,
@@ -587,7 +616,8 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                     changedCount++
                     media.originalInfo = info
                     media.originalTracks = sanitized.map { it.bindingCopy() }.toMutableList()
-                    media.originalLastTrackPath = media.lastTrackPath
+                    media.lastTrackKey = primaryKey
+                    media.originalLastTrackKey = primaryKey
                 } else {
                     failedCount++
                 }
@@ -613,10 +643,11 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                 if (!media.hasChanges()) {
                     return@forEach
                 }
+                val primaryKey = media.primaryTrack()?.bindingKey().orEmpty()
                 val sanitized = media.workingTracks.map { track ->
-                    track.bindingCopy().copy(selected = track.path.samePath(media.lastTrackPath))
+                    track.bindingCopy().copy(selected = track.bindingKey() == primaryKey)
                 }.toMutableList()
-                val primaryTrack = sanitized.firstOrNull { it.path.samePath(media.lastTrackPath) }
+                val primaryTrack = sanitized.firstOrNull { it.bindingKey() == primaryKey }
                     ?: sanitized.firstOrNull()
                 val info = (media.originalInfo ?: PlayInfo()).copy(
                     dmTrack = sanitized,
@@ -626,7 +657,8 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
                 if (save) {
                     media.originalInfo = info
                     media.originalTracks = sanitized.map { it.bindingCopy() }.toMutableList()
-                    media.originalLastTrackPath = media.lastTrackPath
+                    media.lastTrackKey = primaryKey
+                    media.originalLastTrackKey = primaryKey
                 }
             }
         }
@@ -746,14 +778,15 @@ class DanmakuBindingActivity : BaseActivity(), MenuProvider {
             query.isBlank() || file.name.contains(query, ignoreCase = true) ||
                     selectedMedia?.videoData?.name?.contains(query, ignoreCase = true) == true
         }.map { file ->
-            val owner = mediaItems.firstOrNull { it.hasTrack(file.path) }
+            val key = file.bindingKey()
+            val owner = mediaItems.firstOrNull { it.hasTrack(key) }
             val candidate = candidateMap[file.path.normalizeBindingPath()]
             DanmakuBindingFileItem(
                 fileEntity = file,
                 score = candidate?.score ?: 0,
                 ownerTitle = owner?.videoData?.name.orEmpty(),
                 boundToSelected = owner != null && owner == selectedMedia,
-                primaryForSelected = owner != null && owner == selectedMedia && owner.isPrimary(file.path)
+                primaryForSelected = owner != null && owner == selectedMedia && owner.isPrimary(key)
             )
         }.sortedWith(compareByDescending<DanmakuBindingFileItem> { it.boundToSelected }.thenByDescending { it.score }.thenBy { it.fileEntity.name })
     }

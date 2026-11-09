@@ -54,6 +54,8 @@ class DmSelectControlView : FrameLayout, IControlComponent {
     private var currentFolder: String? = null
     private var currentZip: File? = null
     private var currentPassword: String = ""
+    // 当前压缩包条目：name -> 条目 key（原始名/索引），供选中时写入 DmTrack
+    private var zipEntriesByName: Map<String, ZipXmlLoader.XmlEntry> = emptyMap()
 
     private lateinit var fileSelectAdapter: FileSelectAdapter
     private lateinit var controlWrapper: ControlWrapper
@@ -146,12 +148,20 @@ class DmSelectControlView : FrameLayout, IControlComponent {
 
     private fun archivePasswordMap(): MutableMap<String, String> {
         val json = spBase.archivePasswordMapJson.orEmpty().ifBlank { "{}" }
-        return try {
+        val map = try {
             JsonUtil.toEntity<Map<String, String>>(json).toMutableMap()
         } catch (e: Exception) {
             Log.d(this, "read archive password map failed", e)
             mutableMapOf()
         }
+        // 包已不存在（移动/删除/权限失效）时清理残留密码，避免无限累积
+        val staleKeys = map.keys.filterNot { File(it).exists() }
+        if (staleKeys.isNotEmpty()) {
+            staleKeys.forEach { map.remove(it) }
+            spBase.archivePasswordMapJson = JsonUtil.toJsonString(map)
+            Log.d(this, "clean stale archive passwords", staleKeys.size)
+        }
+        return map
     }
 
     private fun saveArchivePassword(path: String, password: String) {
@@ -171,6 +181,39 @@ class DmSelectControlView : FrameLayout, IControlComponent {
         return archivePasswordMap()[path].orEmpty()
     }
 
+    /** 供播放侧在密码错误时回查该压缩包最近一次有效密码（SP 为唯一数据源） */
+    fun archivePassword(path: String): String {
+        return getArchivePassword(path)
+    }
+
+    /** 播放侧用缓存密码重试成功后回写 SP，保证下次恢复直接使用正确密码 */
+    fun updateArchivePassword(path: String, password: String) {
+        saveArchivePassword(path, password)
+    }
+
+    /** 清除失效密码缓存（密码错误且重试失败后调用） */
+    fun clearArchivePassword(path: String) {
+        removeArchivePassword(path)
+    }
+
+    /**
+     * “重新选择”入口：打开弹幕选择面板并预填指定压缩包路径。
+     * 若有有效缓存密码则直接展开条目，否则进入密码输入页。
+     */
+    fun selectArchive(path: String) {
+        val file = File(path)
+        if (!file.exists()) {
+            ToastUtil.showToast(context, "压缩包不存在，请重新选择")
+            return
+        }
+        if (!this.isVisible) {
+            this.visibility = VISIBLE
+        }
+        binding.inputPassword.setText("")
+        showFilePanel()
+        changeZipData(file)
+    }
+
     private fun showFilePanel() {
         binding.container.visibility = VISIBLE
         binding.clPassword.visibility = GONE
@@ -188,7 +231,9 @@ class DmSelectControlView : FrameLayout, IControlComponent {
     private fun loadZipEntries(file: File, password: String = "") {
         currentPassword = password
         binding.inputPassword.setText("")
-        ZipXmlLoader.listXmlEntries(file, password).let { list ->
+        ZipXmlLoader.listXmlEntriesDetailed(file, password).let { entries ->
+            zipEntriesByName = entries.associateBy { it.file.name }
+            val list = entries.map { it.file }
             binding.recyclerView.post { fileSelectAdapter.setData(file, list) }
         }
         showFilePanel()
@@ -209,7 +254,17 @@ class DmSelectControlView : FrameLayout, IControlComponent {
                         Log.d(this, item.name, "1", item.path, "2", item.fullPath)
                         changeZipData(File(item.path))
                     } else {
-                        dmTrackConf.dmTrack = DmTrack(title = item.title, path = item.path, mineType = item.mimeType, password = currentPassword)
+                        // 压缩包条目：写入条目级 key；普通 XML 文件三个字段保持空/-1
+                        val zipEntry = currentZip?.let { zipEntriesByName[item.name] }
+                        dmTrackConf.dmTrack = DmTrack(
+                            title = item.title,
+                            path = item.path,
+                            mineType = item.mimeType,
+                            password = currentPassword,
+                            archiveEntryName = zipEntry?.file?.name ?: "",
+                            archiveEntryRaw = zipEntry?.rawName ?: "",
+                            archiveEntryIndex = zipEntry?.index ?: -1
+                        )
                         onSelectDm?.invoke(dmTrackConf)
                         switchVib()
                     }
@@ -269,6 +324,7 @@ class DmSelectControlView : FrameLayout, IControlComponent {
     private fun changeFileData(file: File) {
         currentZip = null
         currentPassword = ""
+        zipEntriesByName = emptyMap()
         if (file.path != FileOperator.buildDownFile("弹目").path && file.path != FileOperator.rootFolder.path) {
             spBase.lastFolder = file.path
             currentFolder = file.path
