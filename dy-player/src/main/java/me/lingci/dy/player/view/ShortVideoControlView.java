@@ -156,6 +156,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
             }
         });
         mBinding.ivFull.setOnClickListener(v -> {
+            if (mControlWrapper == null) return;
             if (!mControlWrapper.isPlaying()) {
                 mControlWrapper.togglePlay();
             }
@@ -198,7 +199,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mBinding.playSeekbar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (!fromUser) {
+                if (!fromUser || mControlWrapper == null) {
                     return;
                 }
                 long duration = mControlWrapper.getDuration();
@@ -209,6 +210,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {
+                if (mControlWrapper == null) return;
                 mIsDragging = true;
                 mBinding.tvProgress.setVisibility(VISIBLE);
                 mControlWrapper.stopProgress();
@@ -217,6 +219,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
+                if (mControlWrapper == null) return;
                 mBinding.tvProgress.setVisibility(GONE);
                 long duration = mControlWrapper.getDuration();
                 long newPosition = (long) ((double) duration * mBinding.playSeekbar.getProgress() / mBinding.playSeekbar.getMax());
@@ -347,6 +350,9 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     @Override
     public boolean onScroll(@Nullable MotionEvent e1, @NonNull MotionEvent e2, float distanceX, float distanceY) {
         if (e1 == null || PlayerUtils.isEdge(getContext(), e1)) return false;
+        // ViewPager2 预创建的邻页 / 预载页 holder 尚未 attach 到 controller，
+        // 但滑动过程中同样会收到手势；此时直接往下走会在 stopProgress() 上空指针崩溃。
+        if (mControlWrapper == null) return false;
         Log.d(this, "onScroll", mFirstTouch, mIsLongPressing);
         if (mFirstTouch) {
             mAccumDX += distanceX;

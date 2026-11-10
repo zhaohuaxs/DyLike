@@ -20,13 +20,14 @@ import xyz.doikki.videoplayer.player.VideoView
  */
 class SubtitleDockController(
     private val context: Context,
-    private val videoView: CustomVideoView,
+    private val videoViewProvider: () -> CustomVideoView,
     private val subtitleControlView: SubtitleControlView,
     private val currentPosition: () -> Int
 ) {
 
     /** 根据当前渲染视图位置重新计算字幕停靠区域。 */
     fun update() {
+        val videoView = videoViewProvider()
         videoView.post {
             val subtitleWidth = subtitleControlView.width
             val subtitleHeight = subtitleControlView.height
@@ -39,16 +40,16 @@ class SubtitleDockController(
                 reset()
                 return@post
             }
-            if (videoView.isFullScreen || context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            if (videoViewProvider().isFullScreen || context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
                 traceDecision(
-                    reason = if (videoView.isFullScreen) "fullscreen" else "landscape-ui",
+                    reason = if (videoViewProvider().isFullScreen) "fullscreen" else "landscape-ui",
                     subtitleWidth = subtitleWidth,
                     subtitleHeight = subtitleHeight
                 )
                 reset()
                 return@post
             }
-            val videoSize = videoView.videoSize
+            val videoSize = videoViewProvider().videoSize
             val videoWidth = videoSize.getOrNull(0) ?: 0
             val videoHeight = videoSize.getOrNull(1) ?: 0
             if (videoWidth <= 0 || videoHeight <= 0 || videoWidth < videoHeight) {
@@ -62,7 +63,7 @@ class SubtitleDockController(
                 reset()
                 return@post
             }
-            val playerContainer = videoView.getChildAt(0) as? ViewGroup ?: run {
+            val playerContainer = videoViewProvider().getChildAt(0) as? ViewGroup ?: run {
                 traceDecision(
                     reason = "player-container-missing",
                     videoWidth = videoWidth,
@@ -73,7 +74,7 @@ class SubtitleDockController(
                 reset()
                 return@post
             }
-            val renderView = videoView.getRenderTransformView() ?: playerContainer.getChildAt(0) ?: run {
+            val renderView = videoViewProvider().getRenderTransformView() ?: playerContainer.getChildAt(0) ?: run {
                 traceDecision(
                     reason = "render-view-missing",
                     videoWidth = videoWidth,
@@ -249,7 +250,7 @@ class SubtitleDockController(
             "event=subtitle_dock_update",
             "reason=$reason",
             "curPos=${currentPosition()}",
-            "playerState=${if (videoView.isFullScreen) "fullscreen" else "normal"}",
+            "playerState=${if (videoViewProvider().isFullScreen) "fullscreen" else "normal"}",
             "orientation=${if (context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"}",
             "video=${videoWidth}x${videoHeight}",
             "subtitleHost=${subtitleWidth}x${subtitleHeight}",
