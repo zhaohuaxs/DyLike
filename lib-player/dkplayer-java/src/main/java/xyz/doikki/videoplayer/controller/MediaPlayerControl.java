@@ -36,6 +36,8 @@ public interface MediaPlayerControl {
 
     long getTcpSpeed();
 
+    long getCachedDuration();
+
     void replay(boolean resetPosition);
 
     void setMirrorRotation(boolean enable);

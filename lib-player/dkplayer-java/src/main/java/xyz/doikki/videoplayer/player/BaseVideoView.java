@@ -930,6 +930,14 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     /**
+     * 获取已缓存的可播放时长（毫秒），供缓冲可视化使用
+     */
+    @Override
+    public long getCachedDuration() {
+        return mMediaPlayer != null ? mMediaPlayer.getCachedDuration() : 0;
+    }
+
+    /**
      * 设置播放速度
      */
     @Override

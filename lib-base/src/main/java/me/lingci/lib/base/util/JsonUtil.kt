@@ -24,18 +24,18 @@ object JsonUtil {
     }
 
     inline fun <reified T> toEntity(jsonString: String): T {
-        return Json.decodeFromString(jsonString)
+        return json.decodeFromString(jsonString)
     }
 
     @OptIn(ExperimentalSerializationApi::class)
     inline fun <reified T> toEntity(stream: InputStream): T {
         stream.use {
-            return Json.decodeFromStream(it)
+            return json.decodeFromStream(it)
         }
     }
 
     inline fun <reified T> toEntityCbc(encodeStr: String): T {
-        return Json.decodeFromString(AesUtil.aesDecrypt(encodeStr))
+        return json.decodeFromString(AesUtil.aesDecrypt(encodeStr))
     }
 
     inline fun <reified T> toList(jsonString: String): List<T> {

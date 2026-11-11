@@ -33,6 +33,8 @@ interface OnLongVideoListener {
     fun onTimeSync()
     fun onVideoProgress(duration: Int, position: Int)
     fun onShowMediaInfo()
+    /** 显示清晰度选择（仅多档 m3u8 时可用） */
+    fun onShowQualitySelect() {}
     //fun onShowChapters()
 
 }

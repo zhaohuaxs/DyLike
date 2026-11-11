@@ -154,6 +154,14 @@ public abstract class AbstractPlayer {
     public abstract long getTcpSpeed();
 
     /**
+     * 获取当前已缓存的可播放时长（毫秒），默认不支持返回 0。
+     * 仅用于诊断/缓冲可视化，后端可按需覆写。
+     */
+    public long getCachedDuration() {
+        return 0;
+    }
+
+    /**
      * 是否允许在保持 render view 与 native 实例的情况下换源。
      * 默认 false，后端必须显式声明支持，避免改变 Exo/IJK 的既有释放语义。
      */

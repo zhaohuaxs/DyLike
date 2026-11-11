@@ -102,6 +102,11 @@ public class ControlWrapper implements MediaPlayerControl, IVideoController {
     }
 
     @Override
+    public long getCachedDuration() {
+        return mPlayerControl.getCachedDuration();
+    }
+
+    @Override
     public void replay(boolean resetPosition) {
         mPlayerControl.replay(resetPosition);
     }

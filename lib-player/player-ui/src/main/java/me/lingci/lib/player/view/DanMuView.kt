@@ -134,15 +134,17 @@ class DanMuView(
                     pause()
                 }
             }
-            // 预加载
+            // 预加载：弹幕随画面一起停住，避免弹幕时间轴跑在画面之前
             VideoView.STATE_BUFFERING -> {
                 updateOffsetTime()
+                if (isPrepared && !isPaused) {
+                    pause()
+                }
             }
-            // 预加载完成
+            // 预加载完成：播放器恢复播放时同步恢复弹幕
             VideoView.STATE_BUFFERED -> {
                 if (isPrepared && isPaused && mControlWrapper.isPlaying) {
-                    //resume()
-                    updateOffsetTime()
+                    resume()
                 }
             }
         }

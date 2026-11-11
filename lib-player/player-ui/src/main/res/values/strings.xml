@@ -65,6 +65,9 @@
     <string name="action_search_dm">查找弹幕</string>
     <string name="action_select_dm">选弹幕</string>
     <string name="action_select_ep">选集</string>
+    <string name="action_quality">清晰度</string>
+    <string name="action_quality_auto">自动</string>
+    <string name="buffer_info">缓存 %1$d 秒 · %2$s/s</string>
     <string name="action_dm_select">弹幕选择</string>
     <string name="action_dm_list">弹幕列表</string>
     <string name="action_speed">倍数</string>

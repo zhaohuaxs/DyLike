@@ -69,6 +69,22 @@
                         android:textSize="@dimen/dkplayer_controller_time_text_size"
                         tools:text="00:00" />
 
+                <TextView
+                        android:id="@+id/tv_quality"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="@dimen/dp8"
+                        android:background="?android:attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/action_quality"
+                        android:textColor="@android:color/white"
+                        android:textSize="@dimen/dkplayer_controller_time_text_size"
+                        android:visibility="gone"
+                        tools:text="清晰度"
+                        tools:ignore="SpUsage" />
+
             </LinearLayout>
 
             <LinearLayout
@@ -152,5 +168,23 @@
             android:max="1000"
             android:progressDrawable="@drawable/dkplayer_layer_progress_bar"
             android:visibility="visible" />
+
+    <!-- 弱网缓冲可视化：仅缓冲期间显示缓存时长与实时网速 -->
+    <TextView
+            android:id="@+id/tv_buffer_info"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="72dp"
+            android:background="#66000000"
+            android:paddingStart="@dimen/dp8"
+            android:paddingTop="@dimen/dp4"
+            android:paddingEnd="@dimen/dp8"
+            android:paddingBottom="@dimen/dp4"
+            android:textColor="@android:color/white"
+            android:textSize="@dimen/dp12"
+            android:visibility="gone"
+            tools:text="缓存 12 秒 · 1.2MB/s"
+            tools:ignore="SpUsage" />
 
 </FrameLayout>

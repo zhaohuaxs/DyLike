@@ -18,12 +18,15 @@ import androidx.annotation.Nullable;
 import me.lingci.lib.player.listener.OnLongVideoListener;
 import me.lingci.lib.player.listener.OnPlayNextListener;
 import me.lingci.lib.player.listener.OnVisibilityChangedListener;
+import me.lingci.lib.base.util.Log;
 import me.lingci.lib.player.ui.R;
 import me.lingci.lib.player.ui.databinding.LayoutCustomControlViewBinding;
 import xyz.doikki.videoplayer.controller.ControlWrapper;
 import xyz.doikki.videoplayer.controller.IControlComponent;
 import xyz.doikki.videoplayer.player.VideoView;
 import xyz.doikki.videoplayer.util.PlayerUtils;
+
+import java.util.Locale;
 
 import static xyz.doikki.videoplayer.util.PlayerUtils.stringForTime;
 
@@ -83,6 +86,7 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
         mBinding.ivDmConf.setOnClickListener(this);
         mBinding.seekBar.setOnSeekBarChangeListener(this);
         mBinding.ivPlayNext.setOnClickListener(this);
+        mBinding.tvQuality.setOnClickListener(this);
 
         if (getContext() instanceof Activity) {
             needOrientation = ((Activity) getContext()).getRequestedOrientation() != ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
@@ -139,6 +143,10 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
 
     @Override
     public void onPlayStateChanged(int playState) {
+        // 缓冲信息只在缓冲期间展示
+        if (playState != VideoView.STATE_BUFFERING) {
+            mBinding.tvBufferInfo.setVisibility(GONE);
+        }
         switch (playState) {
             case VideoView.STATE_IDLE:
             case VideoView.STATE_PLAYBACK_COMPLETED:
@@ -177,6 +185,10 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
                 mBinding.ivPlay.setSelected(false);
                 break;
             case VideoView.STATE_BUFFERING:
+                mBinding.ivPlay.setSelected(mControlWrapper.isPlaying());
+                mBinding.tvBufferInfo.setVisibility(VISIBLE);
+                updateBufferInfo();
+                break;
             case VideoView.STATE_BUFFERED:
                 mBinding.ivPlay.setSelected(mControlWrapper.isPlaying());
                 break;
@@ -241,6 +253,53 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
 
         mBinding.totalTime.setText(stringForTime(duration));
         mBinding.currTime.setText(stringForTime(position));
+
+        // 缓冲期间进度回调仍在刷新，顺带更新缓存时长与网速
+        if (mBinding.tvBufferInfo.getVisibility() == VISIBLE) {
+            updateBufferInfo();
+        }
+    }
+
+    /**
+     * 刷新缓冲可视化信息（缓存时长 + 实时网速），并输出弱网诊断日志
+     */
+    private void updateBufferInfo() {
+        long cachedMs = Math.max(0L, mControlWrapper.getCachedDuration());
+        long speed = Math.max(0L, mControlWrapper.getTcpSpeed());
+        mBinding.tvBufferInfo.setText(
+                getContext().getString(R.string.buffer_info, cachedMs / 1000, formatSpeed(speed)));
+        Log.d(TAG, "buffering", "cached=" + cachedMs + "ms", "tcpSpeed=" + speed + "B/s");
+    }
+
+    /**
+     * 网速格式化：B/s、KB/s、MB/s
+     */
+    private static String formatSpeed(long bytesPerSecond) {
+        if (bytesPerSecond >= 1024 * 1024) {
+            return String.format(Locale.US, "%.1fMB", bytesPerSecond / 1024f / 1024f);
+        }
+        if (bytesPerSecond >= 1024) {
+            return String.format(Locale.US, "%dKB", bytesPerSecond / 1024);
+        }
+        return bytesPerSecond + "B";
+    }
+
+    /**
+     * 是否存在多档清晰度；无多档时隐藏入口
+     */
+    public void setQualityAvailable(boolean available) {
+        mBinding.tvQuality.setVisibility(available ? VISIBLE : GONE);
+    }
+
+    /**
+     * 更新清晰度入口文案，传入当前档位名称；为空时显示默认文案
+     */
+    public void setQualityName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            mBinding.tvQuality.setText(R.string.action_quality);
+        } else {
+            mBinding.tvQuality.setText(name);
+        }
     }
 
     @Override
@@ -276,6 +335,11 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
         if (v.getId() == R.id.iv_play_next) {
             if (null != mOnPlayNextListener) {
                 mOnPlayNextListener.onNextPlay();
+            }
+        }
+        if (v.getId() == R.id.tv_quality) {
+            if (null != mOnLongVideoListener) {
+                mOnLongVideoListener.onShowQualitySelect();
             }
         }
     }

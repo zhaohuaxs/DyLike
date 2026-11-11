@@ -56,6 +56,21 @@ class JSONObject {
         return values.containsKey(key)
     }
 
+    /** 与 hasKey 相反：字段不存在时返回 true */
+    fun noHasKey(key: String): Boolean {
+        return !hasKey(key)
+    }
+
+    /** 字段存在且是 JSON 对象（不兼容"对象被存成字符串"的历史数据） */
+    fun isJsonObject(key: String): Boolean {
+        return values[key] is JsonObject
+    }
+
+    /** 字段存在且是 JSON 数组（不兼容"数组被存成字符串"的历史数据） */
+    fun isJsonArray(key: String): Boolean {
+        return values[key] is JsonArray
+    }
+
     fun getJSONObject(key: String): JSONObject {
         return when (val element = values[key]) {
             is JsonObject -> JSONObject(element)
