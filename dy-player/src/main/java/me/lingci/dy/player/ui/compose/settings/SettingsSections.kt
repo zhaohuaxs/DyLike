@@ -326,13 +326,6 @@ fun LazyListScope.librarySettings(
 ) {
     item {
         ToggleRow(
-            stringResource(R.string.settings_library_new_home),
-            stringResource(R.string.settings_library_new_home_desc),
-            state.newHome
-        ) { onChange(state.copy(newHome = it)) }
-    }
-    item {
-        ToggleRow(
             stringResource(R.string.hint_video_detail),
             stringResource(R.string.hint_video_detail_desc),
             state.videoDetailMode

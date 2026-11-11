@@ -66,7 +66,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
         if (updated.longVideoMode != current.longVideoMode) sp.longVideoMode = updated.longVideoMode
         if (updated.videoDetailMode != current.videoDetailMode) sp.videoDetailMode = updated.videoDetailMode
-        if (updated.newHome != current.newHome) sp.newHome = updated.newHome
         if (updated.autoNext != current.autoNext) sp.autoNext = updated.autoNext
         if (updated.loopList != current.loopList) sp.loopList = updated.loopList
         if (updated.longVideoPip != current.longVideoPip) sp.longVideoPip = updated.longVideoPip
@@ -213,7 +212,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private fun readPlayer() = PlayerSettingsState(
         longVideoMode = sp.longVideoMode,
         videoDetailMode = sp.videoDetailMode,
-        newHome = sp.newHome,
         autoNext = sp.autoNext,
         loopList = sp.loopList,
         longVideoPip = sp.longVideoPip,

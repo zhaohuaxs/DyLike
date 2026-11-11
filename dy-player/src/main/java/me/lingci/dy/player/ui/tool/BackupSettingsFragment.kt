@@ -143,6 +143,7 @@ class BackupSettingsFragment : BaseFragment() {
         data.putValue("browserSort", spUtil.browserSort)
         data.putValue("browserShowHide", spUtil.browserShowHide)
         data.putValue("newHome", spUtil.newHome)
+        data.putValue("launchComposeHome", spUtil.launchComposeHome)
         data.putValue("sortRender", spUtil.sortRender)
         data.putValue("useOkhttp", spUtil.useOkhttp)
         data.putValue("autoNext", spUtil.autoNext)
@@ -403,6 +404,9 @@ class BackupSettingsFragment : BaseFragment() {
                 }
                 if (data.hasKey("newHome")) {
                     spUtil.newHome = data.getBoolean("newHome")
+                }
+                if (data.hasKey("launchComposeHome")) {
+                    spUtil.launchComposeHome = data.getBoolean("launchComposeHome")
                 }
                 if (data.hasKey("sortRender")) {
                     spUtil.sortRender = data.getBoolean("sortRender")

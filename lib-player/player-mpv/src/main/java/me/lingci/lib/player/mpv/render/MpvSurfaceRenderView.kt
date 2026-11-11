@@ -128,8 +128,16 @@ class MpvSurfaceRenderView(
             // 使用MPV的截图命令
             //mpv?.command("screenshot", "video")
             //mpv?.setOptionString("screenshot-jpeg-quality", "100")
-            // MPV command 必须在主线程投递；调用方已在 IO 线程，用 latch 同步等待命令提交完成。
-            // 命令本身只触发 native 截图，不等待文件落盘——文件轮询在当前 IO 线程做。
+            // MPV command 必须在主线程投递；调用方一般在 IO 线程，用 latch 同步等待命令提交完成。
+            // 命令本身只触发 native 截图，不等待文件落盘——文件轮询在调用线程做。
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                // 已在主线程：不能再 post + await。那样等于主线程等待自己投递的任务，
+                // 必然走满 2s 超时，期间 UI（包括同一主线程驱动的弹幕绘制）整体冻结。
+                // 这里只投递命令，截图结果交给调用方在后台线程重新读取。
+                player.command("screenshot-to-file", screenshotFile.path, "video")
+                Log.d("MpvSurfaceRenderView", "screenshot dispatched on main thread, return null")
+                return null
+            }
             val cmdLatch = CountDownLatch(1)
             val mainHandler = Handler(Looper.getMainLooper())
             mainHandler.post {

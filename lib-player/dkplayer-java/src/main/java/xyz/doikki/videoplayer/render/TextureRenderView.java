@@ -4,12 +4,17 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.SurfaceTexture;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 
@@ -70,7 +75,38 @@ public class TextureRenderView extends TextureView implements IRenderView, Textu
 
     @Override
     public Bitmap doScreenShot() {
-        return getBitmap();
+        // getBitmap() 依赖 SurfaceTexture 的当前帧，必须在主线程取，否则可能拿到 null
+        // 或与合成线程竞态。调用方（缩略图/用户截图）为了不阻塞 UI 会从后台线程调用，
+        // 这里统一切回主线程执行，等待上限 2s；正常情况是几十毫秒。
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return getBitmap();
+        }
+        final Bitmap[] result = new Bitmap[1];
+        final CountDownLatch latch = new CountDownLatch(1);
+        boolean posted = new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    result[0] = getBitmap();
+                } catch (Throwable ignored) {
+                    // 截图失败不应影响播放，交由调用方按 null 处理
+                } finally {
+                    latch.countDown();
+                }
+            }
+        });
+        if (!posted) {
+            return null;
+        }
+        try {
+            if (!latch.await(2, TimeUnit.SECONDS)) {
+                return null;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        return result[0];
     }
 
     @Override

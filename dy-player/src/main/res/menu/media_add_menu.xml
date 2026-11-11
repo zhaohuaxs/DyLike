@@ -10,6 +10,13 @@
         app:actionViewClass="androidx.appcompat.widget.SearchView" />
 
     <item
+        android:id="@+id/menu_switch_layout"
+        android:icon="@drawable/ic_switch_layout_24"
+        android:orderInCategory="95"
+        android:title="@string/menu_switch_layout"
+        app:showAsAction="never"/>
+
+    <item
         android:id="@+id/menu_add"
         android:icon="@drawable/ic_add_24"
         android:orderInCategory="96"

@@ -162,31 +162,31 @@ object PlayHelper {
             }
             if (!file.exists()) {
                 try {
-                    scope.launch(Dispatchers.Main) {
-                        // 截图读取位于主线程（渲染器契约），压缩与写盘仍留在 IO；
-                        // 先写临时文件再原子改名，避免失败时留下空缩略图（F4-3）。
-                        videoView.doScreenShot()?.let { bitmap ->
-                            scope.launch(Dispatchers.IO) {
-                                val tmp = File(file.parentFile, "${file.name}.tmp")
-                                try {
-                                    FileOutputStream(tmp).use { fos ->
-                                        bitmap.compress(AppUtil.COMPRESS_FORMAT, 75, fos)
-                                        fos.flush()
-                                    }
-                                    if (tmp.length() > 0L) {
-                                        if (file.exists()) file.delete()
-                                        if (tmp.renameTo(file)) {
-                                            logD("save thumb", file.path)
-                                        } else {
-                                            logD("save thumb rename failed", file.path)
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    logD("save thumb failed: ${e.message}", e)
-                                } finally {
-                                    if (tmp.exists()) tmp.delete()
+                    // 截图读取必须在后台线程：MpvSurfaceRenderView.doScreenShot() 会把 mpv 命令
+                    // post 到主线程再 await 提交完成，若本方法在主线程执行，就等于主线程等待
+                    // 自己——每次都会卡到 2s 超时才返回（实测 Choreographer 掉 261 帧）。
+                    // 这段卡顿发生在起播后约 1s，正好把同一主线程驱动的弹幕绘制循环一起冻住，
+                    // 表现就是「弹幕滚几秒 → 定住 → 两秒后接着滚」。
+                    // 压缩与写盘同在此线程；先写临时文件再原子改名，避免失败时留下空缩略图（F4-3）。
+                    videoView.doScreenShot()?.let { bitmap ->
+                        val tmp = File(file.parentFile, "${file.name}.tmp")
+                        try {
+                            FileOutputStream(tmp).use { fos ->
+                                bitmap.compress(AppUtil.COMPRESS_FORMAT, 75, fos)
+                                fos.flush()
+                            }
+                            if (tmp.length() > 0L) {
+                                if (file.exists()) file.delete()
+                                if (tmp.renameTo(file)) {
+                                    logD("save thumb", file.path)
+                                } else {
+                                    logD("save thumb rename failed", file.path)
                                 }
                             }
+                        } catch (e: Exception) {
+                            logD("save thumb failed: ${e.message}", e)
+                        } finally {
+                            if (tmp.exists()) tmp.delete()
                         }
                     }
                 } catch (e: Exception) {

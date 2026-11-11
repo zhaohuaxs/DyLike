@@ -57,9 +57,16 @@ open class ParticleEffectLayout @JvmOverloads constructor(
     private val colorBlue = Color.parseColor("#ADD8E6")
 
     init {
-        // 【关键点】初始化时不调用 setWillNotDraw(false)
-        // 保持默认 true，即作为普通 FrameLayout 使用，无绘制损耗
-        setLayerType(LAYER_TYPE_HARDWARE, null)
+        // 保持默认的 willNotDraw=true：没有粒子时不参与绘制，由 setup()/clear() 负责开关。
+        //
+        // 不要在这里设置 LAYER_TYPE_HARDWARE。本容器是 SurfaceView 渲染视图的父容器，
+        // Android 10 及更早的合成路径上，开了硬件层后 SurfaceView 的「打洞」只作用在
+        // 本层 RenderNode 上，洞被清成透明后露出的是窗口背景而不是下层的视频 surface，
+        // 表现为视频区域被一块不透明纯黑盖住（弹幕、控制栏正常）。
+        //   - MIX 2S(Android 10) + MPV(gpu/gpu-next)：HARDWARE 必黑，NONE 正常
+        //   - 2510DRK44C(Android 17) + 同上配置：两者都正常（BLAST 合成，父层不再遮挡）
+        // 硬件层对粒子绘制没有收益（仍在 onDraw 里逐帧 invalidate），因此统一用 NONE。
+        setLayerType(LAYER_TYPE_NONE, null)
     }
 
     /**

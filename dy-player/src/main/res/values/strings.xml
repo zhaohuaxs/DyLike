@@ -114,6 +114,7 @@
     <string name="hint_media_link_add">添加在线媒体库</string>
     <string name="hint_media_link_input">导入在线媒体库</string>
     <string name="hint_media_scan">扫描媒体库</string>
+    <string name="menu_switch_layout">切换布局</string>
     <string name="hint_media_delete">删除媒体库</string>
     <string name="hint_media_pin">置顶/取消置顶</string>
     <string name="hint_media_link_delete_item">删除该条媒体？</string>
@@ -384,8 +385,6 @@
     <!-- 设置：资源库与显示 -->
     <string name="settings_library_cover_ratio">媒体库封面比例</string>
     <string name="settings_library_cover_ratio_desc">详情页、列表与瀑布流封面的显示比例</string>
-    <string name="settings_library_new_home">资源库分类首页</string>
-    <string name="settings_library_new_home_desc">按本地、在线、WebDAV、SMB 分区</string>
 
     <!-- 设置：弹幕 -->
     <string name="settings_dm_section_font">字体</string>

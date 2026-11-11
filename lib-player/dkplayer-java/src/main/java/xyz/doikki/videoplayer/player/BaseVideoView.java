@@ -460,8 +460,22 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     public void resume() {
         mPlayWhenReady = true;
-        if (mMediaPlayer != null && !mMediaPlayer.isPlaying()) {
+        if (mMediaPlayer == null) {
+            return;
+        }
+        if (!mMediaPlayer.isPlaying()) {
             startInPlaybackState();
+        } else if (mCurrentPlayState == STATE_PAUSED) {
+            // native 已经在播，但 Java 状态还停在 PAUSED：startInPlaybackState() 在暂停态
+            // 会刻意不派 STATE_PLAYING（等首帧事件），而首帧可能早已过去，状态会永久卡住，
+            // 弹幕与中央 loading 圈都收不到恢复事件。这里只在明确 PAUSED 时收敛。
+            //
+            // 注意不能写成 mCurrentPlayState != STATE_PLAYING：Exo 在 STATE_BUFFERING 且
+            // playWhenReady=true 时 isPlaying() 也返回 true，MPV 缓冲时 pause 属性同样是
+            // false。若在缓冲中强行推 PLAYING，会把缓冲态盖掉，中央 loading 圈提前消失
+            // 而画面其实还卡着——那是比"状态卡住"更难排查的问题。
+            setPlayState(STATE_PLAYING);
+            mPlayerContainer.setKeepScreenOn(true);
         }
     }
 
@@ -795,8 +809,32 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
                 }
                 break;
             case AbstractPlayer.MEDIA_INFO_BUFFERING_END:
-                // 缓冲结束不能覆盖用户暂停意图。
-                setPlayState(mPlayWhenReady ? STATE_BUFFERED : STATE_PAUSED);
+                // 「缓冲结束」语义必须独立派发：UI（StandardVideoController.isBuffering、
+                // 弹幕）依赖 STATE_BUFFERED 来结束缓冲态。旧实现在 mPlayWhenReady=false
+                // 时直接派 STATE_PAUSED，把 BUFFERED 整个吞掉，结果是中央 loading 圈
+                // 永久残留、弹幕时钟停在缓冲开始处，而 native 视频仍在继续播。
+                //
+                // 注意：这里总是连续派两次状态（BUFFERED + PAUSED，或 BUFFERED + PLAYING），
+                // 即两次全链 onPlayStateChanged。下游监听者对 STATE_BUFFERED 的处理必须
+                // 幂等，且不得在该分支里自动恢复播放（如调用 start()），否则会在用户
+                // 明确暂停的情况下短暂起播、再被 STATE_PAUSED 覆盖，产生状态闪烁。
+                setPlayState(STATE_BUFFERED);
+                if (!mPlayWhenReady) {
+                    // 缓冲结束后再落实用户暂停意图，不覆盖上面的语义事件。
+                    setPlayState(STATE_PAUSED);
+                } else if (mMediaPlayer != null && mMediaPlayer.isPlaying()) {
+                    // 缓冲结束且内核确实在播：把状态推回 PLAYING。
+                    //
+                    // 不能只等 MEDIA_INFO_RENDERING_START：MPV 的首帧事件只在 FILE_LOADED
+                    // 派一次，seek / 网络缓冲结束后不会再派；Exo 的 onRenderedFirstFrame
+                    // 在 seek 后也不一定回调。实测两个内核拖进度条后都停在 STATE_BUFFERED，
+                    // LongVideoActivity 的 STATE_PLAYING 分支（进度记录、后台切集交接）
+                    // 因此永远不执行。
+                    // isPlaying() 是"缓冲确实结束"的守卫（Exo 需 READY，MPV 需 pause=false），
+                    // 用户暂停意图由上面的分支拦截，不会误推。
+                    setPlayState(STATE_PLAYING);
+                    mPlayerContainer.setKeepScreenOn(true);
+                }
                 // 缓冲结束时恢复渐变
                 if (mAudioFadeHelper != null) {
                     mAudioFadeHelper.onBufferingEnd();

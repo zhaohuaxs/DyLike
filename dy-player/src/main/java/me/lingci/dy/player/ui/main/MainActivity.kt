@@ -22,6 +22,7 @@ import me.lingci.dy.player.PlayerApp
 import me.lingci.dy.player.databinding.ActivityMainBinding
 import me.lingci.dy.player.entity.VersionData
 import me.lingci.dy.player.migrate.MigrationActivity
+import me.lingci.dy.player.ui.compose.MainComposeActivity
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.AutoPlayOnLaunch
 import me.lingci.dy.player.util.SpUtil
@@ -51,11 +52,13 @@ class MainActivity : BaseDisplayActivity() {
         setContentView(binding.root)
         init()
         // 冷启动一次性处理（避免旋转屏幕、从后台恢复或从播放页返回时重复触发）：
-        // 先等待 PlayerApp 的迁移检查结果，存在旧版数据时优先跳迁移页，否则触发启动自动播放
+        // 迁移页 > Compose 首页（设置里「新首页UI」开关）> 启动自动播放，三者互斥，只走一个
         if (savedInstanceState == null) {
             lifecycleScope.launch {
                 if (PlayerApp.awaitMigrationNeeded()) {
                     startActivity(Intent(this@MainActivity, MigrationActivity::class.java))
+                } else if (spUtil.launchComposeHome) {
+                    startActivity(Intent(this@MainActivity, MainComposeActivity::class.java))
                 } else {
                     // 启动自动播放
                     AutoPlayOnLaunch.tryTrigger(this@MainActivity, lifecycleScope)

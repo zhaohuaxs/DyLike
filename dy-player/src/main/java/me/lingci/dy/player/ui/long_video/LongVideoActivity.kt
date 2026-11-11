@@ -394,6 +394,13 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
      */
     private var isReplayFromCompletion = false
 
+    /**
+     * 已处理过 onPlayStart 的起播请求 id。MPV 复用实例（loadfile replace）时不会重新派发
+     * STATE_PREPARED，需要手动补一次；正常路径又可能多次 PREPARED，用 requestId 去重，
+     * 保证每个起播请求只装载一次弹幕/字幕/历史进度。
+     */
+    private var playStartHandledRequestId = -1L
+
     private fun clearBackgroundRecoveryState() {
         isReturningFromBackground = false
         backgroundRecoveryJob?.cancel()
@@ -669,6 +676,13 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                     // ======================================
                     onPlayStart()
                 }
+                // MPV 复用实例（loadfile replace）不派 STATE_PREPARED，用可播放状态兜底补一次。
+                // 之所以放在这里而不是 startOrReplace 之后立即执行：只有进入可播放状态，
+                // commitInitialSeek 的 seekTo 才不被 isInPlaybackState() 丢弃（否则丢历史进度）。
+                // onPlayStart 内部按 requestId 去重，正常 PREPARED 路径不会重复执行。
+                if (playState == VideoView.STATE_PLAYING || playState == VideoView.STATE_BUFFERED) {
+                    onPlayStart()
+                }
                 if (playState == VideoView.STATE_ERROR) {
                     logAndCache("LongVideoActivity", "E", "STATE_ERROR pos=$mCurPos")
                     lifecycleScope.launch(Dispatchers.IO) {
@@ -890,6 +904,13 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         mCurPos = position
         if (reusePlayer) {
             videoView.startOrReplace()
+            // MPV 复用实例走 loadfile replace，不会重新派发 STATE_PREPARED，于是
+            // onPlayStart()（弹幕轨道恢复、字幕挂载、历史进度）不会触发，表现为
+            // 「切下一集后整集没有弹幕」。
+            // 这里不能直接 post 一个 onPlayStart()：此刻播放器还没就绪，
+            // commitInitialSeek 里的 videoView.seekTo() 会被 isInPlaybackState() 拦掉，
+            // 历史进度就丢了（Exo 尤其明显）。改由 onPlayStateChanged 在可播放状态
+            // （PLAYING/BUFFERED）兜底补一次，由 requestId 去重。
         } else {
             videoView.start()
         }
@@ -950,14 +971,20 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     private fun onPlayStart() {
         val position = mCurPos
-        // 读取"重新播放"标记并立即重置（loadInfo 回调是异步的，需在同步阶段捕获）
-        val skipSeekDueToReplay = isReplayFromCompletion
-        isReplayFromCompletion = false
         if (itemViewModel.getItemSize() <= 0) {
             return
         }
         // F1-2：只处理当前请求对应的这一集；旧集迟到的 PREPARED 不允许再产生副作用。
         val request = playRequests.current ?: return
+        if (playStartHandledRequestId == request.requestId) {
+            Log.d(this, "onPlayStart ignored: duplicate request", request.requestId)
+            return
+        }
+        playStartHandledRequestId = request.requestId
+        // 读取"重新播放"标记并立即重置（loadInfo 回调是异步的，需在同步阶段捕获）。
+        // 放在去重之后：重复调用（PLAYING/BUFFERED 兜底）不应该把这次标记消耗掉。
+        val skipSeekDueToReplay = isReplayFromCompletion
+        isReplayFromCompletion = false
         val videoData = itemViewModel.getItem(position)
         if (stableMediaId(videoData) != request.mediaId) {
             Log.d(this, "onPlayStart ignored: stale media", position, request.requestId)

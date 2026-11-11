@@ -57,7 +57,7 @@ class SettingFragment : BaseTransitionFragment() {
     private fun initSettings() {
         binding.swPlayMode.isChecked = spUtil.longVideoMode
         binding.swVideoDetail.isChecked = spUtil.videoDetailMode
-        binding.swNewHome.isChecked = spUtil.newHome
+        binding.swNewHome.isChecked = spUtil.launchComposeHome
     }
 
     private fun initGlobalOption() {
@@ -67,8 +67,9 @@ class SettingFragment : BaseTransitionFragment() {
         binding.swVideoDetail.setOnClickListener {
             spUtil.videoDetailMode = binding.swVideoDetail.isChecked
         }
+        // 只控制启动去向：开 = 冷启动直接进 Compose 首页；平铺/分类在媒体库首页 toolbar 的「切换布局」里
         binding.swNewHome.setOnClickListener {
-            spUtil.newHome = binding.swNewHome.isChecked
+            spUtil.launchComposeHome = binding.swNewHome.isChecked
         }
 
         // 封面比例 Spinner

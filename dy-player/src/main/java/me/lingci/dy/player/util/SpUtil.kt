@@ -124,7 +124,12 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var dynamicColor by SPManager.boolean(false)
 
+    // 媒体库首页布局：false=平铺（卡片网格） true=分类（按资源库分组）。
+    // 入口在首页 toolbar 的「切换布局」，键名沿用旧 newHome 以兼容备份文件
     var newHome by SPManager.boolean(false)
+
+    // 冷启动直接进 Compose 首页（设置项「新首页UI」的开关）
+    var launchComposeHome by SPManager.boolean(false)
 
     var sortRender by SPManager.boolean(false)
 

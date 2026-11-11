@@ -178,6 +178,7 @@ public class StandardVideoController extends GestureVideoController implements V
         switch (playState) {
             //调用release方法会回到此状态
             case VideoView.STATE_IDLE:
+                isBuffering = false;
                 mBinding.lock.setSelected(false);
                 mBinding.loading.setVisibility(GONE);
                 break;
@@ -186,12 +187,11 @@ public class StandardVideoController extends GestureVideoController implements V
             case VideoView.STATE_PREPARED:
             case VideoView.STATE_ERROR:
             case VideoView.STATE_BUFFERED:
-                if (playState == VideoView.STATE_BUFFERED) {
-                    isBuffering = false;
-                }
-                if (!isBuffering) {
-                    mBinding.loading.setVisibility(GONE);
-                }
+                // 走到任何非缓冲状态都说明缓冲阶段已经结束。旧实现只在 STATE_BUFFERED
+                // 清 isBuffering，而 BaseVideoView 在用户暂停时会把 BUFFERING_END 派成
+                // STATE_PAUSED，导致该标志永久为 true、中央 loading 圈再也不消失。
+                isBuffering = false;
+                mBinding.loading.setVisibility(GONE);
                 break;
             case VideoView.STATE_PREPARING:
             case VideoView.STATE_BUFFERING:
@@ -201,6 +201,7 @@ public class StandardVideoController extends GestureVideoController implements V
                 }
                 break;
             case VideoView.STATE_PLAYBACK_COMPLETED:
+                isBuffering = false;
                 mBinding.loading.setVisibility(GONE);
                 mBinding.layoutLeft.setVisibility(GONE);
                 mBinding.lock.setSelected(false);

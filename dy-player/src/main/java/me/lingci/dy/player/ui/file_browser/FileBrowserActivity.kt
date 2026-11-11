@@ -281,7 +281,7 @@ class FileBrowserActivity : BaseActivity(), MenuProvider {
                 mediaData.path = item.path
                 mediaData.type = MediaLibType.fromStorage(source.type!!)
                 mediaData.storageType = source.type!!
-                mediaData.storageId = source.id
+                mediaData.storageId = if (source.type == StorageType.LOCAL_STORAGE) null else source.id
                 // Room3：sources/media 改为 DAO 异步读取，查重后单条落库
                 val sourceList = DatabaseManager.sourceDataDao.list()
                 mediaData.id = LibraryCompat.mediaId(mediaData, sourceList)

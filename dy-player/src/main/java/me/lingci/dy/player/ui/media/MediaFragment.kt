@@ -260,6 +260,10 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
                 return true
             }
 
+            R.id.menu_switch_layout -> {
+                switchLayoutMode()
+            }
+
             R.id.menu_scan -> {
                 mediaScanLauncher.launch(
                     MediaScanActivity.intent(
@@ -277,6 +281,39 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         lifecycleScope.launch {
             processMediaData(mediaViewModel.listMedia(keyword))
         }
+    }
+
+    /**
+     * 首页布局切换：平铺（全部媒体库卡片网格）↔ 分类（按资源库分组）。
+     * 开关状态仍落在 [SpUtil.newHome]，备份/恢复兼容旧键。
+     */
+    private fun switchLayoutMode() {
+        spUtil.newHome = spUtil.newHome.not()
+        if (spUtil.newHome) {
+            // 分类态没有全局搜索入口：先退出搜索态，避免切回来时还留着旧关键词
+            searchItem?.collapseActionView()
+            searchView?.setQuery("", false)
+        }
+        applyLayoutMode()
+        lifecycleScope.launch {
+            processMediaData(mediaViewModel.listMedia())
+        }
+    }
+
+    /** 按当前布局挂载对应的 LayoutManager 与适配器，并同步搜索入口可见性 */
+    private fun applyLayoutMode() {
+        val categoryMode = spUtil.newHome
+        if (categoryMode) {
+            binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
+            binding.recyclerView.adapter = mediaTypeItemAdapter
+        } else {
+            binding.recyclerView.layoutManager = GridLayoutManager(
+                requireContext(), if (isOrientationPortraitOfSysMetrics()) 3 else 7
+            )
+            binding.recyclerView.adapter = mediaItemAdapter
+        }
+        // onCreateMenu 之前 searchItem 仍为 null，可见性由 onCreateMenu 自己初始化
+        searchItem?.isVisible = categoryMode.not()
     }
 
     // Room3 Flow 化：原 initData 快照加载已由 onViewCreated 的 observeLibraryPage Flow 集合替代
@@ -626,13 +663,7 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         mediaTypeItemAdapter.onResetClick { item, position ->
             handleResetMedia(item, position)
         }
-        if (spUtil.newHome) {
-            binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
-            binding.recyclerView.adapter = mediaTypeItemAdapter
-        } else {
-            binding.recyclerView.layoutManager = GridLayoutManager(requireContext(), if (isOrientationPortraitOfSysMetrics()) 3 else 7)
-            binding.recyclerView.adapter = mediaItemAdapter
-        }
+        applyLayoutMode()
     }
 
     private fun onMediaItemClick(item: MediaData, position: Int, storageId: String) {

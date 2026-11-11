@@ -92,6 +92,38 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     private var preparedNotified = false
     private var firstFrameNotified = false
 
+    /**
+     * 缓冲状态看门狗：mpv 的 seeking / paused-for-cache 属性事件可能丢失或延迟，
+     * 一旦 bufferingReported 卡在 true，Java 层会永久停在 STATE_BUFFERING
+     * （弹幕停住、中央 loading 圈不消失，而 native 视频仍在播）。
+     */
+    private val mainHandler = Handler(Looper.getMainLooper())
+    // 显式标注 Runnable：lambda 内会重新 post 自身，省略类型会让 Kotlin 类型推断成环。
+    private val bufferingWatchdog: Runnable = Runnable {
+        if (bufferingReported && !isReleasing && !isReleased && !isNativeDestroyed) {
+            // 缓存的布尔可能只是回调丢了，直接读 mpv 实时属性区分两种情况：
+            // 真在缓冲 → 重新计时，保持 STATE_BUFFERING（不把"画面还卡着"谎报成播放中）；
+            // 属性已复位 → 事件丢失，强制收尾，避免永久卡在 STATE_BUFFERING。
+            val stillBuffering = try {
+                mpv.getPropertyBoolean("seeking") == true
+                        || mpv.getPropertyBoolean("paused-for-cache") == true
+            } catch (e: Exception) {
+                seekingBuffering || cacheBuffering
+            }
+            if (stillBuffering) {
+                L.w("buffering watchdog: native still buffering, re-arm ${BUFFERING_WATCHDOG_MS}ms")
+                mainHandler.postDelayed(bufferingWatchdog, BUFFERING_WATCHDOG_MS)
+            } else {
+                L.w("buffering watchdog: force BUFFERING_END after ${BUFFERING_WATCHDOG_MS}ms (event lost)")
+                seekingBuffering = false
+                cacheBuffering = false
+                bufferingReported = false
+                // BUFFERING_END 之后由 BaseVideoView 统一推进到 STATE_PLAYING（Exo/MPV 共用）。
+                mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_END, psc.bufferedPercentage)
+            }
+        }
+    }
+
     private var voInUse: String = "gpu"
     private var mIsPreparing = false
     private var configDir: String = appContext.filesDir.path
@@ -817,6 +849,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
         playbackHasStarted = false
         preparedNotified = false
         firstFrameNotified = false
+        mainHandler.removeCallbacks(bufferingWatchdog)
         seekingBuffering = false
         cacheBuffering = false
         bufferingReported = false
@@ -925,6 +958,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
         mIsPreparing = false
         preparedNotified = false
         firstFrameNotified = false
+        mainHandler.removeCallbacks(bufferingWatchdog)
         seekingBuffering = false
         cacheBuffering = false
         bufferingReported = false
@@ -1422,6 +1456,12 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
     /** seek 与 cache 缓冲是合并条件，任一个结束都不能单独发 BUFFERING_END。 */
     private fun reportMergedBuffering() {
         val buffering = seekingBuffering || cacheBuffering
+        // 每次属性变化都重排定时器：seek 结束后若仍在等网络缓冲，
+        // 不该被 seek 开始时那一轮的 3s 打断。
+        mainHandler.removeCallbacks(bufferingWatchdog)
+        if (buffering) {
+            mainHandler.postDelayed(bufferingWatchdog, BUFFERING_WATCHDOG_MS)
+        }
         if (buffering == bufferingReported) return
         bufferingReported = buffering
         playerScopeMain.launch {
@@ -1429,6 +1469,7 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
             if (buffering) {
                 mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_START, 0)
             } else {
+                // BUFFERING_END 之后由 BaseVideoView 统一推进到 STATE_PLAYING（Exo/MPV 共用）。
                 mPlayerEventListener?.onInfo(MEDIA_INFO_BUFFERING_END, psc.bufferedPercentage)
             }
         }
@@ -1633,6 +1674,13 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
          * 15s 覆盖实测最慢的正常响应（9.5s），又能让坏链路尽快报错。
          */
         private const val NETWORK_TIMEOUT_SECONDS = 15
+
+        /**
+         * 缓冲状态检查周期。到点后读 mpv 实时属性：仍在缓冲就重新计时，
+         * 属性已复位（只是回调丢了）才强制派 BUFFERING_END。
+         * 不再用固定超时把慢网络的正常长缓冲误判成"事件丢失"。
+         */
+        private const val BUFFERING_WATCHDOG_MS = 3000L
     }
 
     private fun refreshVideoGeometryFromMpv() {

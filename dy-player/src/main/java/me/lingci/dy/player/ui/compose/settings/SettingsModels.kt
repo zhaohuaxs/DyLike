@@ -14,7 +14,6 @@ import me.lingci.dy.player.core.DyPlayerCore
 data class PlayerSettingsState(
     val longVideoMode: Boolean = true,
     val videoDetailMode: Boolean = false,
-    val newHome: Boolean = false,
     val autoNext: Boolean = true,
     val loopList: Boolean = true,
     val longVideoPip: Boolean = true,
