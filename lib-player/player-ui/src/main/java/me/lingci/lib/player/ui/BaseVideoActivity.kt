@@ -113,10 +113,15 @@ abstract class BaseVideoActivity<T : VideoView> : BaseActivity(), OnLongVideoLis
     }
 
     /**
+     * 控制器工厂，子类可替换为定制控制器（如方向逻辑定制）
+     */
+    protected open fun createController(): StandardVideoController = StandardVideoController(this)
+
+    /**
      * 视频控制器
      */
     protected open fun initCustomVideoControlComponent() {
-        controller = StandardVideoController(this)
+        controller = createController()
         controller.setCanChangePosition(true)
         // 根据屏幕方向自动进入/退出全屏
         controller.setEnableOrientation(false)

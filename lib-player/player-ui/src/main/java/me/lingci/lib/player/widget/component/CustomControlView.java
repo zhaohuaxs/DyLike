@@ -43,6 +43,9 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
 
     private boolean needOrientation = false;
 
+    /** 全屏方向跟随视频宽高比（竖屏片源竖屏全屏），默认关闭保持旧行为 */
+    private boolean mOrientationByVideoSize = false;
+
     private boolean mIsDragging;
 
     private boolean mIsShowBottomProgress = true;
@@ -102,6 +105,14 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
      */
     public void showBottomProgress(boolean isShow) {
         mIsShowBottomProgress = isShow;
+    }
+
+    /**
+     * 全屏时按视频宽高比决定屏幕方向：竖屏片源保持竖屏全屏，横屏片源旋转横屏。
+     * 默认关闭（全屏一律横屏），供竖屏短剧场景按需开启。
+     */
+    public void setOrientationByVideoSize(boolean enable) {
+        mOrientationByVideoSize = enable;
     }
 
     @Override
@@ -354,6 +365,12 @@ public class CustomControlView extends FrameLayout implements IControlComponent,
     @SuppressLint("SourceLockedOrientationActivity")
     private void toggleFullScreen() {
         Activity activity = PlayerUtils.scanForActivity(getContext());
+
+        // 按视频宽高比决定全屏方向：竖屏片源保持竖屏全屏，横屏片源旋转到横屏
+        if (mOrientationByVideoSize) {
+            mControlWrapper.toggleFullScreenByVideoSize(activity);
+            return;
+        }
 
         if (needOrientation) {
             if (mControlWrapper.isFullScreen()) {

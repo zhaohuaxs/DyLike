@@ -196,9 +196,8 @@ public class ControlWrapper implements MediaPlayerControl, IVideoController {
         int height = size[1];
         if (isFullScreen()) {
             stopFullScreen();
-            if (width > height) {
-               activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-            }
+            // 宿主页面为竖屏页，退出全屏一律恢复竖屏（含竖屏片源在横屏下退出的场景）
+            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         } else {
             startFullScreen();
             if (width > height) {
