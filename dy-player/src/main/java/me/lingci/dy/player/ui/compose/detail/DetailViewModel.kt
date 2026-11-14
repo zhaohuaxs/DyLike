@@ -528,7 +528,11 @@ class DetailViewModel(private val app: Application) : ViewModel() {
      */
     private suspend fun readBase(mediaId: String): DetailPayload? {
         val startedAt = SystemClock.elapsedRealtime()
-        val media = DatabaseManager.mediaDataDao.getById(mediaId) ?: return null
+        val media = DatabaseManager.mediaDataDao.getById(mediaId)
+            // 播放列表只落在 playlist 表，media_data 里没有对应行。
+            // 与 View 侧 PlaylistActivity.buildPlaylistMediaData 一致，按 playlist 还原临时 MediaData。
+            ?: readPlaylistAsMedia(mediaId)
+            ?: return null
         val sp = SpUtil(app)
         val shortMode = when {
             media.playMode == 1 -> true
@@ -562,6 +566,30 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             coverHeaders = candidate?.headers ?: emptyMap()
         )
         return DetailPayload(media, rows, shortMode, cover)
+    }
+
+    /**
+     * 由 playlist 主表 + playlist_item/video_data 还原详情页所需的 PLAYLIST 类型 [MediaData]。
+     *
+     * Compose 的播放列表页与历史 PLAYLIST 分组都只把 playlistId 交给 `detail/{mediaId}` 路由，
+     * 而 View 侧是先把 Playlist 实体拼成 MediaData 再传进 MediaDetailActivity 的。
+     * 缺了这一步，`mediaDataDao.getById` 必然查空，详情页直接落到 Error 态。
+     *
+     * [MediaData.items] 是 @Ignore 字段，这里直接填好，[loadVideos] 的 PLAYLIST 分支不再二次查库。
+     * 该对象只存在于内存：不要拿它去 `MediaHelper.updateMedia` 落库。
+     */
+    private suspend fun readPlaylistAsMedia(playlistId: String): MediaData? {
+        val playlist = DatabaseManager.playlistDao.getById(playlistId) ?: return null
+        val items = DatabaseManager.playlistItemDao.listByPlaylist(playlistId)
+            .mapNotNull { DatabaseManager.videoDataDao.getById(it.videoId) }
+        return MediaData(
+            id = playlist.id,
+            title = playlist.title,
+            type = MediaLibType.PLAYLIST,
+            storageType = StorageType.LOCAL_STORAGE,
+            playMode = playlist.playMode,
+            items = items.toMutableList()
+        )
     }
 
     private suspend fun loadVideos(media: MediaData): List<VideoData> {

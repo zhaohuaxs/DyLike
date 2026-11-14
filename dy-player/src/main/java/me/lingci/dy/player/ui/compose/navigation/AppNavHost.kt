@@ -75,6 +75,8 @@ object Dest {
     const val Browser = "browser"
     const val BrowserWithSource = "browser/{sourceId}"
     const val Scan = "scan"
+    /** 首次进入的自动扫描入口：同页但进页面即开始，对齐 View 侧 MediaScanActivity(autoStart=true) */
+    const val ScanAuto = "scan/auto"
     const val Danmaku = "danmaku"
 }
 
@@ -297,6 +299,12 @@ fun AppNavHost(
         composable(Dest.Scan) {
             MediaScanRoute(
                 onBack = { navController.popBackStack() }
+            )
+        }
+        composable(Dest.ScanAuto) {
+            MediaScanRoute(
+                onBack = { navController.popBackStack() },
+                autoStart = true
             )
         }
         composable(Dest.Danmaku) { Placeholder("弹幕绑定") }

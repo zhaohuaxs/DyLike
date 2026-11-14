@@ -7,6 +7,9 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,6 +43,23 @@ class MediaLibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _events = Channel<MediaLibraryEvent>(Channel.BUFFERED)
     val events: Flow<MediaLibraryEvent> = _events.receiveAsFlow()
+
+    /**
+     * 首次进入时自动扫描一次，与 View 侧 `MediaFragment.scanMedia()` 共用 `firstScanMovie`：
+     * 谁先触发谁消费，另一条链路不会重复弹扫描页。
+     *
+     * 用 StateFlow 而非一次性事件：存储权限授权会让 `ComposeApp` 整树重建，
+     * 状态留在 Activity 作用域的 ViewModel 里才不会丢；消费时立刻写回 SP 并置 false，
+     * 重建后也不会二次导航。
+     */
+    private val _firstScanPending = MutableStateFlow(sp.firstScanMovie)
+    val firstScanPending: StateFlow<Boolean> = _firstScanPending.asStateFlow()
+
+    fun consumeFirstScan() {
+        if (!_firstScanPending.value) return
+        sp.firstScanMovie = false
+        _firstScanPending.value = false
+    }
 
     /** 新建 / 编辑本地媒体库：新增时扫目录建分集，编辑时不动既有分集（父行删改由 FK CASCADE 清理） */
     fun saveLocal(media: MediaData, update: Boolean) {

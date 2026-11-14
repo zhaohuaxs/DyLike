@@ -70,6 +70,7 @@ import me.lingci.lib.base.util.ToastUtil
 @Composable
 fun MediaScanRoute(
     onBack: () -> Unit = {},
+    autoStart: Boolean = false,
     vm: MediaScanViewModel = viewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -99,6 +100,17 @@ fun MediaScanRoute(
             vm.scan()
         } else {
             ToastUtil.showToast(context, context.getString(R.string.hint_scan_permission_denied))
+        }
+    }
+
+    // 首次进入的自动扫描：权限已授予就直接扫；未授予先申请，授权回调里同样会开扫。
+    // key 用 autoStart + vm，路由重组不会重复触发扫描任务。
+    LaunchedEffect(autoStart, vm) {
+        if (!autoStart) return@LaunchedEffect
+        if (PermissionUtil.checkPermissions(context, PermissionUtil.storagePermissions)) {
+            vm.scan()
+        } else {
+            permissionLauncher.launch(PermissionUtil.storagePermissions)
         }
     }
 

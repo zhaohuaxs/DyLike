@@ -145,9 +145,10 @@ fun HistoryScreen(
                     onClick = {
                         when (entry) {
                             is HistoryItemUi.Group ->
-                                if (entry.exists && entry.sourceType == PlaySource.LIBRARY) {
-                                    onOpenDetail(entry.mediaId)
-                                }
+                                // PLAYLIST 组与 LIBRARY 组共用 detail 路由：
+                                // DetailViewModel 会按 playlist 表还原 PLAYLIST 类型的 MediaData。
+                                // STANDALONE 的 exists 恒为 false，这里不会误放行。
+                                if (entry.exists) onOpenDetail(entry.mediaId)
 
                             is HistoryItemUi.Single -> onPlaySingle(entry)
                         }

@@ -3,7 +3,7 @@ package me.lingci.dy.player.ui.compose.likes
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -29,11 +29,13 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -47,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -70,6 +73,7 @@ import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
 import me.lingci.dy.player.ui.compose.theme.DyLikeType
 import me.lingci.dy.player.ui.compose.theme.LocalDyLikeColors
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
+import me.lingci.lib.base.util.ToastUtil
 
 /**
  * 「我的喜欢」入口。
@@ -86,18 +90,26 @@ fun LikesRoute(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
 
     LaunchedEffect(lifecycleOwner, vm) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             vm.events.collect { event ->
                 when (event) {
                     is LikesEvent.Play -> onPlay(event.videos, event.index)
+                    is LikesEvent.Message ->
+                        ToastUtil.showToast(context, context.getString(event.textRes))
                 }
             }
         }
     }
 
-    LikesScreen(state = state, onBack = onBack, onPlay = vm::play)
+    LikesScreen(
+        state = state,
+        onBack = onBack,
+        onPlay = vm::play,
+        onUnlike = vm::unlike
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -105,12 +117,15 @@ fun LikesRoute(
 fun LikesScreen(
     state: LikesUiState,
     onBack: () -> Unit,
-    onPlay: (Int) -> Unit
+    onPlay: (Int) -> Unit,
+    onUnlike: (String) -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
     val gridState = rememberLazyStaggeredGridState()
     var hideText by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
+    // 长按菜单只存一个稳定 key：删项后不会像「逐项 remember」那样串位
+    var unlikeKey by remember { mutableStateOf<String?>(null) }
 
     val items = state.items
     val toggleLabel = stringResource(if (hideText) R.string.action_show_text else R.string.action_hide_text)
@@ -193,24 +208,48 @@ fun LikesScreen(
                         LikeCard(
                             item = item,
                             hideText = hideText,
-                            onClick = { onPlay(index) }
+                            onClick = { onPlay(index) },
+                            onLongClick = { unlikeKey = item.key }
                         )
                     }
                 }
             }
         }
     }
+
+    val target = unlikeKey
+    if (target != null) {
+        AlertDialog(
+            onDismissRequest = { unlikeKey = null },
+            title = { Text(stringResource(R.string.hint_remove_from_like)) },
+            text = { Text(stringResource(R.string.likes_unlike_confirm)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    unlikeKey = null
+                    onUnlike(target)
+                }) { Text(stringResource(R.string.action_confirmed)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { unlikeKey = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LikeCard(
     item: LikeItemUi,
     hideText: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     val c = LocalDyLikeColors.current
     val shape = RoundedCornerShape(8.dp)
     val playLabel = stringResource(R.string.cd_play)
+    val removeLabel = stringResource(R.string.hint_remove_from_like)
     val thumbPath = item.thumbPath
 
     // 只做宽高测量：解码 bounds 拿不到就按 16:9 兜底，图像加载仍交给 ThumbImage
@@ -235,7 +274,12 @@ private fun LikeCard(
             .semantics(mergeDescendants = true) {
                 contentDescription = item.title
             }
-            .clickable(onClickLabel = playLabel, onClick = onClick)
+            .combinedClickable(
+                onClickLabel = playLabel,
+                onLongClickLabel = removeLabel,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Box(
             Modifier.fillMaxWidth().aspectRatio(aspectRatio).clip(shape).background(c.surfaceRaised)

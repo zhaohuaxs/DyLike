@@ -473,6 +473,8 @@
     <string name="title_likes">我的喜欢</string>
     <string name="likes_empty">还没有喜欢的视频</string>
     <string name="likes_count">%1$d 个</string>
+    <string name="likes_unlike_confirm">确定将这个视频移出喜欢列表？</string>
+    <string name="likes_remove_failed">移出失败，请重试</string>
 
     <!-- 卡片文字开关（喜欢页 / 媒体库详情共用） -->
     <string name="action_show_text">显示文本</string>

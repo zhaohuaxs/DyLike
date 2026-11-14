@@ -1,6 +1,7 @@
 package me.lingci.dy.player.ui.compose.likes
 
 import android.app.Application
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.AppUtil
@@ -48,6 +50,9 @@ data class LikesUiState(
  */
 sealed interface LikesEvent {
     data class Play(val videos: List<VideoData>, val index: Int) : LikesEvent
+
+    /** 一次性提示：ViewModel 只持有资源 id，文案由 Route 解析 */
+    data class Message(@param:StringRes val textRes: Int) : LikesEvent
 }
 
 class LikesViewModel(app: Application) : AndroidViewModel(app) {
@@ -79,6 +84,27 @@ class LikesViewModel(app: Application) : AndroidViewModel(app) {
         val list = videos
         if (index !in list.indices) return
         viewModelScope.launch { _events.send(LikesEvent.Play(list, index)) }
+    }
+
+    /**
+     * 取消喜欢：按稳定 key 找到视频，只删 favorite 表的那一行（按 video_id 唯一键），
+     * 与 View 侧 `MediaDetailActivity.removeFromLike` 一致。
+     *
+     * 列表由 `observeFavoriteVideos()` 的 Flow 自动重发，这里不手改 state，
+     * 避免内存列表和数据库结果打架；传 key 而非下标，删除/刷新后不会串位。
+     */
+    fun unlike(key: String) {
+        val video = videos.firstOrNull { it.md5() == key } ?: return
+        viewModelScope.launch {
+            val removed = withContext(Dispatchers.IO) {
+                runCatching { DatabaseManager.favoriteDao.deleteByVideoId(video.beanId()) }.isSuccess
+            }
+            _events.send(
+                LikesEvent.Message(
+                    if (removed) R.string.hint_removed_from_like else R.string.likes_remove_failed
+                )
+            )
+        }
     }
 
     private fun VideoData.toItemUi(): LikeItemUi {

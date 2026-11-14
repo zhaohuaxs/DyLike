@@ -78,6 +78,7 @@ class MainComposeActivity : ComponentActivity() {
             val appearanceVm: AppearanceViewModel = viewModel()
             val mediaVm: MediaLibraryViewModel = viewModel()
             val appearance by appearanceVm.state.collectAsStateWithLifecycle()
+            val firstScanPending by mediaVm.firstScanPending.collectAsStateWithLifecycle()
             val lifecycleOwner = LocalLifecycleOwner.current
 
             // 首帧即检查存储权限：targetSdk=28，读写外部存储属于运行时权限，
@@ -172,7 +173,9 @@ class MainComposeActivity : ComponentActivity() {
                             deletingMediaId = media.id
                             showDeleteConfirm = true
                         },
-                        onTogglePin = { media -> mediaVm.togglePin(media.id) }
+                        onTogglePin = { media -> mediaVm.togglePin(media.id) },
+                        firstScanPending = firstScanPending,
+                        onFirstScanHandled = mediaVm::consumeFirstScan
                     )
                 }
 
@@ -325,11 +328,21 @@ private fun ComposeApp(
 
     onEditMedia: (MediaUiModel) -> Unit,
     onDeleteMedia: (MediaUiModel) -> Unit,
-    onTogglePin: (MediaUiModel) -> Unit
+    onTogglePin: (MediaUiModel) -> Unit,
+    firstScanPending: Boolean,
+    onFirstScanHandled: () -> Unit
 ) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
+
+    // 与 View 侧 MediaFragment.onStart() 的 scanMedia() 对齐：首次进入自动打开扫描页并开始扫描。
+    // 先消费再导航，权限授权导致整树重建时不会重复触发。
+    LaunchedEffect(firstScanPending, nav) {
+        if (!firstScanPending) return@LaunchedEffect
+        onFirstScanHandled()
+        nav.navigate(Dest.ScanAuto)
+    }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AppNavHost(
