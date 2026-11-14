@@ -88,6 +88,8 @@
     <string name="hint_dm_font_desc">长按选择字体，当前字体 %s</string>
     <string name="hint_video_detail">媒体库详情页</string>
     <string name="hint_video_detail_desc">媒体库优先进入详情页，而不是播放页</string>
+    <string name="settings_library_launch_compose_home">新首页UI</string>
+    <string name="settings_library_launch_compose_home_desc">开启后启动时直接进入 Compose 首页，关闭则回到经典首页</string>
     <string name="hint_video_player">长视频切换播放器内核</string>
     <string name="hint_video_player_desc">默认Media3，打开切换MPV实验内核</string>
     <string name="hint_short_video_player">短视频切换播放器内核</string>
@@ -334,8 +336,12 @@
 
     <!-- 设置：入口行（分类入口 + 动作入口都直接放在「我的」页，不再有「全部设置」索引层） -->
     <string name="settings_group_all">SETTINGS</string>
+    <string name="settings_cat_customize">个性化</string>
+    <string name="settings_cat_customize_desc">色彩模式、放映光色与应用图标</string>
+    <string name="settings_cat_library">媒体库</string>
+    <string name="settings_cat_library_desc">详情页与封面比例</string>
     <string name="settings_cat_playback">播放</string>
-    <string name="settings_cat_playback_desc">连播、音频与资源库显示</string>
+    <string name="settings_cat_playback_desc">长短视频模式、连播与音频</string>
     <string name="settings_cat_danmaku_desc">样式、字体、过滤与合并</string>
     <!-- 旧页的 hint_data_backup_desc 是「备份还原应用数据」，和标题重复，新页面不再复用 -->
     <string name="settings_backup_desc">导出或恢复应用数据</string>

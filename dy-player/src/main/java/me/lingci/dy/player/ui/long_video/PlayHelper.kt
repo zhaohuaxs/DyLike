@@ -1,6 +1,7 @@
 package me.lingci.dy.player.ui.long_video
 
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.core.net.toUri
 import androidx.media3.common.util.UnstableApi
 import kotlinx.coroutines.CoroutineScope
@@ -18,6 +19,7 @@ import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.room.entity.PlaySource
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.LibraryCompat
+import me.lingci.dy.player.util.MediaManger
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.okhttp.OkUtil
 import me.lingci.lib.base.okhttp.httpGet
@@ -155,44 +157,60 @@ object PlayHelper {
         videoData: VideoData
     ) {
         scope.launch(Dispatchers.IO) {
-            val file = AppFile(context).buildCache(".thumb/${videoData.videoUrl.md5()}.${AppUtil.THUMB_TYPE}")
+            // 与列表缩略图共用同一份缓存：key 统一走 VideoData.md5()，路径统一走 buildThumbFile
+            val file = AppUtil.buildThumbFile(context, videoData.md5())
             file.parentFile?.mkdirs()
-            if (file.exists() && file.length() < 20480) {
+            // 只清理空文件。旧版用 <20KB 判定「截图失败」，但 480 宽 WEBP 中位仅 14KB，
+            // 会把正常列表缩略图删掉换成 1920 宽的播放器截图
+            if (file.exists() && file.length() == 0L) {
                 file.delete()
             }
-            if (!file.exists()) {
-                try {
-                    // 截图读取必须在后台线程：MpvSurfaceRenderView.doScreenShot() 会把 mpv 命令
-                    // post 到主线程再 await 提交完成，若本方法在主线程执行，就等于主线程等待
-                    // 自己——每次都会卡到 2s 超时才返回（实测 Choreographer 掉 261 帧）。
-                    // 这段卡顿发生在起播后约 1s，正好把同一主线程驱动的弹幕绘制循环一起冻住，
-                    // 表现就是「弹幕滚几秒 → 定住 → 两秒后接着滚」。
-                    // 压缩与写盘同在此线程；先写临时文件再原子改名，避免失败时留下空缩略图（F4-3）。
-                    videoView.doScreenShot()?.let { bitmap ->
-                        val tmp = File(file.parentFile, "${file.name}.tmp")
-                        try {
-                            FileOutputStream(tmp).use { fos ->
-                                bitmap.compress(AppUtil.COMPRESS_FORMAT, 75, fos)
-                                fos.flush()
-                            }
-                            if (tmp.length() > 0L) {
-                                if (file.exists()) file.delete()
-                                if (tmp.renameTo(file)) {
-                                    logD("save thumb", file.path)
-                                } else {
-                                    logD("save thumb rename failed", file.path)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            logD("save thumb failed: ${e.message}", e)
-                        } finally {
-                            if (tmp.exists()) tmp.delete()
-                        }
+            if (file.exists()) return@launch
+
+            // 抽帧优先，且完全不碰播放器：本地走路径，WebDAV/SMB 走自建随机读数据源
+            // （MediaMetadataRetriever + MediaDataSource）。mpv / Exo / SurfaceView 下行为一致，
+            // 也不会像「起播 1s 截当前画面」那样截到片头黑屏或还没缓冲出画面的黑帧。
+            // 只有 HLS/DASH 清单（m3u8/mpd 无法解复用）或抽帧失败时才回退播放器截图。
+            val bitmap = MediaManger.extractThumbnail(videoData) ?: videoView.doScreenShot()
+            if (bitmap == null) {
+                logD("save thumb no frame", videoData.videoUrl)
+                return@launch
+            }
+            try {
+                writeThumbFile(file, bitmap)
+            } finally {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    private fun writeThumbFile(file: File, bitmap: Bitmap) {
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        try {
+            // 统一缩到 480：moto 真机实测 1920 宽 WEBP 编码 153ms/张，480 宽仅 14ms
+            val scaled = MediaManger.scaleForThumb(bitmap)
+            try {
+                FileOutputStream(tmp).use { fos ->
+                    if (!scaled.compress(AppUtil.COMPRESS_FORMAT, MediaManger.THUMB_QUALITY, fos)) {
+                        error("compress failed")
                     }
-                } catch (e: Exception) {
-                    logD("doScreenShot failed: ${e.message}", e)
+                    fos.flush()
+                }
+            } finally {
+                if (scaled !== bitmap) scaled.recycle()
+            }
+            if (tmp.length() > 0L) {
+                if (file.exists()) file.delete()
+                if (tmp.renameTo(file)) {
+                    logD("save thumb", file.path)
+                } else {
+                    logD("save thumb rename failed", file.path)
                 }
             }
+        } catch (e: Exception) {
+            logD("save thumb failed: ${e.message}", e)
+        } finally {
+            if (tmp.exists()) tmp.delete()
         }
     }
 

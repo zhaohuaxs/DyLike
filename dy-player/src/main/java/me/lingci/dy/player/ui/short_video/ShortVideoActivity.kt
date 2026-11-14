@@ -1588,31 +1588,45 @@ class ShortVideoActivity : BaseActivity() {
         mBinding.root.postDelayed({
             if (!playRequests.isCurrent(request) || position != mCurPos) return@postDelayed
             val videoData = mVideoList.getOrNull(position) ?: return@postDelayed
-            if (videoData.videoUrl.isLocal()) return@postDelayed
-            val target = File(
-                externalCacheDir,
-                ".thumb/${videoData.md5()}.${AppUtil.THUMB_TYPE}"
-            )
+            val target = AppUtil.buildThumbFile(applicationContext, videoData.md5())
             lifecycleScope.launch(Dispatchers.IO) {
-                if (target.exists() && target.length() >= 20480) return@launch
+                // 只跳过非空缓存：旧版 >=20KB 才认为有效，会把 480 宽的正常缩略图反复覆盖
+                if (target.exists() && target.length() > 0L) return@launch
                 var temp: File? = null
                 try {
-                    // 截图/解码/压缩/写盘全部离开主线程；null 是明确失败，不再 NPE 后静默。
-                    val bitmap = mVideoView.doScreenShot() ?: return@launch
-                    if (!playRequests.isCurrent(request)) return@launch
-                    target.parentFile?.mkdirs()
-                    temp = File.createTempFile("thumb_", ".tmp", target.parentFile)
-                    FileOutputStream(temp).use { fos ->
-                        if (!bitmap.compress(AppUtil.COMPRESS_FORMAT, 70, fos)) {
-                            throw IllegalStateException("bitmap compress failed")
+                    // 抽帧优先，与播放器/渲染器解耦：本地走路径、WebDAV/SMB 走自建随机读数据源。
+                    // 只有 HLS/DASH 清单或抽帧失败时才回退播放器截图。
+                    val bitmap = MediaManger.extractThumbnail(videoData)
+                        ?: mVideoView.doScreenShot() ?: return@launch
+                    try {
+                        if (!playRequests.isCurrent(request)) return@launch
+                        target.parentFile?.mkdirs()
+                        temp = File.createTempFile("thumb_", ".tmp", target.parentFile)
+                        // 与列表缩略图同规格：480 宽 / q70，避免 1920 宽截图混进缓存
+                        val scaled = MediaManger.scaleForThumb(bitmap)
+                        try {
+                            FileOutputStream(temp).use { fos ->
+                                if (!scaled.compress(
+                                        AppUtil.COMPRESS_FORMAT,
+                                        MediaManger.THUMB_QUALITY,
+                                        fos
+                                    )
+                                ) {
+                                    throw IllegalStateException("bitmap compress failed")
+                                }
+                                fos.flush()
+                            }
+                        } finally {
+                            if (scaled !== bitmap) scaled.recycle()
                         }
-                        fos.flush()
+                        if (target.exists()) target.delete()
+                        if (!temp.renameTo(target)) {
+                            throw IllegalStateException("rename thumbnail failed")
+                        }
+                        temp = null
+                    } finally {
+                        bitmap.recycle()
                     }
-                    if (target.exists()) target.delete()
-                    if (!temp.renameTo(target)) {
-                        throw IllegalStateException("rename thumbnail failed")
-                    }
-                    temp = null
                 } catch (e: Exception) {
                     Log.d(TAG, "doScreenShot failed: ${e.message}")
                 } finally {

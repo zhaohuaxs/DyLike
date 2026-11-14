@@ -37,7 +37,9 @@ import me.lingci.dy.player.ui.compose.scan.MediaScanRoute
 import me.lingci.dy.player.ui.compose.settings.DanmakuSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.KernelSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.LabSettingsDetail
+import me.lingci.dy.player.ui.compose.settings.LibrarySettingsDetail
 import me.lingci.dy.player.ui.compose.settings.PlaybackSettingsDetail
+import me.lingci.dy.player.ui.compose.settings.settingsViewModel
 import me.lingci.dy.player.ui.compose.sources.BuiltinSources
 import me.lingci.dy.player.ui.compose.sources.SourceByIdViewModel
 import me.lingci.dy.player.ui.compose.sources.SourcesScreen
@@ -63,6 +65,7 @@ object Dest {
     const val Theme = "theme"
     /** 设置分类页：「我的」页直接列设置入口，这里只是分类详情，没有中间的「全部设置」索引层 */
     const val SettingsPlayback = "settings/playback"
+    const val SettingsLibrary = "settings/library"
     const val SettingsKernel = "settings/kernel"
     const val SettingsDanmaku = "settings/danmaku"
     const val SettingsLab = "settings/lab"
@@ -167,6 +170,7 @@ fun AppNavHost(
                 dynamicColor = dynamicColor,
                 version = BuildConfig.VERSION_NAME,
                 onTheme = { navController.navigate(Dest.Theme) },
+                onLibrary = { navController.navigate(Dest.SettingsLibrary) },
                 onPlayback = { navController.navigate(Dest.SettingsPlayback) },
                 onKernel = { navController.navigate(Dest.SettingsKernel) },
                 onDanmaku = { navController.navigate(Dest.SettingsDanmaku) },
@@ -181,6 +185,9 @@ fun AppNavHost(
         }
         composable(Dest.SettingsPlayback) {
             PlaybackSettingsDetail(onBack = { navController.popBackStack() })
+        }
+        composable(Dest.SettingsLibrary) {
+            LibrarySettingsDetail(onBack = { navController.popBackStack() })
         }
         composable(Dest.SettingsKernel) {
             KernelSettingsDetail(onBack = { navController.popBackStack() })
@@ -235,16 +242,24 @@ fun AppNavHost(
         }
         composable(Dest.Theme) {
             val context = LocalContext.current
+            // 个性化页要改「新首页 UI」开关，状态仍走设置页的同一个 ViewModel（Activity 作用域），
+            // 这样「我的 → 个性化」与「我的 → 媒体库」读到的是同一份值
+            val settingsVm = settingsViewModel()
+            val settingsState by settingsVm.state.collectAsStateWithLifecycle()
             ThemeScreen(
                 mode = themeMode,
                 brand = brand,
                 dynamic = dynamicColor,
                 navLabels = navLabels,
+                launchComposeHome = settingsState.library.launchComposeHome,
                 onBack = { navController.popBackStack() },
                 onMode = onThemeMode,
                 onBrand = onBrand,
                 onDynamic = onDynamicColor,
                 onNavLabels = onNavLabels,
+                onLaunchComposeHome = { on ->
+                    settingsVm.applyLibrary(settingsState.library.copy(launchComposeHome = on))
+                },
                 onIcon = { context.startActivity(Intent(context, IconSettingActivity::class.java)) }
             )
         }

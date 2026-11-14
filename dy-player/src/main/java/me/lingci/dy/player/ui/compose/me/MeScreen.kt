@@ -38,7 +38,7 @@ import me.lingci.dy.player.ui.compose.components.Kicker
 import me.lingci.dy.player.ui.compose.components.ScreenTitle
 import me.lingci.dy.player.ui.compose.components.SettingRow
 import me.lingci.dy.player.ui.compose.settings.KernelSettingsState
-import me.lingci.dy.player.ui.compose.settings.PlayerSettingsState
+import me.lingci.dy.player.ui.compose.settings.PlaybackSettingsState
 import me.lingci.dy.player.ui.compose.settings.SettingsNoteLine
 import me.lingci.dy.player.ui.compose.settings.SettingsState
 import me.lingci.dy.player.ui.compose.settings.SettingsViewModel
@@ -59,10 +59,10 @@ private const val PENDING = "—"
  * 结构只有两层：本页列设置入口，点一行进分类页。原先的三层
  * （我的 → 全部设置 → 七个二级页）被砍掉两层中间的索引页。
  *
- * 入口分两类：五个**分类页**（播放 / 外观 / 播放内核 / 弹幕 / 实验室）与本页就地执行的**动作**
+ * 入口分两类：六个**分类页**（个性化 / 媒体库 / 播放 / 播放内核 / 弹幕 / 实验室）与本页就地执行的**动作**
  * （备份还原 / 数据迁移 / 反馈与开源）。备份与反馈原本在「数据与关于」分类里，
  * 但那两类各只有一个动作，再套一层详情页只是多一次点击，所以直接提到本页；
- * 桌面图标属于外观，已并进外观页；版本号作为页脚说明，不再占一个入口。
+ * 桌面图标属于个性化，已并进该页；版本号作为页脚说明，不再占一个入口。
  * 播放历史 / 播放列表不在这里，媒体库首页已有入口。
  */
 @Composable
@@ -72,6 +72,7 @@ fun MeScreen(
     dynamicColor: Boolean,
     version: String,
     onTheme: () -> Unit,
+    onLibrary: () -> Unit,
     onPlayback: () -> Unit,
     onKernel: () -> Unit,
     onDanmaku: () -> Unit,
@@ -92,6 +93,7 @@ fun MeScreen(
         dynamicColor = dynamicColor,
         version = version,
         onTheme = onTheme,
+        onLibrary = onLibrary,
         onPlayback = onPlayback,
         onKernel = onKernel,
         onDanmaku = onDanmaku,
@@ -112,6 +114,7 @@ fun MeContent(
     dynamicColor: Boolean,
     version: String,
     onTheme: () -> Unit,
+    onLibrary: () -> Unit,
     onPlayback: () -> Unit,
     onKernel: () -> Unit,
     onDanmaku: () -> Unit,
@@ -135,19 +138,26 @@ fun MeContent(
         item { GroupLabel(stringResource(R.string.settings_group_all)) }
         item {
             SettingRow(
-                stringResource(R.string.settings_cat_playback),
-                stringResource(R.string.settings_cat_playback_desc),
+                stringResource(R.string.settings_cat_customize),
+                stringResource(R.string.settings_cat_customize_desc),
                 stringResource(R.string.settings_enter),
-                onPlayback
+                onTheme
             )
         }
         item {
             SettingRow(
-                stringResource(R.string.settings_group_appearance),
-                // 副标题直接写当前主题，省得为了看一眼配色点进页面再退出来
-                themeSummary(themeMode, brand, dynamicColor),
+                stringResource(R.string.settings_cat_library),
+                stringResource(R.string.settings_cat_library_desc),
                 stringResource(R.string.settings_enter),
-                onTheme
+                onLibrary
+            )
+        }
+        item {
+            SettingRow(
+                stringResource(R.string.settings_cat_playback),
+                stringResource(R.string.settings_cat_playback_desc),
+                stringResource(R.string.settings_enter),
+                onPlayback
             )
         }
         item {
@@ -283,13 +293,14 @@ private fun MeContentPreview() {
         MeContent(
             state = MeUiState(mediaCount = 12, sourceCount = 3, monthPlayCount = 27),
             settings = SettingsState(
-                player = PlayerSettingsState(longVideoMode = true, autoNext = true, loopList = true)
+                player = PlaybackSettingsState(longVideoMode = true, autoNext = true, loopList = true)
             ),
             themeMode = ThemeMode.Dark,
             brand = BrandHue.Purple,
             dynamicColor = false,
             version = "2.0.0",
             onTheme = {},
+            onLibrary = {},
             onPlayback = {},
             onKernel = {},
             onDanmaku = {},

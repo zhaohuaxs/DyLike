@@ -121,7 +121,7 @@ fun PlaybackSettingsDetail(
 fun PlaybackSettingsContent(
     state: SettingsState,
     onBack: () -> Unit,
-    onPlayerChange: (PlayerSettingsState) -> Unit,
+    onPlayerChange: (PlaybackSettingsState) -> Unit,
     onBackgroundPlayEnabled: () -> Unit
 ) {
     SettingsDetailScaffold(
@@ -135,8 +135,36 @@ fun PlaybackSettingsContent(
             onChange = onPlayerChange,
             onBackgroundPlayEnabled = onBackgroundPlayEnabled
         )
-        item { GroupLabel(stringResource(R.string.settings_library_title)) }
-        librarySettings(state = state.player, onChange = onPlayerChange)
+    }
+}
+
+// ---------- 媒体库与显示 ----------
+
+@Composable
+fun LibrarySettingsDetail(
+    onBack: () -> Unit,
+    vm: SettingsViewModel = settingsViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    LibrarySettingsContent(
+        state = state,
+        onBack = onBack,
+        onLibraryChange = vm::applyLibrary
+    )
+}
+
+@Composable
+fun LibrarySettingsContent(
+    state: SettingsState,
+    onBack: () -> Unit,
+    onLibraryChange: (LibrarySettingsState) -> Unit
+) {
+    SettingsDetailScaffold(
+        title = stringResource(R.string.settings_cat_library),
+        kicker = "LIBRARY",
+        onBack = onBack
+    ) {
+        librarySettings(state = state.library, onChange = onLibraryChange)
     }
 }
 
@@ -310,11 +338,23 @@ private fun PlaybackSettingsPreview() {
     DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
         PlaybackSettingsContent(
             state = SettingsState(
-                player = PlayerSettingsState(longVideoMode = true, autoNext = true, loopList = true)
+                player = PlaybackSettingsState(longVideoMode = true, autoNext = true, loopList = true)
             ),
             onBack = {},
             onPlayerChange = {},
             onBackgroundPlayEnabled = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF101014, heightDp = 800)
+@Composable
+private fun LibrarySettingsPreview() {
+    DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
+        LibrarySettingsContent(
+            state = SettingsState(library = LibrarySettingsState(launchComposeHome = true)),
+            onBack = {},
+            onLibraryChange = {}
         )
     }
 }

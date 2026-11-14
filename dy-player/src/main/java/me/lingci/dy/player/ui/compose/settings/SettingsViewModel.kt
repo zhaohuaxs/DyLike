@@ -37,7 +37,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(
         SettingsState(
-            player = readPlayer(),
+            player = readPlayback(),
+            library = readLibrary(),
             // 这三项不在 readKernel/readDanmaku 里：它们复用旧 SP 键（sortRender / dmCurrentFont / dmFilter），
             // 在这里补齐，避免为了三个字段去改已经稳定的读取函数
             kernel = readKernel().copy(shortFastRender = sp.sortRender),
@@ -58,14 +59,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ---------- 播放与资源库 ----------
+    // ---------- 播放 ----------
 
-    fun applyPlayer(updated: PlayerSettingsState) {
+    fun applyPlayer(updated: PlaybackSettingsState) {
         val current = _state.value.player
         if (updated == current) return
 
         if (updated.longVideoMode != current.longVideoMode) sp.longVideoMode = updated.longVideoMode
-        if (updated.videoDetailMode != current.videoDetailMode) sp.videoDetailMode = updated.videoDetailMode
         if (updated.autoNext != current.autoNext) sp.autoNext = updated.autoNext
         if (updated.loopList != current.loopList) sp.loopList = updated.loopList
         if (updated.longVideoPip != current.longVideoPip) sp.longVideoPip = updated.longVideoPip
@@ -80,9 +80,23 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             sp.audioFadeOutDuration = updated.audioFadeOutDuration
         }
         if (updated.shortRandom != current.shortRandom) sp.shortRandom = updated.shortRandom
-        if (updated.coverRatio != current.coverRatio) sp.coverRatio = updated.coverRatio
 
         update { it.copy(player = updated) }
+    }
+
+    // ---------- 媒体库与显示 ----------
+
+    fun applyLibrary(updated: LibrarySettingsState) {
+        val current = _state.value.library
+        if (updated == current) return
+
+        if (updated.videoDetailMode != current.videoDetailMode) sp.videoDetailMode = updated.videoDetailMode
+        if (updated.coverRatio != current.coverRatio) sp.coverRatio = updated.coverRatio
+        if (updated.launchComposeHome != current.launchComposeHome) {
+            sp.launchComposeHome = updated.launchComposeHome
+        }
+
+        update { it.copy(library = updated) }
     }
 
     // ---------- 内核 ----------
@@ -209,9 +223,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     private fun parseFilterKeywords(raw: String): List<String> =
         raw.split(DmInitializer.FILTER_SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }
 
-    private fun readPlayer() = PlayerSettingsState(
+    private fun readPlayback() = PlaybackSettingsState(
         longVideoMode = sp.longVideoMode,
-        videoDetailMode = sp.videoDetailMode,
         autoNext = sp.autoNext,
         loopList = sp.loopList,
         longVideoPip = sp.longVideoPip,
@@ -219,8 +232,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         audioFadeEnabled = sp.audioFadeEnabled,
         audioFadeInDuration = sp.audioFadeInDuration,
         audioFadeOutDuration = sp.audioFadeOutDuration,
-        shortRandom = sp.shortRandom,
-        coverRatio = sp.coverRatio ?: DEFAULT_COVER_RATIO
+        shortRandom = sp.shortRandom
+    )
+
+    private fun readLibrary() = LibrarySettingsState(
+        videoDetailMode = sp.videoDetailMode,
+        coverRatio = sp.coverRatio ?: DEFAULT_COVER_RATIO,
+        launchComposeHome = sp.launchComposeHome
     )
 
     private fun readKernel() = KernelSettingsState(

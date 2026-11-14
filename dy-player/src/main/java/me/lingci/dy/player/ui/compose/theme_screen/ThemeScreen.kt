@@ -53,11 +53,13 @@ fun ThemeScreen(
     brand: BrandHue,
     dynamic: Boolean,
     navLabels: Boolean,
+    launchComposeHome: Boolean,
     onBack: () -> Unit,
     onMode: (ThemeMode) -> Unit,
     onBrand: (BrandHue) -> Unit,
     onDynamic: (Boolean) -> Unit,
     onNavLabels: (Boolean) -> Unit,
+    onLaunchComposeHome: (Boolean) -> Unit,
     onIcon: () -> Unit
 ) {
     val c = LocalDyLikeColors.current
@@ -68,8 +70,8 @@ fun ThemeScreen(
         ) {
             AppIconButton(Icons.AutoMirrored.Filled.ArrowBack, "返回", onBack)
             Column(Modifier.padding(start = 6.dp)) {
-                Kicker("APPEARANCE")
-                Text("外观与主题", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                Kicker("CUSTOMIZE")
+                Text("个性化", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
             }
         }
         Kicker(
@@ -124,6 +126,12 @@ fun ThemeScreen(
             if (navLabels) "图标 + 标签，选中项展开" else "图标为主，选中项展开文字",
             navLabels,
             onNavLabels
+        )
+        ToggleRow(
+            stringResource(R.string.settings_library_launch_compose_home),
+            stringResource(R.string.settings_library_launch_compose_home_desc),
+            launchComposeHome,
+            onLaunchComposeHome
         )
         // 桌面图标属于「外观」而不是「关于」：用户换图标是想换桌面上的样子，不是查版本
         Kicker(

@@ -1,12 +1,8 @@
 package me.lingci.dy.player.ui.media
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.Menu
@@ -62,6 +58,7 @@ import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.MediaManger
+import me.lingci.dy.player.util.ThumbQuality
 import me.lingci.dy.player.util.AppUtil
 import java.io.FileOutputStream
 import me.lingci.lib.base.dailog.DialogHelper
@@ -153,7 +150,7 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     }
 
     private fun init() {
-        clearCache()
+        // 不再每次进页面清缓存：会让所有视频重新抽帧，且旧版按 .jpg 过滤（实际产物是 .webp）本就是无效 IO
         initResult()
         initViewModel()
         initView()
@@ -444,28 +441,30 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
                 val videoData = VideoData(firstVideo)
                 val thumbFile = AppUtil.buildThumbFile(appContext, videoData.md5())
 
-                if (thumbFile.exists()) {
-                    if (isUsableCoverThumb(thumbFile)) {
-                        media.showFile = thumbFile.absolutePath
-                        media.coverType = CoverType.AUTO
-                        coverUpdates[media.id] = thumbFile.absolutePath
-                        continue
-                    }
-                    thumbFile.delete()
+                // 与列表缩略图共用同一份缓存和同一套黑帧判定
+                if (ThumbQuality.isUsableThumbFile(thumbFile)) {
+                    media.showFile = thumbFile.absolutePath
+                    media.coverType = CoverType.AUTO
+                    coverUpdates[media.id] = thumbFile.absolutePath
+                    continue
                 }
+                thumbFile.delete()
 
-                // 缩略图不存在或缓存是黑图时，尝试首帧并回退到 1s/3s
                 try {
-                    val bitmap = selectCoverFrame(firstVideo.absolutePath)
+                    // extractThumbnail 已完成黑帧回退与 480 宽缩放
+                    val bitmap = MediaManger.extractThumbnail(firstVideo.absolutePath)
                     if (bitmap != null) {
-                        thumbFile.parentFile?.mkdirs()
-                        FileOutputStream(thumbFile).use { fos ->
-                            bitmap.compress(AppUtil.COMPRESS_FORMAT, 70, fos)
+                        try {
+                            thumbFile.parentFile?.mkdirs()
+                            FileOutputStream(thumbFile).use { fos ->
+                                bitmap.compress(AppUtil.COMPRESS_FORMAT, MediaManger.THUMB_QUALITY, fos)
+                            }
+                            media.showFile = thumbFile.absolutePath
+                            media.coverType = CoverType.AUTO
+                            coverUpdates[media.id] = thumbFile.absolutePath
+                        } finally {
+                            bitmap.recycle()
                         }
-                        bitmap.recycle()
-                        media.showFile = thumbFile.absolutePath
-                        media.coverType = CoverType.AUTO
-                        coverUpdates[media.id] = thumbFile.absolutePath
                     }
                 } catch (e: Exception) {
                     thumbFile.delete()
@@ -492,53 +491,8 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         }
     }
 
-    private fun selectCoverFrame(videoPath: String): Bitmap? {
-        val fallbackTimes = longArrayOf(0L, 1_000_000L, 3_000_000L)
-        for (timeUs in fallbackTimes) {
-            val bitmap = if (timeUs == 0L) {
-                MediaManger.getVideoFirstFrame(videoPath)
-            } else {
-                MediaManger.getVideoFrame(videoPath, timeUs)
-            } ?: continue
-            if (!isMostlyBlack(bitmap)) {
-                return bitmap
-            }
-            bitmap.recycle()
-        }
-        return null
-    }
-
-    private fun isUsableCoverThumb(thumbFile: File): Boolean {
-        val bitmap = BitmapFactory.decodeFile(thumbFile.absolutePath) ?: return false
-        return try {
-            !isMostlyBlack(bitmap)
-        } finally {
-            bitmap.recycle()
-        }
-    }
-
-    @SuppressLint("UseKtx")
-    @Suppress("KotlinConstantConditions")
-    private fun isMostlyBlack(bitmap: Bitmap): Boolean {
-        if (bitmap.width <= 0 || bitmap.height <= 0) return true
-        val sampleColumns = 12
-        val sampleRows = 12
-        var blackPixels = 0
-        var totalPixels = 0
-        for (row in 0 until sampleRows) {
-            val y = if (sampleRows == 1) 0 else row * (bitmap.height - 1) / (sampleRows - 1)
-            for (column in 0 until sampleColumns) {
-                val x = if (sampleColumns == 1) 0 else column * (bitmap.width - 1) / (sampleColumns - 1)
-                val pixel = bitmap.getPixel(x, y)
-                val luminance = (Color.red(pixel) * 54 + Color.green(pixel) * 183 + Color.blue(pixel) * 19) / 256
-                if (luminance < 24) {
-                    blackPixels++
-                }
-                totalPixels++
-            }
-        }
-        return blackPixels * 100 >= totalPixels * 85
-    }
+    // 黑帧判定与可用帧抽取已收敛到 ThumbQuality / MediaManger.extractThumbnail，
+    // 列表缩略图与媒体库封面共用同一算法、同一份 .thumb 缓存。
 
     private fun initView() {
         binding.cardMediaHistory.setOnClickListener {
@@ -1056,12 +1010,15 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         }
     }
 
+    /** 手动清空缩略图缓存；由设置页调用，不再在 init() 自动执行。 */
     fun clearCache() {
         lifecycleScope.launch(Dispatchers.IO) {
             if (!isAdded) return@launch
-            val file = File(requireContext().externalCacheDir, ".thumb")
-            if (file.exists() && file.canRead()) {
-                file.listFiles { it.name.endsWith(".jpg") }?.forEach { it.delete() }
+            val dir = File(requireContext().externalCacheDir, ".thumb")
+            if (dir.exists() && dir.canRead()) {
+                dir.listFiles { f ->
+                    f.name.endsWith(".${AppUtil.THUMB_TYPE}") || f.name.endsWith(".tmp")
+                }?.forEach { it.delete() }
             }
         }
     }

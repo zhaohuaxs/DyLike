@@ -38,6 +38,7 @@ import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.MediaManger
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.decodeHtmlEntities
+import me.lingci.dy.player.util.thumb.RemoteThumbSource
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.Log
@@ -157,7 +158,9 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             for (batch in thumbQueue) {
                 var generated = 0
                 for (video in batch) {
-                    if (video.type != StorageType.LOCAL_STORAGE) continue
+                    // HLS/DASH 清单抽不出帧；其余（本地 / WebDAV / SMB）统一走抽帧，
+                    // 远程库的列表缩略图因此不再依赖先播放一次。
+                    if (RemoteThumbSource.isManifest(video.videoUrl)) continue
                     MediaManger.scanVideoThumb(app, listOf(video))
                     generated++
                 }

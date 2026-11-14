@@ -1,12 +1,6 @@
 package me.lingci.dy.player.util
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color
-import android.media.MediaMetadataRetriever
-import android.annotation.SuppressLint
-import android.os.FileUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -30,7 +24,6 @@ object CoverProcessor {
             // CUSTOM 是用户自选封面，绝不覆盖
             if (media.coverType == CoverType.CUSTOM) continue
             // DEFAULT 是「允许自动匹配」的初始态，必须处理；AUTO 且已有值才跳过。
-            // 统一按「已有可用封面值」判断，避免把 DEFAULT 误当成已完成态。
             if (media.showFile.isNotBlank()) continue
 
             val coverFile = File(media.coverPath())
@@ -39,27 +32,27 @@ object CoverProcessor {
             val videos = FileOperator.getSortedFiles(File(media.path), FileOperator.VIDEO_EXTENSIONS)
             if (videos.isEmpty()) continue
 
-            val firstVideo = videos[0]
-            val videoData = VideoData(firstVideo)
+            val videoData = VideoData(videos[0])
             val thumbFile = AppUtil.buildThumbFile(appContext, videoData.md5())
 
-            if (thumbFile.exists()) {
-                if (isUsableCoverThumb(thumbFile)) {
-                    coverUpdates[media.id] = thumbFile.absolutePath
-                    continue
-                }
-                thumbFile.delete()
+            // 与列表缩略图共用同一份缓存和同一套黑帧判定，避免两条路径互相覆写
+            if (ThumbQuality.isUsableThumbFile(thumbFile)) {
+                coverUpdates[media.id] = thumbFile.absolutePath
+                continue
             }
+            thumbFile.delete()
 
             try {
-                val bitmap = selectCoverFrame(firstVideo.absolutePath)
-                if (bitmap != null) {
+                // extractThumbnail 已完成黑帧回退与 480 宽缩放，这里只负责落盘
+                val bitmap = MediaManger.extractThumbnail(videos[0].absolutePath) ?: continue
+                try {
                     thumbFile.parentFile?.mkdirs()
                     FileOutputStream(thumbFile).use { fos ->
-                        bitmap.compress(AppUtil.COMPRESS_FORMAT, 70, fos)
+                        bitmap.compress(AppUtil.COMPRESS_FORMAT, MediaManger.THUMB_QUALITY, fos)
                     }
-                    bitmap.recycle()
                     coverUpdates[media.id] = thumbFile.absolutePath
+                } finally {
+                    bitmap.recycle()
                 }
             } catch (e: Exception) {
                 thumbFile.delete()
@@ -76,53 +69,5 @@ object CoverProcessor {
                 }
             }
         }
-    }
-
-    private fun selectCoverFrame(videoPath: String): Bitmap? {
-        val fallbackTimes = longArrayOf(0L, 1_000_000L, 3_000_000L)
-        for (timeUs in fallbackTimes) {
-            val bitmap = if (timeUs == 0L) {
-                MediaManger.getVideoFirstFrame(videoPath)
-            } else {
-                MediaManger.getVideoFrame(videoPath, timeUs)
-            } ?: continue
-            if (!isMostlyBlack(bitmap)) {
-                return bitmap
-            }
-            bitmap.recycle()
-        }
-        return null
-    }
-
-    private fun isUsableCoverThumb(thumbFile: File): Boolean {
-        val bitmap = BitmapFactory.decodeFile(thumbFile.absolutePath) ?: return false
-        return try {
-            !isMostlyBlack(bitmap)
-        } finally {
-            bitmap.recycle()
-        }
-    }
-
-    @SuppressLint("UseKtx")
-    @Suppress("KotlinConstantConditions")
-    private fun isMostlyBlack(bitmap: Bitmap): Boolean {
-        if (bitmap.width <= 0 || bitmap.height <= 0) return true
-        val sampleColumns = 12
-        val sampleRows = 12
-        var blackPixels = 0
-        var totalPixels = 0
-        for (row in 0 until sampleRows) {
-            val y = if (sampleRows == 1) 0 else row * (bitmap.height - 1) / (sampleRows - 1)
-            for (column in 0 until sampleColumns) {
-                val x = if (sampleColumns == 1) 0 else column * (bitmap.width - 1) / (sampleColumns - 1)
-                val pixel = bitmap.getPixel(x, y)
-                val luminance = (Color.red(pixel) * 54 + Color.green(pixel) * 183 + Color.blue(pixel) * 19) / 256
-                if (luminance < 24) {
-                    blackPixels++
-                }
-                totalPixels++
-            }
-        }
-        return blackPixels * 100 >= totalPixels * 85
     }
 }

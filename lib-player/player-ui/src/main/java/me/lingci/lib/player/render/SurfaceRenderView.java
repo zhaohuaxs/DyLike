@@ -3,12 +3,18 @@ package me.lingci.lib.player.render;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.AttributeSet;
+import android.view.PixelCopy;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 
 import androidx.annotation.NonNull;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 import xyz.doikki.videoplayer.render.IRenderView;
@@ -84,7 +90,48 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
 
     @Override
     public Bitmap doScreenShot() {
-        return null;
+        // PixelCopy 从 SurfaceView 的实际显示内容抓帧，不依赖播放器内核，Exo / mpv 都适用。
+        // 旧实现直接 return null，导致开启「SurfaceView 渲染」后缩略图与手动截图必然失败。
+        // 必须在后台线程调用：发起要 post 到主线程，主线程自己 await 会死等。
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return null;
+        }
+        final int w = getWidth();
+        final int h = getHeight();
+        if (w <= 0 || h <= 0 || !isAttachedToWindow()) {
+            return null;
+        }
+        final Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        final CountDownLatch latch = new CountDownLatch(1);
+        final boolean[] success = new boolean[1];
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    PixelCopy.request(SurfaceRenderView.this, bitmap,
+                            new PixelCopy.OnPixelCopyFinishedListener() {
+                                @Override
+                                public void onPixelCopyFinished(int copyResult) {
+                                    success[0] = copyResult == PixelCopy.SUCCESS;
+                                    latch.countDown();
+                                }
+                            }, new Handler(Looper.getMainLooper()));
+                } catch (Throwable ignored) {
+                    // 抓帧失败不应影响播放，交给调用方按 null 兜底
+                    latch.countDown();
+                }
+            }
+        });
+        try {
+            if (!latch.await(500, TimeUnit.MILLISECONDS) || !success[0]) {
+                bitmap.recycle();
+                return null;
+            }
+        } catch (InterruptedException e) {
+            bitmap.recycle();
+            return null;
+        }
+        return bitmap;
     }
 
     @Override

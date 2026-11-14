@@ -12,6 +12,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import `is`.xyz.mpv.MPV
+import `is`.xyz.mpv.MPVNode
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.player.mpv.MpvMediaPlayer
@@ -19,6 +20,7 @@ import xyz.doikki.videoplayer.player.AbstractPlayer
 import xyz.doikki.videoplayer.render.IRenderView
 import xyz.doikki.videoplayer.render.MeasureHelper
 import me.lingci.lib.player.util.SurfaceRenderTrace
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.concurrent.CountDownLatch
 import java.util.Date
@@ -34,6 +36,7 @@ class MpvSurfaceRenderView(
     private var mIsReleased = false
     private var mHasBoundDisplay = false
     private var screenshotOptionsConfigured = false
+    private var swScreenshotConfigured = false
 
     var mpv: MPV?= null
 
@@ -89,45 +92,131 @@ class MpvSurfaceRenderView(
             Log.d("MpvSurfaceRenderView", "MPV is not initialized, cannot take screenshot")
             return null
         }
+        // screenshot-raw 走 mpv_command_node，调用返回时像素已经在手里：
+        // 不落盘、不做 PNG 编码/解码，也不再依赖「起播 1s 时 VO 是否已有帧」之外的时序。
+        // 失败（VO 无帧 / 格式不支持）再回退到 screenshot-to-file。
+        screenshotRaw(player)?.let { return it }
+        return screenshotToFile(player)
+    }
 
-        try {
-            // 创建临时文件保存截图
-            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val screenshotFile =
-                FileOperator.buildPictureFile("DyLike", "Mpv_Screenshot_$timeStamp.png")
-            val screenshotDir =
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES + "/DyLike/")
-            if (screenshotDir.exists().not()) {
-                screenshotDir.mkdirs()
+    /**
+     * 用 `screenshot-raw` 同步取一帧。
+     *
+     * 返回 node 结构为 `{w, h, stride, format, data}`；format 常见 `rgb0`（每像素 4 字节、
+     * alpha 恒 0）、`bgr0`、`rgba`/`bgra`，24 位时是 `rgb24`/`bgr24`。stride 可能大于
+     * width*bpp，所以按行偏移读。
+     */
+    private fun screenshotRaw(player: MPV): Bitmap? {
+        // mpv 的 command 系列在本项目里统一从主线程投递：直接在 IO 线程调 commandNode
+        // 拿不到结果（实测静默返回 null，随后退回 screenshot-to-file）。这里 post 到主线程
+        // 执行，再用 latch 把 node 同步回调用线程。
+        val holder = arrayOfNulls<MPVNode>(1)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            enableSwScreenshot(player)
+            holder[0] = runCatching { player.commandNode("screenshot-raw", "video") }.getOrNull()
+        } else {
+            val latch = CountDownLatch(1)
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    enableSwScreenshot(player)
+                    holder[0] = player.commandNode("screenshot-raw", "video")
+                } catch (t: Throwable) {
+                    Log.d("MpvSurfaceRenderView", "screenshot-raw invoke failed: ${t.message}")
+                } finally {
+                    latch.countDown()
+                }
             }
+            val done = try {
+                latch.await(800, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (e: InterruptedException) {
+                false
+            }
+            if (!done) {
+                Log.d("MpvSurfaceRenderView", "screenshot-raw dispatch timeout")
+                return null
+            }
+        }
 
-            Log.d(
-                this,
-                "screenshot-directory", player.getPropertyString("screenshot-directory"),
-                "screenshot-dir", player.getPropertyString("screenshot-dir"),
-                "screenshot-template", player.getPropertyString("screenshot-template"),
-                screenshotDir.path
+        val node = holder[0]
+        if (node == null) {
+            Log.d("MpvSurfaceRenderView", "screenshot-raw returned null")
+            return null
+        }
+        return try {
+            val width = node.get("w")?.asInt()?.toInt()
+            val height = node.get("h")?.asInt()?.toInt()
+            val data = node.get("data")?.asByteArray()
+            if (width == null || height == null || data == null) {
+                Log.d("MpvSurfaceRenderView", "screenshot-raw missing fields keys=${node.keys()}")
+                return null
+            }
+            val stride = node.get("stride")?.asInt()?.toInt() ?: (width * 4)
+            val format = node.get("format")?.asString()?.lowercase(Locale.US) ?: "rgb0"
+            if (width <= 0 || height <= 0 || stride <= 0) return null
+
+            val bpp = if (format.startsWith("rgb24") || format.startsWith("bgr24")) 3 else 4
+            if (data.size < stride * (height - 1) + width * bpp) {
+                Log.d("MpvSurfaceRenderView", "screenshot-raw short buffer size=${data.size} fmt=$format")
+                return null
+            }
+            val swapRedBlue = format.startsWith("bgr")
+            val pixels = IntArray(width * height)
+            for (y in 0 until height) {
+                var src = y * stride
+                var dst = y * width
+                val end = dst + width
+                while (dst < end) {
+                    val c0 = data[src].toInt() and 0xFF
+                    val c1 = data[src + 1].toInt() and 0xFF
+                    val c2 = data[src + 2].toInt() and 0xFF
+                    // rgb0/bgr0 的 alpha 恒为 0，直接当不透明处理
+                    val alpha = if (bpp == 4) {
+                        (data[src + 3].toInt() and 0xFF).let { if (it == 0) 0xFF else it }
+                    } else {
+                        0xFF
+                    }
+                    val r = if (swapRedBlue) c2 else c0
+                    val b = if (swapRedBlue) c0 else c2
+                    pixels[dst] = (alpha shl 24) or (r shl 16) or (c1 shl 8) or b
+                    src += bpp
+                    dst++
+                }
+            }
+            Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888).also {
+                Log.d(this, "screenshotRaw", width, height, format, stride)
+            }
+        } catch (t: Throwable) {
+            Log.d("MpvSurfaceRenderView", "screenshot-raw failed: ${t.message}")
+            null
+        }
+    }
+
+    /**
+     * gpu-next 下部分 mpv 构建的 screenshot-raw 只返回 `{w,h,format,stride}`、不带 `data` 像素，
+     * 打开软截图（`screenshot-sw`）后才会走 CPU 读回并填充 data。只设一次。
+     */
+    private fun enableSwScreenshot(player: MPV) {
+        if (swScreenshotConfigured) return
+        runCatching { player.setPropertyString("screenshot-sw", "yes") }
+            .onFailure { Log.d("MpvSurfaceRenderView", "enable screenshot-sw failed: ${it.message}") }
+        swScreenshotConfigured = true
+    }
+
+    /** 兜底：命令投递 + 文件轮询。命令本身异步，最多等 500ms。 */
+    private fun screenshotToFile(player: MPV): Bitmap? {
+        try {
+            // 缩略图临时文件写应用私有缓存：免存储权限、不污染相册，读写也更快
+            val screenshotFile = File(
+                context.cacheDir,
+                "mpv-shot-${System.currentTimeMillis()}.png"
             )
-            //mpv?.setOptionString("screenshot-directory", screenshotDir.path)
-            // 0: 最快（压缩率最低，文件最大）1: 快速（压缩率略高，文件略小） 6: 默认值（平衡速度和压缩率）
-            // 9: 最佳（压缩率最高，文件最小，但耗时最长）
-            //mpv?.setOptionString("screenshot-png-compression", "9")
-            //mpv?.setOptionString("screenshot-png-filter", "5")
-            //mpv?.setOptionString("screenshot-format", "png")
-            // --- 优化体积的关键配置 ---
+            screenshotFile.parentFile?.mkdirs()
             player.setOptionString("screenshot-format", "png")
             if (!screenshotOptionsConfigured) {
-                player.setOptionString("screenshot-png-compression", "7") // 提高压缩率
-                player.setOptionString("screenshot-png-filter", "5")      // 优化过滤
+                player.setOptionString("screenshot-png-compression", "7")
+                player.setOptionString("screenshot-png-filter", "5")
                 screenshotOptionsConfigured = true
             }
-            //mpv?.setOptionString("screenshot-high-bit-depth", "no") // 强制8bit
-            //mpv?.setOptionString("screenshot-tag-colorspace", "no") // 忽略色彩空间
-            // mpv-shot%n
-            //mpv?.setOptionString("screenshot-template", "Mpv_Screenshot_%h_%p")
-            // 使用MPV的截图命令
-            //mpv?.command("screenshot", "video")
-            //mpv?.setOptionString("screenshot-jpeg-quality", "100")
             // MPV command 必须在主线程投递；调用方一般在 IO 线程，用 latch 同步等待命令提交完成。
             // 命令本身只触发 native 截图，不等待文件落盘——文件轮询在调用线程做。
             if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -154,12 +243,16 @@ class MpvSurfaceRenderView(
                 return null
             }
 
-            repeat(10) {
+            // PNG 编码 1080p 约 100~300ms，给到 1s；读完即删，不占缓存
+            repeat(20) {
                 if (screenshotFile.exists() && screenshotFile.length() > 0L) {
-                    return BitmapFactory.decodeFile(screenshotFile.path)
+                    val bitmap = BitmapFactory.decodeFile(screenshotFile.path)
+                    screenshotFile.delete()
+                    return bitmap
                 }
                 Thread.sleep(50)
             }
+            screenshotFile.delete()
             Log.d("MpvSurfaceRenderView", "Screenshot file not created or empty")
         } catch (e: Exception) {
             Log.d("MpvSurfaceRenderView", "Error taking screenshot: ${e.message}")

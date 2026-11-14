@@ -51,8 +51,8 @@ import java.util.Locale
 // ---------- 播放与进度 ----------
 
 fun LazyListScope.playbackSettings(
-    state: PlayerSettingsState,
-    onChange: (PlayerSettingsState) -> Unit,
+    state: PlaybackSettingsState,
+    onChange: (PlaybackSettingsState) -> Unit,
     /** 打开「后台播放」时请求通知权限（API 33+），否则用户开了也看不到媒体通知 */
     onBackgroundPlayEnabled: () -> Unit
 ) {
@@ -63,38 +63,14 @@ fun LazyListScope.playbackSettings(
             state.longVideoMode
         ) { onChange(state.copy(longVideoMode = it)) }
     }
+    item { GroupLabel(stringResource(R.string.settings_section_short_video)) }
     item {
         ToggleRow(
-            stringResource(R.string.hint_auto_next),
-            stringResource(R.string.hint_auto_next_desc),
-            state.autoNext
-        ) { onChange(state.copy(autoNext = it)) }
+            stringResource(R.string.hint_short_random),
+            stringResource(R.string.hint_short_random_desc),
+            state.shortRandom
+        ) { onChange(state.copy(shortRandom = it)) }
     }
-    item {
-        ToggleRow(
-            stringResource(R.string.hint_loop_list),
-            stringResource(R.string.hint_loop_list_desc),
-            state.loopList
-        ) { onChange(state.copy(loopList = it)) }
-    }
-    item {
-        ToggleRow(
-            stringResource(R.string.hint_long_video_pip),
-            stringResource(R.string.hint_long_video_pip_desc),
-            state.longVideoPip
-        ) { onChange(state.copy(longVideoPip = it)) }
-    }
-    item {
-        ToggleRow(
-            stringResource(R.string.hint_long_video_bg_play),
-            stringResource(R.string.hint_long_video_bg_play_desc),
-            state.longVideoBackgroundPlay
-        ) { on ->
-            onChange(state.copy(longVideoBackgroundPlay = on))
-            if (on) onBackgroundPlayEnabled()
-        }
-    }
-
     item { GroupLabel(stringResource(R.string.settings_section_audio)) }
     item {
         ToggleRow(
@@ -127,14 +103,40 @@ fun LazyListScope.playbackSettings(
         ) { onChange(state.copy(audioFadeOutDuration = it)) }
     }
 
-    item { GroupLabel(stringResource(R.string.settings_section_short_video)) }
+    // 音频之后才是长视频其余项：短视频与音频排在长视频分组下方，
+    // 第一个开关自带「长视频模式」标题，这里不再重复同名的分组标签
     item {
         ToggleRow(
-            stringResource(R.string.hint_short_random),
-            stringResource(R.string.hint_short_random_desc),
-            state.shortRandom
-        ) { onChange(state.copy(shortRandom = it)) }
+            stringResource(R.string.hint_auto_next),
+            stringResource(R.string.hint_auto_next_desc),
+            state.autoNext
+        ) { onChange(state.copy(autoNext = it)) }
     }
+    item {
+        ToggleRow(
+            stringResource(R.string.hint_loop_list),
+            stringResource(R.string.hint_loop_list_desc),
+            state.loopList
+        ) { onChange(state.copy(loopList = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.hint_long_video_pip),
+            stringResource(R.string.hint_long_video_pip_desc),
+            state.longVideoPip
+        ) { onChange(state.copy(longVideoPip = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.hint_long_video_bg_play),
+            stringResource(R.string.hint_long_video_bg_play_desc),
+            state.longVideoBackgroundPlay
+        ) { on ->
+            onChange(state.copy(longVideoBackgroundPlay = on))
+            if (on) onBackgroundPlayEnabled()
+        }
+    }
+
 }
 
 @Composable
@@ -318,11 +320,11 @@ fun LazyListScope.kernelSettings(
     item { SettingsNoteLine(stringResource(R.string.settings_kernel_note)) }
 }
 
-// ---------- 资源库与显示 ----------
+// ---------- 媒体库与显示 ----------
 
 fun LazyListScope.librarySettings(
-    state: PlayerSettingsState,
-    onChange: (PlayerSettingsState) -> Unit
+    state: LibrarySettingsState,
+    onChange: (LibrarySettingsState) -> Unit
 ) {
     item {
         ToggleRow(
@@ -339,6 +341,7 @@ fun LazyListScope.librarySettings(
             selected = state.coverRatio
         ) { onChange(state.copy(coverRatio = it)) }
     }
+
 }
 
 // ---------- 弹幕 ----------
@@ -679,7 +682,7 @@ private fun SettingsSectionsPreview() {
         LazyColumn {
             item { GroupLabel("播放与进度") }
             playbackSettings(
-                state = PlayerSettingsState(audioFadeEnabled = true),
+                state = PlaybackSettingsState(audioFadeEnabled = true),
                 onChange = {},
                 onBackgroundPlayEnabled = {}
             )

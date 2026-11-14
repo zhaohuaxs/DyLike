@@ -4,16 +4,14 @@ import androidx.compose.runtime.Immutable
 import me.lingci.dy.player.core.DyPlayerCore
 
 /**
- * 播放与资源库偏好。
+ * 播放偏好（不含媒体库与显示，后者见 [LibrarySettingsState]）。
  *
- * 一份状态，两处入口：设置里的「播放与进度」「资源库与显示」与「我的」页共用同一次写入，
- * 所以字段名直接对齐 [me.lingci.dy.player.util.SpUtil] 的属性，默认值必须与 SP 声明一致，
+ * 字段名直接对齐 [me.lingci.dy.player.util.SpUtil] 的属性，默认值必须与 SP 声明一致，
  * 否则首帧会短暂显示错误状态。
  */
 @Immutable
-data class PlayerSettingsState(
+data class PlaybackSettingsState(
     val longVideoMode: Boolean = true,
-    val videoDetailMode: Boolean = false,
     val autoNext: Boolean = true,
     val loopList: Boolean = true,
     val longVideoPip: Boolean = true,
@@ -21,8 +19,15 @@ data class PlayerSettingsState(
     val audioFadeEnabled: Boolean = false,
     val audioFadeInDuration: Int = 1000,
     val audioFadeOutDuration: Int = 1000,
-    val shortRandom: Boolean = true,
-    val coverRatio: String = "3:4"
+    val shortRandom: Boolean = true
+)
+
+/** 媒体库与显示偏好：媒体库详情页、封面比例、新首页 UI 开关；与 [PlaybackSettingsState] 共用同一个 SP 写入入口 */
+@Immutable
+data class LibrarySettingsState(
+    val videoDetailMode: Boolean = false,
+    val coverRatio: String = "3:4",
+    val launchComposeHome: Boolean = false
 )
 
 /** Exo 网络路线：系统默认数据源 vs OkHttp（旧 useOkhttp 布尔开关的语义化表达） */
@@ -114,7 +119,8 @@ data class LabSettingsState(
 
 @Immutable
 data class SettingsState(
-    val player: PlayerSettingsState = PlayerSettingsState(),
+    val player: PlaybackSettingsState = PlaybackSettingsState(),
+    val library: LibrarySettingsState = LibrarySettingsState(),
     val kernel: KernelSettingsState = KernelSettingsState(),
     val danmaku: DanmakuSettingsState = DanmakuSettingsState(),
     val lab: LabSettingsState = LabSettingsState()

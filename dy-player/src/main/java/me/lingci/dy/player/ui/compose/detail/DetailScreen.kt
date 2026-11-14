@@ -31,7 +31,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
@@ -761,15 +760,6 @@ private fun ShortCard(
     val c = LocalDyLikeColors.current
     val shape = RoundedCornerShape(8.dp)
     val playLabel = stringResource(R.string.cd_play)
-    // 渐变不随状态变化，remember 掉，避免每次重组重新分配 colorStops 数组
-    val scrim = remember {
-        Brush.verticalGradient(
-            colorStops = arrayOf(
-                0.6f to Color.Transparent,
-                1f to Color.Black.copy(alpha = 0.5f)
-            )
-        )
-    }
 
     Column(
         Modifier.fillMaxWidth().clip(shape)
@@ -786,22 +776,16 @@ private fun ShortCard(
                     else Modifier
                 )
         ) {
+            // 占位图保持纯色块：原来这里居中画了播放图标，缩略图尚未生成时整屏都是图标，
+            // 比纯色底更抓眼；卡片本身已可点击（有 onClickLabel），图标没有额外汇报
             ThumbImage(
                 path = card.thumbPath,
                 modifier = Modifier.fillMaxSize(),
                 // 缩略图是后补的（生成晚于首帧）时，卡片高度不会跟着变，这里用 Crop 填满而不是留黑边
                 contentScale = ContentScale.Crop
-            ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Default.PlayCircle,
-                        null,
-                        tint = c.textTertiary,
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
-            }
-            Box(Modifier.fillMaxSize().background(scrim))
+            )
+            // 卡片标题在图片下方，图上只可能有左上角的「上次播放」角标，原先压在缩略图底部的
+            // 黑色渐变蒙层不承载任何文案，只会让缩略图整体发暗（纯色占位图上尤其明显），已移除
             if (isLastPlayed) {
                 Surface(
                     shape = RoundedCornerShape(6.dp),
