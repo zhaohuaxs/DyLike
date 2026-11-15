@@ -115,7 +115,10 @@ class MediaLinkAddViewModel(app: Application) : AndroidViewModel(app) {
                 send(MediaLinkEvent.Message(R.string.hint_media_link_unparsed))
                 return@launch
             }
-            working = parsed
+            // 编辑态重新解析：保留原 id，落库走 updateMedia 按 id 读改写；
+            // 沿用解析出的新 id 会让编辑变成「找不到原行」
+            val keepId = if (_state.value.isEdit) working?.id.orEmpty() else ""
+            working = parsed.apply { if (keepId.isNotBlank()) id = keepId }
             videos = parsed.items
             _state.update {
                 it.copy(

@@ -455,6 +455,49 @@
                     tools:ignore="MissingConstraints" />
             </androidx.constraintlayout.widget.ConstraintLayout>
 
+            <androidx.constraintlayout.widget.ConstraintLayout
+                android:id="@+id/lab_cover_show_hidden"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="@dimen/dp32"
+                android:paddingTop="@dimen/dp8"
+                android:paddingEnd="@dimen/dp16"
+                android:paddingBottom="@dimen/dp8"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/lab_short_auto_load_progress">
+
+                <TextView
+                    android:id="@+id/tv_lab_cover_show_hidden"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/hint_lab_cover_show_hidden"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="18sp"
+                    app:layout_constraintBottom_toTopOf="@id/tv_lab_cover_show_hidden_desc"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toTopOf="parent" />
+
+                <TextView
+                    android:id="@+id/tv_lab_cover_show_hidden_desc"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="12sp"
+                    android:text="@string/hint_lab_cover_show_hidden_desc"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintStart_toStartOf="parent"
+                    app:layout_constraintTop_toBottomOf="@id/tv_lab_cover_show_hidden" />
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/sw_lab_cover_show_hidden"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:layout_constraintBottom_toBottomOf="parent"
+                    app:layout_constraintEnd_toEndOf="parent"
+                    app:layout_constraintTop_toTopOf="parent"
+                    tools:ignore="MissingConstraints" />
+            </androidx.constraintlayout.widget.ConstraintLayout>
+
             <!-- 数据迁移入口：仅当 app_meta 无迁移完成标记时显示（代码控制 visibility） -->
             <androidx.constraintlayout.widget.ConstraintLayout
                 android:id="@+id/lab_migration"
@@ -468,7 +511,7 @@
                 android:visibility="gone"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/lab_short_auto_load_progress"
+                app:layout_constraintTop_toBottomOf="@+id/lab_cover_show_hidden"
                 tools:visibility="visible">
 
                 <TextView

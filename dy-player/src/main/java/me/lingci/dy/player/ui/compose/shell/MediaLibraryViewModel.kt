@@ -61,33 +61,52 @@ class MediaLibraryViewModel(app: Application) : AndroidViewModel(app) {
         _firstScanPending.value = false
     }
 
-    /** 新建 / 编辑本地媒体库：新增时扫目录建分集，编辑时不动既有分集（父行删改由 FK CASCADE 清理） */
-    fun saveLocal(media: MediaData, update: Boolean) {
+    /** 新增本地媒体库：扫目录建分集；判重命中提示已存在 */
+    fun addLocal(media: MediaData) {
         viewModelScope.launch {
             val sourceList = sourceDao.list()
             if (media.id.isBlank()) {
                 media.id = LibraryCompat.mediaId(media, sourceList)
             }
-            val items = when {
-                media.items.isNotEmpty() -> media.items
-                update -> emptyList()
-                else -> scanLocalItems(media.path)
-            }
-            val result = LibraryCompat.saveMedia(media, sourceList, items, isEdit = update)
+            val items = if (media.items.isNotEmpty()) media.items else scanLocalItems(media.path)
+            val result = LibraryCompat.insertMedia(media, sourceList, items)
             if (result == LibraryCompat.MediaSaveResult.Duplicate) {
                 _events.send(MediaLibraryEvent.Message(R.string.media_add_exist))
             }
         }
     }
 
-    /** 新建 / 编辑在线媒体库：分集来自解析结果，链接变更时按新集合重建 */
-    fun saveOnline(media: MediaData, updated: Boolean) {
+    /**
+     * 编辑媒体库（本地/远端共用）：不动既有分集，
+     * 读改写保留来源（type/storageType/storageId）与置顶/上次播放等运行时状态。
+     */
+    fun editMedia(media: MediaData) {
+        viewModelScope.launch {
+            val result = LibraryCompat.updateMedia(media, sourceDao.list())
+            if (result == LibraryCompat.MediaSaveResult.Duplicate) {
+                _events.send(MediaLibraryEvent.Message(R.string.media_add_exist))
+            }
+        }
+    }
+
+    /** 新增在线媒体库：分集来自解析结果 */
+    fun addOnline(media: MediaData) {
         viewModelScope.launch {
             val sourceList = sourceDao.list()
             if (media.id.isBlank()) {
                 media.id = LibraryCompat.mediaId(media, sourceList)
             }
-            val result = LibraryCompat.saveMedia(media, sourceList, media.items, isEdit = updated)
+            val result = LibraryCompat.insertMedia(media, sourceList, media.items)
+            if (result == LibraryCompat.MediaSaveResult.Duplicate) {
+                _events.send(MediaLibraryEvent.Message(R.string.media_add_exist))
+            }
+        }
+    }
+
+    /** 编辑在线媒体库：链接变更时按新集合重建分集 */
+    fun editOnline(media: MediaData) {
+        viewModelScope.launch {
+            val result = LibraryCompat.updateMedia(media, sourceDao.list(), media.items)
             if (result == LibraryCompat.MediaSaveResult.Duplicate) {
                 _events.send(MediaLibraryEvent.Message(R.string.media_add_exist))
             }
@@ -106,7 +125,7 @@ class MediaLibraryViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { MediaHelper.createMediaFromString(FileOperator.readText(path)) }.getOrNull()
             }
             if (media != null && media.items.isNotEmpty()) {
-                saveOnline(media, false)
+                addOnline(media)
             } else {
                 _events.send(MediaLibraryEvent.Message(R.string.media_add_failed))
             }

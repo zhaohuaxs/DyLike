@@ -155,6 +155,8 @@
     <string name="hint_lab_auto_play_on_launch_desc">可指定一个媒体库或播放列表App启动时自动播放</string>
     <string name="hint_lab_short_auto_load_progress">短视频自动加载进度</string>
     <string name="hint_lab_short_auto_load_progress_desc">开启后切换视频时恢复播放进度，关闭后从头播放</string>
+    <string name="hint_lab_cover_show_hidden">封面选取显示隐藏文件</string>
+    <string name="hint_lab_cover_show_hidden_desc">开启后选择封面时可进入隐藏目录、显示隐藏图片</string>
     <string name="hint_backup_data">备份数据</string>
     <string name="hint_backup_data_desc">备份媒体库、播放器记录等数据</string>
     <string name="hint_restore_data">还原数据</string>

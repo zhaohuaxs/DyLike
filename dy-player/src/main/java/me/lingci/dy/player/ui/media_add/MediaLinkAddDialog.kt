@@ -36,6 +36,8 @@ class MediaLinkAddDialog : BaseBottomDialog<DialogMediaLinkAddBinding>() {
     private lateinit var mediaDetailAdapter: MediaDetailAdapter
     private var mediaData: MediaData? = null
     private var updated: Boolean = false
+    // 编辑态重新解析时保留原 id：落库走 updateMedia 按 id 读改写，不能拿解析出的新 id
+    private var editingId: String = ""
     private var onSave: ((media: MediaData, updated: Boolean) -> Unit)? = null
 
     fun onSave(onSave: (media: MediaData, updated: Boolean) -> Unit) {
@@ -47,6 +49,7 @@ class MediaLinkAddDialog : BaseBottomDialog<DialogMediaLinkAddBinding>() {
         arguments?.let { bundle ->
             bundle.safeGetParcelable<MediaData>(TYPE_MEDIA)?.let { mediaData ->
                 binding.toolbar.title = "在线媒体库修改"
+                editingId = mediaData.id
                 // Room3：编辑既有媒体库时 items 为 @Ignore 字段（Room 读出恒为空），从 video_data 子表回填
                 viewLifecycleOwner.lifecycleScope.launch {
                     mediaData.items =
@@ -126,6 +129,9 @@ class MediaLinkAddDialog : BaseBottomDialog<DialogMediaLinkAddBinding>() {
             }
             val mediaData = MediaHelper.createMediaFromString(linkString)
             if (mediaData.items.isNotEmpty()) {
+                if (updated && editingId.isNotBlank()) {
+                    mediaData.id = editingId
+                }
                 initData(mediaData)
             } else {
                 binding.saveButton.visibility = View.GONE

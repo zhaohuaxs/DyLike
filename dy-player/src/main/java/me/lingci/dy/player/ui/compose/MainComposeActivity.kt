@@ -165,6 +165,8 @@ class MainComposeActivity : ComponentActivity() {
                                 editingOnlineMediaId = media.id
                                 showMediaLinkAddSheet = true
                             } else {
+                                // 本地/远端共用表单：远端库在表单内锁定目录，
+                                // 落库走读改写，来源（type/storageType/storageId）不会丢
                                 editingMediaId = media.id
                                 showMediaManagerSheet = true
                             }
@@ -182,7 +184,9 @@ class MainComposeActivity : ComponentActivity() {
                 if (showMediaManagerSheet) {
                     MediaManagerSheet(
                         editingMediaId = editingMediaId,
-                        onSave = mediaVm::saveLocal,
+                        onSave = { media, update ->
+                            if (update) mediaVm.editMedia(media) else mediaVm.addLocal(media)
+                        },
                         onDismiss = { showMediaManagerSheet = false }
                     )
                 }
@@ -190,7 +194,9 @@ class MainComposeActivity : ComponentActivity() {
                 if (showMediaLinkAddSheet) {
                     MediaLinkAddSheet(
                         editingMediaId = editingOnlineMediaId,
-                        onSave = mediaVm::saveOnline,
+                        onSave = { media, update ->
+                            if (update) mediaVm.editOnline(media) else mediaVm.addOnline(media)
+                        },
                         onDismiss = { showMediaLinkAddSheet = false }
                     )
                 }

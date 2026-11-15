@@ -223,7 +223,7 @@ object LibraryCompat {
         return type == MediaLibType.WEBDAV || type == MediaLibType.SMB
     }
 
-    // ---- 媒体入库（新增 / 编辑 / 扫描共用唯一入口）----
+    // ---- 媒体入库（新增 / 编辑分开的两个唯一入口）----
 
     enum class MediaSaveResult {
         /** 新增成功 */
@@ -232,48 +232,89 @@ object LibraryCompat {
         /** 编辑成功 */
         Updated,
 
-        /** 库内已存在同一媒体（新增场景） */
-        Duplicate
+        /** 库内已存在同一媒体 */
+        Duplicate,
+
+        /** 编辑的目标行不存在（弹窗期间被并发删除） */
+        NotFound
     }
 
     /**
-     * 媒体库写入唯一入口。
+     * 媒体库新增唯一入口。
      *
-     * 取代此前散落在各处的「list 前 200 条去重 + delete 再 insert」写法，统一处理三件事：
-     * ① 去重覆盖**全库**（`listLibrary()`），不受分页影响；
-     * ② 编辑走 upsert 而非 delete+insert —— `video_data.media_id` 是 FK CASCADE，
-     *    先删父行会把该媒体的分集全部级联删除，而编辑场景没有 items 可重建；
-     * ③ 分集重建只删「确实消失」的条目（按 beanId 比对），避免 favorite / playlist_item
-     *    的外键 CASCADE 连带清空用户收藏。
+     * 去重覆盖**全库**（`listLibrary()`），不受分页影响；命中同源记录返回 Duplicate，
+     * 由调用方提示「已存在」。分集随父行一起落库（扫描/导入场景）。
      *
-     * @param items 需要落库的分集（扫描/导入场景）；为空表示不动分集
-     * @param isEdit true 表示编辑已有媒体，命中另一条同源记录时归并到该记录 id
+     * @param items 需要落库的分集；为空表示只建父行
      */
-    suspend fun saveMedia(
+    suspend fun insertMedia(
         media: MediaData,
         sources: List<SourceData>,
-        items: List<VideoData> = emptyList(),
-        isEdit: Boolean = false
+        items: List<VideoData> = emptyList()
     ): MediaSaveResult {
         val mediaDao = DatabaseManager.mediaDataDao
-        val videoDao = DatabaseManager.videoDataDao
-
         if (media.id.isBlank()) {
             media.id = buildStableMediaId(media, sources)
         }
-
-        // 全库比对，排除自身；不能再用「前 N 条」快照，否则超出部分永远判不出重复
         val duplicate = mediaDao.listLibrary().firstOrNull {
             it.id != media.id && sameMedia(it, media, sources)
         }
-        if (!isEdit && duplicate != null) {
+        if (duplicate != null) {
             return MediaSaveResult.Duplicate
         }
-        if (isEdit && duplicate != null) {
-            // 改名/改路径后稳定 id 变化，归并到库内既有那条，避免同一媒体出现两行
-            media.id = duplicate.id
-        }
+        writeMedia(media, items)
+        return MediaSaveResult.Inserted
+    }
 
+    /**
+     * 媒体库编辑唯一入口，与新增完全分离。
+     *
+     * 读改写：以库内行为底，只覆盖表单字段（标题/路径/封面/加载模式/playType），
+     * 来源（type/storageType/storageId）与运行时状态（置顶/上次播放/OP/ED 偏移/排序等）
+     * 一律保留——拿表单新建的实体整行 upsert 会把这些字段全部清零，
+     * 远端库还会被误转成本地库。
+     *
+     * 不做跨行归并：编辑后与另一条同源记录冲突时返回 Duplicate 交由调用方提示，
+     * 避免「归并到对方 id 但原行残留」造成双行与分集错位。
+     *
+     * @param items 需要重建的分集（在线编辑）；为空表示不动分集
+     */
+    suspend fun updateMedia(
+        media: MediaData,
+        sources: List<SourceData>,
+        items: List<VideoData> = emptyList()
+    ): MediaSaveResult {
+        val mediaDao = DatabaseManager.mediaDataDao
+        val existing = mediaDao.getById(media.id) ?: return MediaSaveResult.NotFound
+        existing.title = media.title
+        existing.path = media.path
+        existing.coverType = media.coverType
+        existing.showFile = media.showFile
+        existing.playMode = media.playMode
+        existing.playType = media.playType
+        // items 是 @Ignore 字段，仅供 sameMedia 的 ONLINE 判重使用，不落库
+        existing.items = media.items
+        val duplicate = mediaDao.listLibrary().firstOrNull {
+            it.id != existing.id && sameMedia(it, existing, sources)
+        }
+        if (duplicate != null) {
+            return MediaSaveResult.Duplicate
+        }
+        writeMedia(existing, items)
+        return MediaSaveResult.Updated
+    }
+
+    /**
+     * 父行 + 分集落库（新增/编辑共用）。
+     *
+     * 编辑走 upsert 而非 delete+insert —— `video_data.media_id` 是 FK CASCADE，
+     * 先删父行会把该媒体的分集全部级联删除，而编辑场景没有 items 可重建；
+     * 分集重建只删「确实消失」的条目（按 beanId 比对），避免 favorite / playlist_item
+     * 的外键 CASCADE 连带清空用户收藏。
+     */
+    private suspend fun writeMedia(media: MediaData, items: List<VideoData>) {
+        val mediaDao = DatabaseManager.mediaDataDao
+        val videoDao = DatabaseManager.videoDataDao
         val normalized = if (items.isEmpty()) {
             emptyList()
         } else {
@@ -301,8 +342,6 @@ object LibraryCompat {
                 videoDao.upsertAll(normalized)
             }
         }
-
-        return if (isEdit) MediaSaveResult.Updated else MediaSaveResult.Inserted
     }
 
     /** 按同源规则在**全库**中定位已存在的媒体（编辑页回填、导入查重共用） */

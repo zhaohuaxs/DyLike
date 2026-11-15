@@ -515,6 +515,13 @@ fun LazyListScope.labSettings(
     }
     item {
         ToggleRow(
+            stringResource(R.string.hint_lab_cover_show_hidden),
+            stringResource(R.string.hint_lab_cover_show_hidden_desc),
+            state.coverShowHidden
+        ) { onChange(state.copy(coverShowHidden = it)) }
+    }
+    item {
+        ToggleRow(
             stringResource(R.string.hint_debug_mode),
             stringResource(R.string.hint_debug_mode_desc),
             state.debugMode

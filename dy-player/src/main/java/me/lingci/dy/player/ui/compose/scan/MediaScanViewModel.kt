@@ -171,7 +171,7 @@ class MediaScanViewModel(app: Application) : AndroidViewModel(app) {
                     val items = FileOperator
                         .getSortedFiles(File(folder.path), FileOperator.VIDEO_EXTENSIONS)
                         .map { VideoData(it) }
-                    val result = LibraryCompat.saveMedia(media, sourceList, items, isEdit = false)
+                    val result = LibraryCompat.insertMedia(media, sourceList, items)
                     if (result == LibraryCompat.MediaSaveResult.Inserted) {
                         added++
                     }

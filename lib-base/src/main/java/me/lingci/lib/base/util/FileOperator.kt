@@ -204,22 +204,41 @@ object FileOperator {
         folderTop: Boolean,
         extensions: ArrayList<String>
     ): List<File> {
+        return getSortedFiles(folder, folderTop, extensions, false)
+    }
+
+    /**
+     * includeHidden=true 时不过滤点开头的目录与文件（封面选取的实验室开关），
+     * 默认 false 与历史行为一致。
+     */
+    @JvmStatic
+    fun getSortedFiles(
+        folder: File,
+        folderTop: Boolean,
+        extensions: ArrayList<String>,
+        includeHidden: Boolean
+    ): List<File> {
         if (folder.canRead().not() || folder.isFile) {
             return emptyList()
         }
         val allFiles = folder.listFiles()?.toList() ?: emptyList()
 
         // 筛选出指定文件
-        val files = allFiles.filter { it.extensionFile(extensions) }
-            .sortedWith(fileNameComparator())
+        val files = allFiles.filter {
+            if (includeHidden) {
+                !it.isDirectory &&
+                    (extensions.isEmpty() || extensions.any { ext -> it.name.lowercase().endsWith(ext) })
+            } else {
+                it.extensionFile(extensions)
+            }
+        }.sortedWith(fileNameComparator())
 
-        val folders =
-            allFiles.filter { it.isDirectory && !it.startDot() && !it.noChild() }.sortedWith(
-                fileNameComparator()
-            )
+        val folders = allFiles.filter {
+            it.isDirectory && (includeHidden || !it.startDot()) && !it.noChild()
+        }.sortedWith(fileNameComparator())
 
         return if (folderTop) {
-            folders + files;
+            folders + files
         } else {
             files + folders
         }

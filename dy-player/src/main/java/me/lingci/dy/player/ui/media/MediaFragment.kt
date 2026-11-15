@@ -517,29 +517,21 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
         // 本地媒体库管理
         mediaManagerDialog = MediaManagerDialog.newInstance(null) { media, update ->
             Log.d(this@MediaFragment, "media", media, "update", update)
-            /*if (!update && media.path == FileOperator.movieFolder.path) {
-                ToastUtil.showToast(requireContext(), "媒体库已存在")
-                return@newInstance
-            }*/
             lifecycleScope.launch {
-                // Room3：sources/media 改为 DAO 异步读取
+                // Room3：sources 改为 DAO 异步读取；新增/编辑走分离入口，
+                // 编辑读改写保留来源与运行时状态，不再 delete 再 insert（FK 级联会清分集）
                 val sourceList = DatabaseManager.sourceDataDao.list()
                 if (media.id.isBlank()) {
                     media.id = LibraryCompat.mediaId(media, sourceList)
                 }
-                // sameMedia 语义查重：命中时按 update 语义覆盖，否则提示已存在
-                val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
-                val index = list.indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
-                if (index != -1 && update.not()) {
+                val result = if (update) {
+                    LibraryCompat.updateMedia(media, sourceList)
+                } else {
+                    LibraryCompat.insertMedia(media, sourceList, media.items)
+                }
+                if (result == LibraryCompat.MediaSaveResult.Duplicate) {
                     ToastUtil.showToast(requireContext(), "媒体库已存在")
-                    return@launch
                 }
-                if (index != -1 && update) {
-                    // 先删旧行再落库，避免同语义不同 id 重复（items 子表随 FK 级联清理）
-                    DatabaseManager.mediaDataDao.delete(list[index])
-                }
-                DatabaseManager.mediaDataDao.insert(media)
-                persistMediaItems(media)
                 // Room3 Flow 化：落库后 observeLibraryPage Flow 自动触发 UI 刷新
             }
         }
@@ -793,46 +785,21 @@ class MediaFragment : BaseTransitionFragment(), MenuProvider {
     // 保存在线媒体库
     private fun saveOnlineMediaData(media: MediaData, updated: Boolean) {
         lifecycleScope.launch(Dispatchers.Main) {
-            // Room3：sources/media 改为 DAO 异步读取
+            // Room3：sources 改为 DAO 异步读取；新增/编辑走分离入口，
+            // 编辑按 id 读改写并重建分集，不再 delete 再 insert
             val sourceList = DatabaseManager.sourceDataDao.list()
             if (media.id.isBlank()) {
                 media.id = LibraryCompat.mediaId(media, sourceList)
             }
-            val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
-            val position = list.indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
-            Log.d(
-                this@MediaFragment, "saveOnlineMediaData", "position", position, "updated", updated
-            )
-            if (position != -1 && !updated) {
-                ToastUtil.showToast(requireContext(), "媒体库已存在")
+            val result = if (updated) {
+                LibraryCompat.updateMedia(media, sourceList, media.items)
             } else {
-                if (updated) {
-                    // 先删旧行再落库，避免同语义不同 id 重复（items 子表随 FK 级联清理）
-                    DatabaseManager.mediaDataDao.delete(list[position])
-                }
-                DatabaseManager.mediaDataDao.insert(media)
-                persistMediaItems(media)
-                // Room3 Flow 化：落库后 observeLibraryPage Flow 自动触发 UI 刷新
+                LibraryCompat.insertMedia(media, sourceList, media.items)
             }
-        }
-    }
-
-    /**
-     * 媒体落库后重建剧集子表（MediaData.items 为 @Ignore 字段，Room 不会自动保存）
-     */
-    private suspend fun persistMediaItems(media: MediaData) {
-        if (media.items.isEmpty()) return
-        // 子表按 parentPath 排序写入 sort_index，与扫描/迁移的落库规则一致
-        val videos = LibraryCompat.sortByParentPath(media.items).mapIndexed { idx, v ->
-            v.apply {
-                sortIndex = idx
-                if (id.isBlank()) id = beanId()
-                if (mediaId.isBlank()) mediaId = media.id
+            if (result == LibraryCompat.MediaSaveResult.Duplicate) {
+                ToastUtil.showToast(requireContext(), "媒体库已存在")
             }
-        }
-        DatabaseManager.inTransaction {
-            DatabaseManager.videoDataDao.deleteByMedia(media.id)
-            DatabaseManager.videoDataDao.insertAll(videos)
+            // Room3 Flow 化：落库后 observeLibraryPage Flow 自动触发 UI 刷新
         }
     }
 

@@ -274,6 +274,9 @@ open class SpUtil(context: Context) : SpBase(context) {
     // 实验室开关：短视频自动加载播放进度（开启时恢复上次进度，关闭时每次从头播放）
     var shortAutoLoadProgress by SPManager.boolean(true)
 
+    // 实验室开关：封面选取是否显示隐藏目录与隐藏图片（仅影响封面选择器，默认关闭）
+    var coverPickerShowHidden by SPManager.boolean(false)
+
     // 历史页删除方式（左滑/长按）是否已提示过，避免每次进入都弹提示
     var historyDeleteTipShown by SPManager.boolean(false)
 

@@ -19,6 +19,7 @@ import me.lingci.dy.player.entity.CoverType
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.util.LibraryCompat
+import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.loadImage
 import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.storage.entity.StorageType
@@ -41,6 +42,7 @@ open class MediaManagerDialog(
 
     private lateinit var binding: DialogMediaManagerBinding
     private val viewModel: MediaManagerViewModel by activityViewModels()
+    private val spUtil: SpUtil by lazy { SpUtil(requireContext()) }
     private lateinit var rootPath: String
     private var sourceBean: MediaData? = null
     private lateinit var mediaSearchItemAdapter: MediaSearchItemAdapter
@@ -381,10 +383,12 @@ open class MediaManagerDialog(
             if (fileEntity.returnParent) {
                 file = file.parentFile!!
             }
-            FileOperator.getSortedFiles(file, true, FileOperator.IMAGE_EXTENSIONS)
-                .map { FileEntity(it) }.let {
-                    setAdapterData(file, it)
-                }
+            // 封面选取：实验室开关控制是否列隐藏目录/隐藏图片
+            FileOperator.getSortedFiles(
+                file, true, FileOperator.IMAGE_EXTENSIONS, spUtil.coverPickerShowHidden
+            ).map { FileEntity(it) }.let {
+                setAdapterData(file, it)
+            }
         }
     }
 

@@ -110,6 +110,11 @@ class LabSettingsFragment : BaseFragment() {
         binding.swLabShortAutoLoadProgress.setOnClickListener {
             spUtil.shortAutoLoadProgress = binding.swLabShortAutoLoadProgress.isChecked
         }
+        // 封面选取显示隐藏文件：开启后封面选择器可进入隐藏目录、显示隐藏图片
+        binding.swLabCoverShowHidden.isChecked = spUtil.coverPickerShowHidden
+        binding.swLabCoverShowHidden.setOnClickListener {
+            spUtil.coverPickerShowHidden = binding.swLabCoverShowHidden.isChecked
+        }
 
         // 数据迁移入口（§5.1）：仅当 app_meta 无迁移完成标记时显示，点击进入迁移页
         initMigrationEntry()

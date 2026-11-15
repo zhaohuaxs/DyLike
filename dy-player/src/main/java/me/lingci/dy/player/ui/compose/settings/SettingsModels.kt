@@ -112,6 +112,8 @@ data class LabSettingsState(
     val longVideoPortrait: Boolean = false,
     val autoPlayOnLaunch: Boolean = false,
     val shortAutoLoadProgress: Boolean = true,
+    /** 封面选取是否显示隐藏目录与隐藏图片 */
+    val coverShowHidden: Boolean = false,
     val debugMode: Boolean = false,
     /** 旧数据迁移入口只在未迁移时出现，由 ViewModel 异步查询 */
     val migrationPending: Boolean = false

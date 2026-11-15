@@ -16,6 +16,7 @@ import me.lingci.dy.player.entity.CoverType
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.FileOperator
@@ -31,7 +32,9 @@ data class MediaFormSeed(
     val playMode: Int = 0,
     /** 0 默认 / 1 本地选择 / 2 自动匹配，与界面上的单选一一对应 */
     val coverMode: Int = 0,
-    val coverPath: String = ""
+    val coverPath: String = "",
+    /** 远端库（WebDAV/SMB）：目录锁定不可重选，避免被静默转成本地库 */
+    val isRemote: Boolean = false
 )
 
 @Immutable
@@ -54,14 +57,20 @@ data class MediaManagerUiState(
  */
 class MediaManagerViewModel(app: Application) : AndroidViewModel(app) {
 
+    private val sp = SpUtil(app)
+
     private val _state = MutableStateFlow(MediaManagerUiState())
     val state: StateFlow<MediaManagerUiState> = _state.asStateFlow()
 
     /** 正在跑的目录遍历：换目录 / 关表单时取消，避免旧结果覆盖新目录 */
     private var browseJob: Job? = null
 
+    /** 编辑态的库内原实体：build 读改写的底，来源与运行时字段都从它保留 */
+    private var editing: MediaData? = null
+
     /** 每次打开都重置：表单关闭后 ViewModel 仍然存活，不能带着上一轮的实体回来 */
     fun start(mediaId: String?) {
+        editing = null
         if (mediaId == null) {
             _state.value = MediaManagerUiState(isEdit = false, seed = MediaFormSeed())
             return
@@ -69,6 +78,7 @@ class MediaManagerViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = MediaManagerUiState(loading = true, isEdit = true)
         viewModelScope.launch {
             val media = withContext(Dispatchers.IO) { DatabaseManager.mediaDataDao.getById(mediaId) }
+            editing = media
             _state.update {
                 it.copy(
                     loading = false,
@@ -92,9 +102,11 @@ class MediaManagerViewModel(app: Application) : AndroidViewModel(app) {
         browseJob = viewModelScope.launch {
             val (folders, files) = withContext(Dispatchers.IO) {
                 if (images) {
+                    // 封面选取：实验室开关控制是否列隐藏目录/隐藏图片
                     emptyList<FileEntity>() to
-                        FileOperator.getSortedFiles(dir, true, FileOperator.IMAGE_EXTENSIONS)
-                            .map { FileEntity(it) }
+                        FileOperator.getSortedFiles(
+                            dir, true, FileOperator.IMAGE_EXTENSIONS, sp.coverPickerShowHidden
+                        ).map { FileEntity(it) }
                 } else {
                     FileOperator.getSortedFolders(dir).map { FileEntity(it) } to emptyList()
                 }
@@ -110,7 +122,9 @@ class MediaManagerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 装配实体：id 在编辑态沿用原值，新增留空由落库方按 path 归一。
+     * 装配实体：编辑态以库内原实体为底只改表单字段（读改写），
+     * 来源（type/storageType/storageId）与置顶/上次播放/OP/ED 等运行时状态全部保留；
+     * 新增留空 id 由落库方按 path 归一。
      *
      * 同步返回而不是走事件通道：表单关闭后收集方就没了，事件一旦滞留，
      * 下次打开会补发一次「迟到的保存」。
@@ -122,21 +136,32 @@ class MediaManagerViewModel(app: Application) : AndroidViewModel(app) {
         folderPath: String,
         coverPath: String?
     ): MediaData {
-        val seed = _state.value.seed ?: MediaFormSeed()
         val coverType = when (coverMode) {
             1 -> CoverType.CUSTOM
             2 -> CoverType.AUTO
             else -> CoverType.DEFAULT
         }
+        val showFile = when (coverType) {
+            CoverType.CUSTOM -> coverPath.orEmpty()
+            else -> ""
+        }
+        val base = editing?.copy()
+        if (base != null) {
+            return base.apply {
+                title = name.trim()
+                path = folderPath
+                this.coverType = coverType
+                this.showFile = showFile
+                this.playMode = playMode
+            }
+        }
+        val seed = _state.value.seed ?: MediaFormSeed()
         return MediaData(
             id = seed.id,
             title = name.trim(),
             path = folderPath,
             coverType = coverType,
-            showFile = when (coverType) {
-                CoverType.CUSTOM -> coverPath.orEmpty()
-                else -> ""
-            },
+            showFile = showFile,
             type = MediaLibType.LOCAL,
             storageType = StorageType.LOCAL_STORAGE,
             playMode = playMode
@@ -147,13 +172,14 @@ class MediaManagerViewModel(app: Application) : AndroidViewModel(app) {
         id = id,
         name = title,
         folderPath = path,
-        folderName = title,
+        folderName = path.trimEnd('/').substringAfterLast('/').ifBlank { title },
         playMode = playMode,
         coverMode = when (coverType) {
             CoverType.CUSTOM -> if (showFile.isNotBlank() && showFile != "null") 1 else 0
             CoverType.AUTO -> 2
             else -> 0
         },
-        coverPath = if (coverType == CoverType.CUSTOM) showFile else ""
+        coverPath = if (coverType == CoverType.CUSTOM) showFile else "",
+        isRemote = type == MediaLibType.WEBDAV || type == MediaLibType.SMB
     )
 }

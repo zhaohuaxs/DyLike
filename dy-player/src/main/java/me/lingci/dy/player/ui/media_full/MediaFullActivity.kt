@@ -234,17 +234,21 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
                 if (media.id.isBlank()) {
                     media.id = LibraryCompat.mediaId(media, sourceList)
                 }
-                val position = fullViewModel.listMedia().indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
-                if (position > -1 && update.not()) {
+                // 新增/编辑走分离入口：编辑读改写保留来源与运行时状态，
+                // 不再拿内存快照整类重写（会把表单外字段清零）
+                val result = if (update) {
+                    LibraryCompat.updateMedia(media, sourceList)
+                } else {
+                    LibraryCompat.insertMedia(media, sourceList, media.items)
+                }
+                if (result == LibraryCompat.MediaSaveResult.Duplicate) {
                     ToastUtil.showToast(this@MediaFullActivity, "媒体库已存在")
                     return@launch
                 }
-                if (position > -1) {
-                    fullViewModel.removeItem(position)
+                if (result == LibraryCompat.MediaSaveResult.NotFound) {
+                    return@launch
                 }
-                fullViewModel.addItem(media)
-                mediaItemAdapter.updateData(fullViewModel.listMedia(keyword))
-                updateMedia()
+                syncListItem(media.id)
             }
         }
         // 在线媒体库新增
@@ -416,20 +420,34 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
             if (media.id.isBlank()) {
                 media.id = LibraryCompat.mediaId(media, sourceList)
             }
-            val position = fullViewModel.listMedia().indexOfFirst { LibraryCompat.sameMedia(it, media, sourceList) }
-            Log.d(this@MediaFullActivity, "position", position, "updated", updated)
-            if (position != -1 && !updated) {
+            // 新增/编辑走分离入口：编辑按 id 读改写并重建分集，不再 delete 再 insert
+            val result = if (updated) {
+                LibraryCompat.updateMedia(media, sourceList, media.items)
+            } else {
+                LibraryCompat.insertMedia(media, sourceList, media.items)
+            }
+            if (result == LibraryCompat.MediaSaveResult.Duplicate) {
                 ToastUtil.showToast(this@MediaFullActivity, "媒体库已存在")
                 return@launch
-            } else {
-                if (updated) {
-                    fullViewModel.removeItem(position)
-                }
-                fullViewModel.addItem(media)
-                mediaItemAdapter.updateData(fullViewModel.listMedia(keyword))
-                updateMedia()
             }
+            if (result == LibraryCompat.MediaSaveResult.NotFound) {
+                return@launch
+            }
+            syncListItem(media.id)
         }
+    }
+
+    /** 单条落库后按 id 同步内存列表（编辑替换/新增追加）并刷新 UI，
+     *  不走整类重写，避免用页面打开时的旧快照覆盖读改写结果 */
+    private suspend fun syncListItem(mediaId: String) {
+        val latest = DatabaseManager.mediaDataDao.getById(mediaId) ?: return
+        val position = fullViewModel.listMedia().indexOfFirst { it.id == mediaId }
+        if (position > -1) {
+            fullViewModel.removeItem(position)
+        }
+        fullViewModel.addItem(latest)
+        mediaItemAdapter.updateData(fullViewModel.listMedia(keyword))
+        markChanged()
     }
 
     fun updateMedia() {

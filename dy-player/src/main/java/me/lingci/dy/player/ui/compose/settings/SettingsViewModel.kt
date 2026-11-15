@@ -178,6 +178,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         if (updated.shortAutoLoadProgress != current.shortAutoLoadProgress) {
             sp.shortAutoLoadProgress = updated.shortAutoLoadProgress
         }
+        if (updated.coverShowHidden != current.coverShowHidden) {
+            sp.coverPickerShowHidden = updated.coverShowHidden
+        }
         if (updated.debugMode != current.debugMode) sp.debugMode = updated.debugMode
 
         update { it.copy(lab = updated) }
@@ -275,6 +278,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         longVideoPortrait = sp.labLongVideoPortrait,
         autoPlayOnLaunch = sp.autoPlayOnLaunch,
         shortAutoLoadProgress = sp.shortAutoLoadProgress,
+        coverShowHidden = sp.coverPickerShowHidden,
         debugMode = sp.debugMode
     )
 

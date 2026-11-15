@@ -112,6 +112,9 @@ fun MediaManagerSheetContent(
     val rootPath = remember { FileOperator.rootFolder.path }
     val seed = state.seed
     val isEdit = state.isEdit
+    // 远端库（WebDAV/SMB）：目录锁定不可重选——目录浏览器只走本地磁盘，
+    // 重选会把远端库静默转成本地库；名称/封面/加载模式仍可改
+    val isRemote = isEdit && seed?.isRemote == true
 
     var selectedPlayMode by remember(seed) { mutableIntStateOf(seed?.playMode ?: 0) }
     var selectedCoverMode by remember(seed) { mutableIntStateOf(seed?.coverMode ?: 0) }
@@ -223,6 +226,7 @@ fun MediaManagerSheetContent(
                     selectedFolder = selectedFolder,
                     selectedCoverMode = selectedCoverMode,
                     selectedCover = selectedCover,
+                    canPickFolder = !isRemote,
                     onSelectFolder = {
                         browserDir = File(rootPath)
                         browserMode = BrowserMode.Folder
@@ -249,11 +253,13 @@ fun MediaManagerSheetContent(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    GhostButton("重新选择", onClick = {
-                        selectedFolder = null
-                        selectedCover = null
-                        name = ""
-                    })
+                    if (!isRemote) {
+                        GhostButton("重新选择", onClick = {
+                            selectedFolder = null
+                            selectedCover = null
+                            name = ""
+                        })
+                    }
                 }
             }
 
@@ -402,16 +408,19 @@ private fun CoverPreviewSection(
     selectedFolder: FileEntity?,
     selectedCoverMode: Int,
     selectedCover: FileEntity?,
+    canPickFolder: Boolean = true,
     onSelectFolder: () -> Unit,
     onSelectCover: () -> Unit
 ) {
     val c = LocalDyLikeColors.current
     if (selectedFolder == null) {
-        GhostButton(
-            "选择文件夹",
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onSelectFolder
-        )
+        if (canPickFolder) {
+            GhostButton(
+                "选择文件夹",
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onSelectFolder
+            )
+        }
         return
     }
     when (selectedCoverMode) {
