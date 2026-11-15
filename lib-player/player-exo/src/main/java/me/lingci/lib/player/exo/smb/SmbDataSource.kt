@@ -28,7 +28,9 @@ class SmbDataSource(
 ) : BaseDataSource(true) {
 
     private companion object {
-        const val READ_AHEAD_SIZE = 512 * 1024
+        // 阶段 A6 实测调优：同一 NAS 同一 4K 文件顺序读 256MB，
+        // 512KB 块 12.74MB/s → 1MB 块 14.91MB/s（+17%）；rcv_buf_size 叠加无增益。
+        const val READ_AHEAD_SIZE = 1024 * 1024
     }
 
     @UnstableApi

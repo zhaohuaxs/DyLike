@@ -21,6 +21,9 @@ import me.lingci.lib.base.storage.IStorage
 import me.lingci.lib.base.storage.entity.StorageConfig
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.storage.impl.SmbStorage
+import me.lingci.lib.base.storage.smb.SmbErrorType
+import me.lingci.lib.base.storage.smb.SmbErrors
+import me.lingci.lib.base.storage.smb.SmbTestResult
 import me.lingci.lib.base.util.ToastUtil
 
 class SmbManagerDialog(
@@ -100,25 +103,28 @@ class SmbManagerDialog(
                 return@setOnClickListener
             }
             testJob = lifecycleScope.launch(Dispatchers.IO) {
-                storage?.testConnect().let { flag ->
-                    withContext(Dispatchers.Main) {
-                        if (flag == true) {
-                            binding.textStatus.text = "连接成功"
-                            binding.textStatus.setTextColor(
-                                resources.getColor(
-                                    me.lingci.lib.base.R.color.green_500,
-                                    requireContext().theme
-                                )
+                // 带错误分类的连接测试（阶段 A3），失败时区分认证/网络/共享不存在
+                val result = (storage as? SmbStorage)?.testConnectDetailed()
+                    ?: SmbTestResult(false)
+                withContext(Dispatchers.Main) {
+                    if (result.success) {
+                        binding.textStatus.text = "连接成功"
+                        binding.textStatus.setTextColor(
+                            resources.getColor(
+                                me.lingci.lib.base.R.color.green_500,
+                                requireContext().theme
                             )
-                        } else {
-                            binding.textStatus.text = "连接失败，账号正确时请检查域/工作组"
-                            binding.textStatus.setTextColor(
-                                resources.getColor(
-                                    me.lingci.lib.base.R.color.red_600,
-                                    requireContext().theme
-                                )
+                        )
+                    } else {
+                        binding.textStatus.text = SmbErrors.userMessage(
+                            result.errorType ?: SmbErrorType.UNKNOWN
+                        )
+                        binding.textStatus.setTextColor(
+                            resources.getColor(
+                                me.lingci.lib.base.R.color.red_600,
+                                requireContext().theme
                             )
-                        }
+                        )
                     }
                 }
             }

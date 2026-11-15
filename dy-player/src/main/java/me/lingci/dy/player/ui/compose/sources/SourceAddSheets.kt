@@ -53,6 +53,9 @@ import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.lib.base.storage.entity.StorageType
+import me.lingci.lib.base.storage.impl.SmbStorage
+import me.lingci.lib.base.storage.smb.SmbErrors
+import me.lingci.lib.base.storage.smb.SmbTestResult
 
 /** 新增资源库时支持的来源类型，顺序即展示顺序。 */
 private val addableTypes = listOf(StorageType.WEBDAV, StorageType.SMB)
@@ -217,6 +220,8 @@ fun SourceFormSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var testState by remember { mutableStateOf(TestState.Idle) }
     var testing by remember { mutableStateOf(false) }
+    // SMB 测试失败时的分类文案（阶段 A3），null 时回退通用失败文案
+    var testMessage by remember { mutableStateOf<String?>(null) }
 
     val siteRequired = stringResource(R.string.hint_source_site_required)
     val siteInvalid = stringResource(R.string.hint_source_site_invalid)
@@ -394,13 +399,26 @@ fun SourceFormSheet(
                             if (!validate()) return@OutlinedButton
                             testing = true
                             testState = TestState.Idle
+                            testMessage = null
                             scope.launch {
-                                val ok = withContext(Dispatchers.IO) {
-                                    runCatching { buildSource().toStorage()?.testConnect() == true }
-                                        .getOrDefault(false)
+                                val storage = withContext(Dispatchers.IO) {
+                                    runCatching { buildSource().toStorage() }.getOrNull()
+                                }
+                                // SMB 走带错误分类的测试入口，其余类型保持原 testConnect 语义
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        if (storage is SmbStorage) {
+                                            storage.testConnectDetailed()
+                                        } else {
+                                            SmbTestResult(storage?.testConnect() == true)
+                                        }
+                                    }.getOrElse {
+                                        SmbTestResult(false, SmbErrors.classify(it))
+                                    }
                                 }
                                 testing = false
-                                testState = if (ok) TestState.Success else TestState.Failure
+                                testState = if (result.success) TestState.Success else TestState.Failure
+                                testMessage = result.errorType?.let { SmbErrors.userMessage(it) }
                             }
                         },
                         enabled = !testing
@@ -423,7 +441,7 @@ fun SourceFormSheet(
                         )
 
                         TestState.Failure -> Text(
-                            text = stringResource(R.string.hint_source_test_failure),
+                            text = testMessage ?: stringResource(R.string.hint_source_test_failure),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )

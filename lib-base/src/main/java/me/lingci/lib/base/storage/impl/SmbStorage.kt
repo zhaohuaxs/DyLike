@@ -6,18 +6,17 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import jcifs.CIFSContext
-import jcifs.config.PropertyConfiguration
-import jcifs.context.BaseContext
-import jcifs.smb.SmbAuthException
 import jcifs.smb.NtlmPasswordAuthenticator
 import jcifs.smb.SmbFile
 import me.lingci.lib.base.storage.IStorage
 import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.storage.entity.StorageConfig
 import me.lingci.lib.base.storage.smb.SmbAuthToken
+import me.lingci.lib.base.storage.smb.SmbClientConfig
+import me.lingci.lib.base.storage.smb.SmbErrors
+import me.lingci.lib.base.storage.smb.SmbTestResult
 import me.lingci.lib.base.util.md5
 import java.io.File
-import java.util.Properties
 
 /**
  * SMB文件系统实现
@@ -28,16 +27,15 @@ class SmbStorage(
     private val localCacheDir: String // 本地缓存目录
 ) : IStorage {
 
-    // SMB上下文，带超时配置
+    companion object {
+        // 搜索最大递归深度，避免深层目录树长时间阻塞（阶段 A5）
+        private const val MAX_SEARCH_DEPTH = 16
+    }
+
+    // SMB上下文，配置统一走 SmbClientConfig（阶段 A1/A2，与播放侧一致）
     private val cifsContext: CIFSContext by lazy {
         val credentials = SmbAuthToken.normalize(config.username, config.password, config.domain)
-        val properties = Properties().apply {
-            // 设置连接和响应超时（毫秒）
-            setProperty("jcifs.smb.client.responseTimeout", "30000")
-            setProperty("jcifs.smb.client.soTimeout", "35000")
-            setProperty("jcifs.smb.client.maxConnections", "4")
-        }
-        val baseCtx = BaseContext(PropertyConfiguration(properties))
+        val baseCtx = SmbClientConfig.baseContext()
 
         if (credentials.username.isNullOrBlank()) {
             baseCtx.withAnonymousCredentials()
@@ -87,16 +85,19 @@ class SmbStorage(
         return SmbAuthToken.encode(config.username, config.password, config.domain)
     }
 
-    override suspend fun testConnect(): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun testConnect(): Boolean = testConnectDetailed().success
+
+    /**
+     * 带错误分类的连接测试（阶段 A3），供资源库弹窗显示可区分的失败原因。
+     * IStorage.testConnect() 签名保持不变，内部委托到这里。
+     */
+    suspend fun testConnectDetailed(): SmbTestResult = withContext(Dispatchers.IO) {
         return@withContext try {
             val smbFile = SmbFile(rootPath, cifsContext)
-            smbFile.exists()
-        } catch (ex: SmbAuthException) {
-            ex.printStackTrace()
-            false
+            SmbTestResult(smbFile.exists())
         } catch (e: Exception) {
-            e.printStackTrace()
-            false
+            SmbErrors.log("testConnect", config.server, shareName, "/", e)
+            SmbTestResult(false, SmbErrors.classify(e))
         }
     }
 
@@ -113,7 +114,7 @@ class SmbStorage(
                 emit(emptyList())
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("listFiles", config.server, shareName, path, e)
             emit(emptyList())
         }
     }.flowOn(Dispatchers.IO)
@@ -131,7 +132,7 @@ class SmbStorage(
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("listFile", config.server, shareName, path, e)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -140,7 +141,7 @@ class SmbStorage(
             val smbFile = SmbFile(getSmbPath(path), cifsContext)
             if (smbFile.exists()) smbFileToEntity(smbFile) else null
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("getFileInfo", config.server, shareName, path, e)
             null
         }
     }
@@ -155,7 +156,7 @@ class SmbStorage(
                 true
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("createDirectory", config.server, shareName, path, e)
             false
         }
     }
@@ -171,7 +172,7 @@ class SmbStorage(
             oldFile.renameTo(newFile)
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("rename", config.server, shareName, oldPath, e)
             false
         }
     }
@@ -188,7 +189,7 @@ class SmbStorage(
                 true
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("delete", config.server, shareName, path, e)
             false
         }
     }
@@ -210,7 +211,7 @@ class SmbStorage(
                 copyFile(sourceFile, targetFile, progressCallback)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("copy", config.server, shareName, sourcePath, e)
             false
         }
     }
@@ -220,7 +221,20 @@ class SmbStorage(
         targetPath: String,
         progressCallback: (Float) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
-        // 先复制再删除实现移动
+        // 同 share 优先服务端 rename，避免大文件 copy+delete 的耗时与一致性窗口（阶段 A4）；
+        // rename 失败（跨 share、目标已存在、权限等）再回退复制后删除。
+        try {
+            val sourceFile = SmbFile(getSmbPath(sourcePath), cifsContext)
+            val targetFile = SmbFile(getSmbPath(targetPath), cifsContext)
+            if (sourceFile.exists()) {
+                // jcifs 的 renameTo 返回 void，失败以异常表达，由下方 catch 回退
+                sourceFile.renameTo(targetFile)
+                progressCallback(1f)
+                return@withContext true
+            }
+        } catch (e: Exception) {
+            SmbErrors.log("move.rename", config.server, shareName, sourcePath, e)
+        }
         val copySuccess = copy(sourcePath, targetPath, progressCallback)
         if (copySuccess) {
             return@withContext delete(sourcePath)
@@ -245,7 +259,7 @@ class SmbStorage(
             copyFromSmbToLocal(remoteFile, localFile, progressCallback)
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("download", config.server, shareName, remotePath, e)
             false
         }
     }
@@ -264,7 +278,7 @@ class SmbStorage(
             copyFromLocalToSmb(localFile, remoteFile, progressCallback)
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("upload", config.server, shareName, remotePath, e)
             false
         }
     }
@@ -299,7 +313,7 @@ class SmbStorage(
                 mimeType = getMimeType(name) ?: ""
             )
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("smbFileToEntity", config.server, shareName, smbFile.path, e)
             null
         }
     }
@@ -405,7 +419,7 @@ class SmbStorage(
             dir.delete()
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("deleteDirectory", config.server, shareName, dir.path, e)
             false
         }
     }
@@ -440,7 +454,7 @@ class SmbStorage(
             }
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("copyDirectory", config.server, shareName, source.path, e)
             false
         }
     }
@@ -468,7 +482,7 @@ class SmbStorage(
             }
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("copyFile", config.server, shareName, source.path, e)
             false
         }
     }
@@ -517,8 +531,14 @@ class SmbStorage(
         }
     }
 
-    // 搜索SMB目录
-    private fun searchSmbDirectory(smbPath: String, query: String, results: MutableList<FileEntity>) {
+    // 搜索SMB目录（深度上限 MAX_SEARCH_DEPTH，单层异常不中断整棵搜索）
+    private fun searchSmbDirectory(
+        smbPath: String,
+        query: String,
+        results: MutableList<FileEntity>,
+        depth: Int = 0
+    ) {
+        if (depth >= MAX_SEARCH_DEPTH) return
         try {
             val dir = SmbFile(smbPath, cifsContext)
             if (!dir.exists() || !dir.isDirectory) return
@@ -530,11 +550,11 @@ class SmbStorage(
                 }
 
                 if (file.isDirectory) {
-                    searchSmbDirectory(file.path, query, results)
+                    searchSmbDirectory(file.path, query, results, depth + 1)
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            SmbErrors.log("searchFiles", config.server, shareName, smbPath, e)
         }
     }
 }
