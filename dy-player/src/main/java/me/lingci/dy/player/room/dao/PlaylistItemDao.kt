@@ -4,6 +4,7 @@ import androidx.room3.Dao
 import androidx.room3.Insert
 import androidx.room3.Query
 import kotlinx.coroutines.flow.Flow
+import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.entity.PlaylistItem
 import me.lingci.dy.player.room.entity.PlaylistItemCount
 
@@ -22,6 +23,21 @@ interface PlaylistItemDao {
 
     @Query("SELECT * FROM playlist_item WHERE playlist_id = :playlistId ORDER BY sort_order ASC")
     suspend fun listByPlaylist(playlistId: String): List<PlaylistItem>
+
+    /**
+     * 片单详情一次性取回全部视频实体。
+     *
+     * 原实现 listByPlaylist() + 逐条 videoDataDao.getById() 是 N+1，千条片单需要 1000 次单条 SQL。
+     * `v.*` 限定列，避免与 playlist_item.media_id 同名歧义；INNER JOIN 跳过已删除的视频行，
+     * 与 mapNotNull 语义一致；顺序按片单 sort_order，随后由 sortByParentPath 重排。
+     */
+    @Query("""
+        SELECT v.* FROM video_data v
+        INNER JOIN playlist_item p ON v.id = p.video_id
+        WHERE p.playlist_id = :playlistId
+        ORDER BY p.sort_order ASC
+    """)
+    suspend fun listVideosByPlaylist(playlistId: String): List<VideoData>
 
     @Query("SELECT count(*) FROM playlist_item WHERE playlist_id = :playlistId")
     suspend fun countByPlaylist(playlistId: String): Int

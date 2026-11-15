@@ -20,6 +20,12 @@ class EpisodeSelectAdapter(
 
     private var onItemClick: ((item: TitleItem, position: Int) -> Unit)? = null
 
+    /**
+     * 当前选中下标。千条级选集面板每次切集（含 autoNext 连播）都会走 selected()，
+     * 用缓存替代 indexOfFirst 全表扫描，把每次切集从 O(n) 降到 O(1)。
+     */
+    private var selectedPosition = -1
+
     fun setOnItemClickListener(onItemClick: (item: TitleItem, position: Int) -> Unit) {
         this.onItemClick = onItemClick
     }
@@ -43,6 +49,7 @@ class EpisodeSelectAdapter(
     fun setData(list: List<TitleItem>) {
         items.clear()
         items.addAll(list)
+        selectedPosition = list.indexOfFirst { it.selected }
         notifyDataSetChanged()
     }
 
@@ -52,31 +59,31 @@ class EpisodeSelectAdapter(
     }
 
     fun selected(position: Int) {
-        if (items.isEmpty()) {
-            return
-        }
-        if (position < 0 || position >= items.size) {
-            return
-        }
-        val tempPosition = items.indexOfFirst { it.selected }
-        if (tempPosition != -1) {
-            items[tempPosition].selected = false
-            notifyItemChanged(tempPosition)
+        if (position < 0 || position >= items.size) return
+        if (selectedPosition == position && items[position].selected) return
+        if (selectedPosition in items.indices) {
+            items[selectedPosition].selected = false
+            notifyItemChanged(selectedPosition)
         }
         items[position].selected = true
         notifyItemChanged(position)
+        selectedPosition = position
     }
 
     fun cleanSelect() {
-        items.forEach { item ->
-            item.selected = false
+        if (selectedPosition in items.indices) {
+            items[selectedPosition].selected = false
+            notifyItemChanged(selectedPosition)
         }
-        notifyDataSetChanged()
+        selectedPosition = -1
     }
 
     @SuppressLint("NotifyDataSetChanged")
     fun reverse() {
         items.reverse()
+        if (selectedPosition in items.indices) {
+            selectedPosition = items.size - 1 - selectedPosition
+        }
         notifyDataSetChanged()
     }
 

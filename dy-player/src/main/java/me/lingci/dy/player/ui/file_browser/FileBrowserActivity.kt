@@ -33,6 +33,7 @@ import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.playlist.PlaylistSelectDialog
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
 import me.lingci.dy.player.util.LibraryCompat
+import me.lingci.dy.player.util.SeriesKey
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.IStorage
 import me.lingci.lib.base.storage.entity.FileEntity
@@ -285,6 +286,9 @@ class FileBrowserActivity : BaseActivity(), MenuProvider {
                 // Room3：sources/media 改为 DAO 异步读取，查重后单条落库
                 val sourceList = DatabaseManager.sourceDataDao.list()
                 mediaData.id = LibraryCompat.mediaId(mediaData, sourceList)
+                // 旁路 insert 也要打标，否则同剧多季在 Compose 侧无季 Tab
+                mediaData.seriesKey =
+                    SeriesKey.seriesKeyOf(mediaData.path, mediaData.type, mediaData.storageId)
                 val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first()
                 if (list.any { LibraryCompat.sameMedia(it, mediaData, sourceList) }) {
                     ToastUtil.showToast(this@FileBrowserActivity, "媒体库已存在")

@@ -43,7 +43,7 @@ import java.util.Locale
         childColumns = ["storage_id"],
         onDelete = ForeignKey.SET_NULL
     )],
-    indices = [Index("storage_id"), Index("media_type")]
+    indices = [Index("storage_id"), Index("media_type"), Index("series_key")]
 )
 @ColumnTypeConverters(MediaLibTypeConverter::class, StorageTypeConverter::class, CoverTypeConverter::class)
 data class MediaData(
@@ -93,7 +93,11 @@ data class MediaData(
     var lastPlayedAt: Long = 0L,
     // 孤儿视频归并产生的虚拟媒体（不独立展示在媒体库列表，仅作历史/收藏关联宿主）
     @ColumnInfo(name = "is_virtual")
-    var isVirtual: Boolean = false
+    var isVirtual: Boolean = false,
+    // 多季剧集分组键：同剧多季共享一个 key，空串表示普通单级库。
+    // path 语义不变（仍是一个直接含视频的目录），旧 View 取数不受影响。
+    @ColumnInfo(name = "series_key", defaultValue = "''")
+    var seriesKey: String = ""
 
 ) : Parcelable {
 

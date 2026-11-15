@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import me.lingci.dy.player.cache.ProgressManagerImpl
 import me.lingci.dy.player.migrate.MigrationChecker
+import me.lingci.dy.player.util.PlayingListStore
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.crash.AppExceptionHandler
 import me.lingci.lib.base.util.Log
@@ -35,8 +36,8 @@ internal class PlayerApp : Application() {
             return appContext!!
         }
 
-        // 应用级协程作用域：与进程同生命周期，用于启动期后台任务
-        private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // 应用级协程作用域：与进程同生命周期，起播时异步写播放队列也用它
+        internal val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         // 启动迁移检查结果（§5.1）：MainActivity 启动时等待此结果决定是否跳迁移页
         private val migrationNeeded = CompletableDeferred<Boolean>()
@@ -64,6 +65,13 @@ internal class PlayerApp : Application() {
                 // 检查失败按"无需迁移"处理，避免卡死启动流程（实验室入口仍可手动触发）
                 Log.d(TAG, "checkMigration failed: ${e.message}", e)
                 migrationNeeded.complete(false)
+            }
+            // 与迁移检查顺序执行：两者都会首次触发 DatabaseManager 建连，
+            // 并发时可能各自 build 一个 RoomDatabase 实例。顺带清理异常退出残留的会话。
+            try {
+                PlayingListStore.cleanup()
+            } catch (e: Exception) {
+                Log.d(TAG, "cleanupPlayingListSessions failed: ${e.message}", e)
             }
         }
     }

@@ -21,6 +21,7 @@ import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
+import me.lingci.dy.player.util.SeriesKey
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.IStorage
 import me.lingci.lib.base.storage.entity.FileEntity
@@ -311,6 +312,8 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
                     storageId = if (sourceType == StorageType.LOCAL_STORAGE) null else source.id
                 }
                 media.id = LibraryCompat.mediaId(media, DatabaseManager.sourceDataDao.list())
+                // 与 LibraryCompat.writeMedia 同口径打标，避免同剧多季在 Compose 侧无季 Tab
+                media.seriesKey = SeriesKey.seriesKeyOf(media.path, media.type, media.storageId)
                 if (DatabaseManager.mediaDataDao.getById(media.id) != null) {
                     AddLibraryResult.Exists
                 } else {

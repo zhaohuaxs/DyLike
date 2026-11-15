@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.lingci.dy.player.PlayerApp
 import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.ActivityShortVideoBinding
 import me.lingci.dy.player.cache.ProgressManagerImpl
@@ -44,6 +45,7 @@ import me.lingci.dy.player.util.PlaybackErrorLogger
 import me.lingci.dy.player.util.PlaybackLogCache
 import me.lingci.dy.player.util.PlaybackTraceHelper
 import me.lingci.dy.player.util.PreloadCapabilityGuard
+import me.lingci.dy.player.util.PlayingListStore
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.ShortTitleFormatter
 import me.lingci.dy.player.util.VideoDataBinder
@@ -90,6 +92,7 @@ class ShortVideoActivity : BaseActivity() {
         private const val KEY_HISTORY = "history"
         private const val KEY_RANDOM = "random"
         private const val KEY_TEMP = "temp"
+        private const val KEY_PLAYING_LIST = "playing_list"
         private const val KEY_MEDIA = "media"
         private const val CONTROL_ALPHA_FULL = 1.0f
         private const val CONTROL_ALPHA_DIMMED = 0.3f
@@ -156,9 +159,34 @@ class ShortVideoActivity : BaseActivity() {
             start(context, i, list)
         }
 
+        /** 列表写 Room 在 IO 线程完成，主线程不再做 JSON 序列化 + 写盘。 */
         private fun start(context: Context, intent: Intent, list: ArrayList<VideoData>) {
-            intent.putExtra(KEY_TEMP, VideoListTempStore.write(context, list))
-            context.startActivity(intent)
+            PlayerApp.appScope.launch {
+                val sessionId = try {
+                    PlayingListStore.write(list)
+                } catch (e: Exception) {
+                    Log.d("ShortVideoActivity", "playing list room write failed: ${e.message}")
+                    null
+                }
+                // 降级路径的序列化 + 写盘同样放 IO，主线程只负责 putExtra / startActivity
+                val tempPath = if (sessionId == null) {
+                    try {
+                        withContext(Dispatchers.IO) { VideoListTempStore.write(context, list) }
+                    } catch (e: Exception) {
+                        Log.d("ShortVideoActivity", "playing list fallback write failed: ${e.message}")
+                        null
+                    }
+                } else null
+                withContext(Dispatchers.Main) {
+                    if (sessionId != null) {
+                        intent.putExtra(KEY_PLAYING_LIST, sessionId)
+                    } else if (tempPath != null) {
+                        // Room 写失败时降级到临时 JSON，保证起播不丢
+                        intent.putExtra(KEY_TEMP, tempPath)
+                    }
+                    context.startActivity(intent)
+                }
+            }
         }
     }
 
@@ -168,6 +196,8 @@ class ShortVideoActivity : BaseActivity() {
     private var mCurPos = 0
     private val spUtil by lazy { SpUtil(this) }
     private var onHistory: Boolean = false
+    /** Room 播放会话 id，读不删，仅主动结束时清理 */
+    private var playingListSessionId: String? = null
     private var mediaData: MediaData? = null
     private val mVideoList: MutableList<VideoData> = mutableListOf()
     private lateinit var mBinding: ActivityShortVideoBinding
@@ -427,11 +457,23 @@ class ShortVideoActivity : BaseActivity() {
             // initData 内部含挂起 DAO 调用（收藏状态读取），协程内执行
             lifecycleScope.launch { initData(index, customRandom, random, it) }
         }
-        intent.getStringExtra(KEY_TEMP)?.let { path ->
+        val sessionId = intent.getStringExtra(KEY_PLAYING_LIST)
+        if (!sessionId.isNullOrBlank()) {
+            playingListSessionId = sessionId
             lifecycleScope.launch(Dispatchers.IO) {
-                val list = VideoListTempStore.readAndDelete(path).toMutableList()
+                val list = PlayingListStore.read(sessionId).toMutableList()
                 withContext(Dispatchers.Main) {
                     initData(index, customRandom, random, list)
+                }
+            }
+        } else {
+            // 过渡期兼容：旧调用方 / Room 写失败降级仍走临时 JSON
+            intent.getStringExtra(KEY_TEMP)?.let { path ->
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val list = VideoListTempStore.readAndDelete(path).toMutableList()
+                    withContext(Dispatchers.Main) {
+                        initData(index, customRandom, random, list)
+                    }
                 }
             }
         }
@@ -454,12 +496,14 @@ class ShortVideoActivity : BaseActivity() {
         random: Boolean,
         list: MutableList<VideoData>
     ) {
-        // 收藏状态改查 favorite 表（video_id 与 VideoData.md5() 规则一致）
-        val ids = DatabaseManager.favoriteDao.listVideoIds().toSet()
-        logD("likes ${ids.joinToString(",")}")
-        list.forEach {
-            it.id = it.md5()
-            it.like = ids.contains(it.id)
+        // 收藏查询与 id / like 派生放 IO：千条队列在主线程做 1000 次 md5 会拖慢起播
+        withContext(Dispatchers.IO) {
+            val ids = DatabaseManager.favoriteDao.listVideoIds().toSet()
+            list.forEach {
+                it.id = it.md5()
+                it.like = ids.contains(it.id)
+            }
+            Log.d("ShortVideoActivity", "initData prepared size=${list.size} favorites=${ids.size}")
         }
         var currentIndex = index
         if (((customRandom && random) || (!customRandom && spUtil.shortRandom)) && index in list.indices) {
@@ -469,10 +513,6 @@ class ShortVideoActivity : BaseActivity() {
             currentIndex = 0
         } else {
             mVideoList.addAll(list)
-        }
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            MediaManger.scanVideoThumb(baseContext, mVideoList.toList())
         }
 
         // 播放器视图已在 onCreate 同步构造（ensureVideoViewConstructed），此处仅初始化列表
@@ -1583,6 +1623,16 @@ class ShortVideoActivity : BaseActivity() {
 
     private fun saveProgress(force: Boolean) = saveProgressAt(mCurPos, force)
 
+    /**
+     * 补齐「真正播放过的这一集」的列表缩略图。
+     *
+     * 列表缩略图的主来源已经是首页媒体库（`CoverProcessor`）与详情页（`thumbQueue` 当前分页），
+     * 播放页不再做任何批量/窗口预热 —— 那只会为没看过的集重复抽帧。这里只处理当前集，
+     * 且缓存已存在时直接返回（零抽帧），因此代价是「每集最多一次、且只在本集真正起播时」。
+     *
+     * 时机必须在起播（`onPlayStart`）而不是退出：快速滑动跳过的集不会走完整播放，
+     * 放到退出才生成会漏掉中间看过的集。
+     */
     fun doScreenShot(position: Int) {
         val request = playRequests.current ?: return
         mBinding.root.postDelayed({
@@ -1719,6 +1769,12 @@ class ShortVideoActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // 播放会话快照只在主动结束时清理；配置变化由 savedInstanceState 恢复
+        if (isFinishing) {
+            playingListSessionId?.let { sessionId ->
+                PlayerApp.appScope.launch { PlayingListStore.delete(sessionId) }
+            }
+        }
         isForeground = false
         cancelImmersive()
         immersiveHandler.removeCallbacksAndMessages(null)

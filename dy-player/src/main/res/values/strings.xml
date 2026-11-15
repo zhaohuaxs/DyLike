@@ -482,4 +482,12 @@
     <string name="action_show_text">显示文本</string>
     <string name="action_hide_text">隐藏文本</string>
 
+    <!-- 多季剧集 -->
+    <string name="library_season_count">%1$d 季</string>
+    <string name="detail_season_tab">选择季</string>
+    <string name="detail_media_count">包含 %1$d 条媒体</string>
+    <string name="detail_season_episodes">%1$s · 本季 %2$d 集 · 共 %3$d 季</string>
+    <string name="player_season_end">%1$s 已播完，返回详情页选择下一季</string>
+    <string name="player_auto_skip_stopped">连续播放失败，已停止自动切集</string>
+
 </resources>

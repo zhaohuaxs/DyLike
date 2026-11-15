@@ -1,5 +1,6 @@
 package me.lingci.dy.player.ui.compose.detail
 
+import android.content.res.Configuration
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,8 +21,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.itemsIndexed as staggeredItemsIndexed
@@ -37,6 +42,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -59,6 +65,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -78,6 +85,8 @@ import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.entity.formatTime
+import me.lingci.dy.player.ui.compose.adaptive.WindowWidth
+import me.lingci.dy.player.ui.compose.adaptive.windowWidthClass
 import me.lingci.dy.player.ui.compose.components.AppIconButton
 import me.lingci.dy.player.ui.compose.components.CoverImage
 import me.lingci.dy.player.ui.compose.components.Kicker
@@ -123,7 +132,7 @@ fun DetailRoute(
      * [MediaData] 只在这里透传给播放页：播放页要靠它写回 `play_last` / 历史 / 进度，
      * 不传的话从详情页起播就是「无媒体上下文」，记录会全部丢失。
      */
-    onPlay: (MediaData?, List<VideoData>, Int, Boolean) -> Unit = { _, _, _, _ -> }
+    onPlay: (MediaData?, List<VideoData>, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> }
 ) {
     val vm: DetailViewModel = viewModel(factory = DetailViewModel.Factory)
     val state by vm.state.collectAsStateWithLifecycle()
@@ -155,13 +164,16 @@ fun DetailRoute(
         scrollRequest = scrollRequest,
         onScrollConsumed = { scrollRequest = null },
         onBack = onBack,
-        onPlay = { videos, index, isShort -> onPlay(state.media, videos, index, isShort) },
+        onPlay = { videos, index, isShort, seasonLabel ->
+            onPlay(state.media, videos, index, isShort, seasonLabel)
+        },
         onRetry = { vm.load(mediaId, force = true) },
         onOpEd = vm::updateOpEd,
         onQueryChange = vm::setQuery,
         onSortChange = vm::setSortMode,
         onLoadMore = vm::loadMore,
-        onJumpLastPlayed = vm::jumpToLastPlayed
+        onJumpLastPlayed = vm::jumpToLastPlayed,
+        onSelectSeason = vm::selectSeason
     )
 }
 
@@ -179,16 +191,25 @@ fun DetailScreen(
     scrollRequest: Int? = null,
     onScrollConsumed: () -> Unit = {},
     onBack: () -> Unit = {},
-    onPlay: (List<VideoData>, Int, Boolean) -> Unit = { _, _, _ -> },
+    onPlay: (List<VideoData>, Int, Boolean, String) -> Unit = { _, _, _, _ -> },
     onRetry: () -> Unit = {},
     onOpEd: (Int, Int) -> Unit = { _, _ -> },
     onQueryChange: (String) -> Unit = {},
     onSortChange: (Int) -> Unit = {},
     onLoadMore: () -> Unit = {},
-    onJumpLastPlayed: () -> Unit = {}
+    onJumpLastPlayed: () -> Unit = {},
+    onSelectSeason: (String) -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    // 平板 / 横屏：头部卡片与「选择季」固定左栏，搜索与分集列表在右栏。
+    // 断点统一走 adaptive/AdaptiveLayout.windowWidthClass，页面内不再另写一套宽度判断。
+    val widthClass = windowWidthClass(configuration.screenWidthDp.dp)
+    val twoPane = widthClass != WindowWidth.Compact ||
+        configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // 双栏时顶栏 / 封面 / 搜索都不在列表里，定位下标不再需要补头部条目。
+    val headerCountState = rememberUpdatedState(if (twoPane) 0 else EPISODE_HEADER_ITEMS)
     val gridState = rememberLazyStaggeredGridState()
     val listState = rememberLazyListState()
 
@@ -198,6 +219,21 @@ fun DetailScreen(
     val entries = state.entries
     val playList = state.playList
     val lastPlayedIndex = state.lastPlayedIndex
+    val headerSubtitle = if (state.seasons.size > 1) {
+        stringResource(
+            R.string.detail_season_episodes,
+            state.seasonLabel,
+            state.totalCount,
+            state.seasons.size
+        )
+    } else {
+        stringResource(R.string.detail_media_count, state.totalCount)
+    }
+    val showDanmaku = state.media?.let { media ->
+        media.type != MediaLibType.HISTORY &&
+            media.type != MediaLibType.LIKE &&
+            media.type != MediaLibType.PLAYLIST
+    } ?: false
 
     // 目标项是否已在可见范围内。derivedStateOf 只在布尔翻转时触发重组，
     // 不会因为滚动过程中 layoutInfo 每帧变化而整屏重组。
@@ -211,7 +247,7 @@ fun DetailScreen(
     val listLastPlayedVisible by remember(listState) {
         derivedStateOf {
             val index = lastPlayedIndexState.value ?: return@derivedStateOf false
-            listState.layoutInfo.visibleItemsInfo.any { it.index == index + EPISODE_HEADER_ITEMS }
+            listState.layoutInfo.visibleItemsInfo.any { it.index == index + headerCountState.value }
         }
     }
 
@@ -225,7 +261,7 @@ fun DetailScreen(
                 gridState.animateScrollToItem(target)
             }
         } else {
-            val item = target + EPISODE_HEADER_ITEMS
+            val item = target + headerCountState.value
             if (abs(item - listState.firstVisibleItemIndex) > SCROLL_ANIMATE_MAX_ITEMS) {
                 listState.scrollToItem(item)
             } else {
@@ -302,6 +338,12 @@ fun DetailScreen(
         DetailPhase.Content -> Unit
     }
 
+    // 换季回到列表顶部：列表状态在竖屏 / 双栏之间复用，否则会停在上季的滚动偏移。
+    // seasonLabel 由 ViewModel 乐观更新，滚动与新数据替换之间不会出现全屏 Loading。
+    LaunchedEffect(state.seasonLabel) {
+        if (!state.shortMode) listState.scrollToItem(0)
+    }
+
     val title = state.media?.title?.decodeHtmlEntities() ?: "媒体库详情"
 
     if (state.shortMode) {
@@ -329,10 +371,10 @@ fun DetailScreen(
                 }
             } else {
                 BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val columns = when {
-                        maxWidth < 520.dp -> 3
-                        maxWidth < 900.dp -> 4
-                        else -> 6
+                    val columns = when (windowWidthClass(maxWidth)) {
+                        WindowWidth.Compact -> 3
+                        WindowWidth.Medium -> 4
+                        WindowWidth.Expanded -> 6
                     }
                     LazyVerticalStaggeredGrid(
                         columns = StaggeredGridCells.Fixed(columns),
@@ -357,7 +399,7 @@ fun DetailScreen(
                                 card = entry.card,
                                 hideText = hideText,
                                 isLastPlayed = entry.lastPlay,
-                                onClick = { onPlay(playList, entry.playIndex, true) }
+                                onClick = { onPlay(playList, entry.playIndex, true, state.seasonLabel) }
                             )
                         }
                     }
@@ -375,82 +417,117 @@ fun DetailScreen(
         }
     } else {
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                state = listState,
-                // 剧集列表也用固定尾部留白，避免按钮出现/消失时整屏重新布局
-                contentPadding = PaddingValues(bottom = JUMP_BUTTON_SPACE)
-            ) {
-                item {
-                    DetailTopBar(
-                        title = title,
-                        hideText = null,
-                        onBack = onBack,
-                        onSort = onSortChange,
-                        onToggleText = {}
-                    )
-                }
-
-                item {
-                    val media = state.media
-                    val showDanmaku = media != null &&
-                        media.type != MediaLibType.HISTORY &&
-                        media.type != MediaLibType.LIKE &&
-                        media.type != MediaLibType.PLAYLIST
-                    CoverHeader(
-                        cover = state.cover,
-                        videoCount = state.totalCount,
-                        opValue = state.opOffset.formatTime(),
-                        edValue = state.edOffset.formatTime(),
-                        showDanmaku = showDanmaku,
-                        onPlay = { onPlay(playList, lastPlayedIndex ?: 0, false) },
-                        onOpEdClick = { opEdDialogOpen = true },
-                        onDanmakuClick = {
-                            media?.let { DanmakuBindingActivity.start(context, playList, it.id) }
-                        }
-                    )
-                }
-
-                item {
-                    SearchField(
-                        state.query,
-                        onQueryChange,
-                        stringResource(R.string.detail_search_episodes),
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
-                }
-
-                if (entries.isEmpty()) {
-                    item {
-                        Box(
-                            Modifier.fillMaxWidth().padding(48.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                stringResource(R.string.detail_no_match_episode),
-                                style = DyLikeType.meta,
-                                color = c.textTertiary
-                            )
-                        }
+            val showJumpButton = lastPlayedIndex != null && !listLastPlayedVisible
+            if (twoPane) {
+                // 平板 / 横屏：左栏固定头部卡片 + 选择季，右栏搜索 + 分集列表。
+                // 左栏可独立滚动，横屏高度不足时也不会把季 Tab 挤出屏幕。
+                val leftWidth = (configuration.screenWidthDp.dp * 0.36f)
+                    .coerceIn(280.dp, 420.dp)
+                Row(Modifier.fillMaxSize()) {
+                    Column(
+                        Modifier
+                            .width(leftWidth)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                            .padding(end = 8.dp)
+                    ) {
+                        DetailTopBar(
+                            title = title,
+                            hideText = null,
+                            onBack = onBack,
+                            onSort = onSortChange,
+                            onToggleText = {}
+                        )
+                        DetailHeaderBlock(
+                            cover = state.cover,
+                            subtitle = headerSubtitle,
+                            opValue = state.opOffset.formatTime(),
+                            edValue = state.edOffset.formatTime(),
+                            showDanmaku = showDanmaku,
+                            seasons = state.seasons,
+                            onPlay = {
+                                onPlay(playList, lastPlayedIndex ?: 0, false, state.seasonLabel)
+                            },
+                            onOpEdClick = { opEdDialogOpen = true },
+                            onDanmakuClick = {
+                                state.media?.let {
+                                    DanmakuBindingActivity.start(context, playList, it.id)
+                                }
+                            },
+                            onSelectSeason = onSelectSeason
+                        )
+                        Spacer(Modifier.height(16.dp))
                     }
-                } else {
-                    itemsIndexed(entries, key = { _, entry -> entry.card.id }) { _, entry ->
-                        EpisodeRow(
-                            card = entry.card,
-                            index = entry.playIndex,
-                            isLastPlayed = entry.lastPlay,
-                            onClick = { onPlay(playList, entry.playIndex, false) }
+                    Column(Modifier.weight(1f).fillMaxHeight()) {
+                        SearchField(
+                            state.query,
+                            onQueryChange,
+                            stringResource(R.string.detail_search_episodes),
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                        EpisodeList(
+                            state = state,
+                            listState = listState,
+                            showJumpButton = showJumpButton,
+                            onPlay = onPlay,
+                            onJumpLastPlayed = onJumpLastPlayed,
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
+            } else {
+                EpisodeList(
+                    state = state,
+                    listState = listState,
+                    showJumpButton = showJumpButton,
+                    onPlay = onPlay,
+                    onJumpLastPlayed = onJumpLastPlayed,
+                    modifier = Modifier.fillMaxSize(),
+                    showHeaderItems = true,
+                    topBar = {
+                        DetailTopBar(
+                            title = title,
+                            hideText = null,
+                            onBack = onBack,
+                            onSort = onSortChange,
+                            onToggleText = {}
+                        )
+                    },
+                    headerBlock = {
+                        DetailHeaderBlock(
+                            cover = state.cover,
+                            subtitle = headerSubtitle,
+                            opValue = state.opOffset.formatTime(),
+                            edValue = state.edOffset.formatTime(),
+                            showDanmaku = showDanmaku,
+                            seasons = state.seasons,
+                            onPlay = {
+                                onPlay(playList, lastPlayedIndex ?: 0, false, state.seasonLabel)
+                            },
+                            onOpEdClick = { opEdDialogOpen = true },
+                            onDanmakuClick = {
+                                state.media?.let {
+                                    DanmakuBindingActivity.start(context, playList, it.id)
+                                }
+                            },
+                            onSelectSeason = onSelectSeason
+                        )
+                    },
+                    searchField = {
+                        SearchField(
+                            state.query,
+                            onQueryChange,
+                            stringResource(R.string.detail_search_episodes),
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
+                )
             }
-            if (lastPlayedIndex != null && !listLastPlayedVisible) {
-                LastPlayedJumpButton(
-                    loading = state.jumpingToLastPlayed,
-                    onClick = onJumpLastPlayed,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = JUMP_BUTTON_GAP)
+            // 换季期间旧列表继续可见，只在顶部显示细进度条，避免整屏闪白
+            if (state.switchingSeason) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                    color = c.accent
                 )
             }
         }
@@ -466,6 +543,109 @@ fun DetailScreen(
             },
             onDismiss = { opEdDialogOpen = false }
         )
+    }
+}
+
+/**
+ * 头部卡片 + 选择季：竖屏作为列表头部 item 一起滚动，平板 / 横屏固定在左栏。
+ * 只吃已解析的 UiModel 与基础类型，不碰 Room 实体。
+ */
+@Composable
+private fun DetailHeaderBlock(
+    cover: MediaUiModel?,
+    subtitle: String,
+    opValue: String,
+    edValue: String,
+    showDanmaku: Boolean,
+    seasons: List<SeasonUi>,
+    modifier: Modifier = Modifier,
+    onPlay: () -> Unit,
+    onOpEdClick: () -> Unit,
+    onDanmakuClick: () -> Unit,
+    onSelectSeason: (String) -> Unit
+) {
+    Column(modifier) {
+        CoverHeader(
+            cover = cover,
+            subtitle = subtitle,
+            opValue = opValue,
+            edValue = edValue,
+            showDanmaku = showDanmaku,
+            onPlay = onPlay,
+            onOpEdClick = onOpEdClick,
+            onDanmakuClick = onDanmakuClick
+        )
+        if (seasons.size > 1) {
+            SeasonTabRow(seasons = seasons, onSelect = onSelectSeason)
+        }
+    }
+}
+
+/**
+ * 剧集列表：竖屏把顶栏 / 封面 / 搜索作为头部 item 一起滚动，双栏时只滚分集。
+ * 两种布局共用同一个 [listState]，旋转屏幕不会丢滚动位置。
+ */
+@Composable
+private fun EpisodeList(
+    state: DetailUiState,
+    listState: LazyListState,
+    showJumpButton: Boolean,
+    onPlay: (List<VideoData>, Int, Boolean, String) -> Unit,
+    onJumpLastPlayed: () -> Unit,
+    modifier: Modifier = Modifier,
+    showHeaderItems: Boolean = false,
+    topBar: @Composable () -> Unit = {},
+    headerBlock: @Composable () -> Unit = {},
+    searchField: @Composable () -> Unit = {}
+) {
+    val c = LocalDyLikeColors.current
+    Box(modifier) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = listState,
+            // 固定尾部留白：跳转按钮出现/消失时整屏不会重新布局
+            contentPadding = PaddingValues(bottom = JUMP_BUTTON_SPACE)
+        ) {
+            if (showHeaderItems) {
+                item { topBar() }
+                item { headerBlock() }
+                item { searchField() }
+            }
+            if (state.entries.isEmpty()) {
+                item {
+                    Box(
+                        Modifier.fillMaxWidth().padding(48.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            stringResource(R.string.detail_no_match_episode),
+                            style = DyLikeType.meta,
+                            color = c.textTertiary
+                        )
+                    }
+                }
+            } else {
+                itemsIndexed(state.entries, key = { _, entry -> entry.card.id }) { _, entry ->
+                    EpisodeRow(
+                        card = entry.card,
+                        index = entry.playIndex,
+                        isLastPlayed = entry.lastPlay,
+                        onClick = {
+                            onPlay(state.playList, entry.playIndex, false, state.seasonLabel)
+                        }
+                    )
+                }
+            }
+        }
+        if (showJumpButton) {
+            LastPlayedJumpButton(
+                loading = state.jumpingToLastPlayed,
+                onClick = onJumpLastPlayed,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = JUMP_BUTTON_GAP)
+            )
+        }
     }
 }
 
@@ -523,7 +703,7 @@ private fun DetailTopBar(
 @Composable
 private fun CoverHeader(
     cover: MediaUiModel?,
-    videoCount: Int,
+    subtitle: String,
     opValue: String,
     edValue: String,
     showDanmaku: Boolean,
@@ -593,10 +773,42 @@ private fun CoverHeader(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                "包含 $videoCount 条媒体",
+                subtitle,
                 style = DyLikeType.meta,
                 color = Color.White.copy(alpha = 0.78f)
             )
+        }
+    }
+}
+
+/** 季 Tab：与封面在同一个 item 内，不改变剧集列表的头部 item 数量。 */
+@Composable
+private fun SeasonTabRow(
+    seasons: List<SeasonUi>,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val c = LocalDyLikeColors.current
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(
+            stringResource(R.string.detail_season_tab),
+            style = MaterialTheme.typography.labelMedium,
+            color = c.textTertiary
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            seasons.forEach { season ->
+                Text(
+                    season.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (season.selected) Color.White else c.textPrimary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (season.selected) c.accent else c.surfaceRaised)
+                        .clickable { onSelect(season.mediaId) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
         }
     }
 }
@@ -842,6 +1054,73 @@ private fun DetailShortPreview() {
                 shortMode = true,
                 // 预览里带上「上次播放」：卡片描边 + 底部跳转按钮
                 lastPlayedIndex = 2
+            )
+        )
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF101014, heightDp = 900)
+@Composable
+private fun DetailSeasonsPreview() {
+    val entries = List(4) { index ->
+        DetailEntryUi(
+            card = ShortCardUiModel(
+                id = "preview-season-$index",
+                title = "第 ${index + 1} 集",
+                thumbPath = null,
+                aspectRatio = 16f / 9f
+            ),
+            playIndex = index,
+            lastPlay = index == 0
+        )
+    }
+    DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
+        DetailScreen(
+            state = DetailUiState(
+                phase = DetailPhase.Content,
+                entries = entries,
+                playList = emptyList(),
+                totalCount = entries.size,
+                seasons = listOf(
+                    SeasonUi(mediaId = "s1", label = "S01", selected = true),
+                    SeasonUi(mediaId = "s2", label = "S02", selected = false),
+                    SeasonUi(mediaId = "s3", label = "Season 03", selected = false)
+                ),
+                seasonLabel = "S01"
+            )
+        )
+    }
+}
+
+/** 平板 / 横屏：头部卡片与「选择季」固定左栏，搜索与分集列表在右栏。 */
+@Preview(showBackground = true, backgroundColor = 0xFF101014, widthDp = 1100, heightDp = 700)
+@Composable
+private fun DetailWideSeasonsPreview() {
+    val entries = List(8) { index ->
+        DetailEntryUi(
+            card = ShortCardUiModel(
+                id = "preview-wide-$index",
+                title = "第 ${index + 1} 集",
+                thumbPath = null,
+                aspectRatio = 16f / 9f
+            ),
+            playIndex = index,
+            lastPlay = index == 0
+        )
+    }
+    DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
+        DetailScreen(
+            state = DetailUiState(
+                phase = DetailPhase.Content,
+                entries = entries,
+                playList = emptyList(),
+                totalCount = entries.size,
+                seasons = listOf(
+                    SeasonUi(mediaId = "s1", label = "第一季", selected = true),
+                    SeasonUi(mediaId = "s2", label = "第二季", selected = false),
+                    SeasonUi(mediaId = "s3", label = "第三季", selected = false)
+                ),
+                seasonLabel = "第一季"
             )
         )
     }

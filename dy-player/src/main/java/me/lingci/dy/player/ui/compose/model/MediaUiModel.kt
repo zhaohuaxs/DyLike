@@ -21,7 +21,11 @@ data class MediaUiModel(
     /** 已解析的封面：本地为文件路径，WebDAV 为 http 地址；null 表示没有可用封面 */
     val coverPath: String? = null,
     /** 取 HTTP 封面时随请求带上的认证头 */
-    val coverHeaders: Map<String, String> = emptyMap()
+    val coverHeaders: Map<String, String> = emptyMap(),
+    /** 多季剧集分组键；空串表示普通单级媒体库 */
+    val seriesKey: String = "",
+    /** 同剧季数；>1 时卡片显示「N 季」 */
+    val seasonCount: Int = 0
 )
 
 /**

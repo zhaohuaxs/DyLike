@@ -28,6 +28,7 @@ import me.lingci.dy.player.ui.compose.model.MediaUiModel
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.CoverHelper
 import me.lingci.dy.player.util.CoverProcessor
+import me.lingci.dy.player.util.SeriesKey
 import me.lingci.dy.player.util.decodeHtmlEntities
 
 /** 「继续观看」一项：文本与封面路径都在 ViewModel 里算好，卡片只做渲染。 */
@@ -119,19 +120,54 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun loadMore() = pageSize.update { it + MediaDataDao.PAGE_SIZE }
 
+    private fun MediaData.toCard(
+        sources: List<SourceData>,
+        seriesTitle: String = "",
+        seasonCount: Int = 0
+    ): MediaUiModel {
+        val candidate = CoverHelper.resolveCover(this, sources)
+        return MediaUiModel(
+            id = id,
+            title = seriesTitle.ifBlank { title.decodeHtmlEntities() },
+            type = type,
+            coverPath = candidate?.path,
+            coverHeaders = candidate?.headers ?: emptyMap(),
+            seriesKey = seriesKey,
+            seasonCount = seasonCount
+        )
+    }
+
     private fun buildState(snapshot: Snapshot): LibraryUiState {
         // 封面解析放在这里（已经在 IO 线程）：WebDAV 要按资源算认证头，
         // 交给组件就等于让每张卡片各自去猜，且实体一变整列都要重组
-        val items = snapshot.media.map { media ->
-            val candidate = CoverHelper.resolveCover(media, snapshot.sources)
-            MediaUiModel(
-                id = media.id,
-                title = media.title.decodeHtmlEntities(),
-                type = media.type,
-                coverPath = candidate?.path,
-                coverHeaders = candidate?.headers ?: emptyMap()
-            )
-        }
+        // 一剧一卡：同一 series_key 的多季聚合为一张卡片，代表季优先取「上次播放」所在季。
+        // path 语义不变，底层仍是一季一行；只有当前页内的行参与聚合（PAGE_SIZE=200）。
+        val items = snapshot.media
+            // v1 升级上来的老行 series_key 为空（迁移回填只覆盖当时能识别的季目录名），
+            // 这里按 path 现算兜底，保证老数据也能聚合成一剧一卡。
+            .groupBy { media ->
+                SeriesKey.seriesKeyOf(media.path, media.type, media.storageId)
+                    .ifBlank { media.seriesKey }
+            }
+            .flatMap { (key, group) ->
+                if (key.isBlank() || group.size < 2) {
+                    group.map { media -> media.toCard(snapshot.sources) }
+                } else {
+                    val ordered = group.sortedWith(
+                        compareBy<MediaData> { SeriesKey.seasonNumberOf(SeriesKey.seasonLabelOf(it.path)) }
+                            .thenBy { it.title }
+                    )
+                    val representative = ordered.firstOrNull { it.playLast.isNotBlank() } ?: ordered.first()
+                    listOf(
+                        representative.toCard(
+                            sources = snapshot.sources,
+                            seriesTitle = SeriesKey.seriesTitleOf(representative.path)
+                                .ifBlank { representative.title.decodeHtmlEntities() },
+                            seasonCount = ordered.size
+                        )
+                    )
+                }
+            }
         val resumeItems = snapshot.resume.map { row ->
             val mediaId = row.sourceKey.removePrefix(LIBRARY_PREFIX)
             val thumbFile = AppUtil.buildThumbFile(getApplication(), row.videoId)

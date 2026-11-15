@@ -297,13 +297,23 @@ fun LibraryScreen(
                 }
             } else {
                 itemsIndexed(filteredList, key = { _, media -> media.id }) { index, media ->
-                    PosterTile(
-                        media = media,
-                        index = index,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                        onLongClick = { menuMedia = media },
-                        onClick = { onOpen(media.id) }
-                    )
+                    Column(Modifier.fillMaxWidth()) {
+                        PosterTile(
+                            media = media,
+                            index = index,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                            onLongClick = { menuMedia = media },
+                            onClick = { onOpen(media.id) }
+                        )
+                        if (media.seasonCount > 1) {
+                            Text(
+                                stringResource(R.string.library_season_count, media.seasonCount),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = c.textTertiary,
+                                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                            )
+                        }
+                    }
                 }
             }
             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -353,7 +363,14 @@ private fun LibraryContentPreview() {
                 phase = LibraryPhase.Content,
                 media = listOf(
                     MediaUiModel(id = "m1", title = "示例媒体库", type = MediaLibType.LOCAL),
-                    MediaUiModel(id = "m2", title = "远端片源", type = MediaLibType.WEBDAV)
+                    MediaUiModel(id = "m2", title = "远端片源", type = MediaLibType.WEBDAV),
+                    MediaUiModel(
+                        id = "m3",
+                        title = "示例多季剧集",
+                        type = MediaLibType.LOCAL,
+                        seriesKey = "series-demo",
+                        seasonCount = 2
+                    )
                 ),
                 resumeItems = listOf(
                     ResumeItemUi(

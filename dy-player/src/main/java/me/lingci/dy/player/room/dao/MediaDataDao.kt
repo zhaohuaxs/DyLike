@@ -75,6 +75,16 @@ interface MediaDataDao {
     """)
     suspend fun listLibrary(): List<MediaData>
 
+    /** 同一部剧的全部季（详情页季 Tab 用）；series_key 为空的行不参与分组。 */
+    @Query(
+        """
+        SELECT * FROM media_data
+        WHERE series_key = :seriesKey AND series_key <> '' AND is_virtual = 0
+        ORDER BY pinned DESC, pinned_at DESC, last_played_at DESC, `index` DESC
+        """
+    )
+    suspend fun listBySeriesKey(seriesKey: String): List<MediaData>
+
     // ---- 写入 ----
 
     @Upsert

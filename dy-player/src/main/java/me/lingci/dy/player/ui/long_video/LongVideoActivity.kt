@@ -26,6 +26,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.lingci.dy.player.PlayerApp
+import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.ActivityLongVideoBinding
 import me.lingci.dy.player.core.DyPlayerCore
 import me.lingci.dy.player.core.DyPlayerCoreRegistry
@@ -41,6 +43,7 @@ import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.ExternalSubtitleLoader
 import me.lingci.dy.player.util.MediaPlaybackRecorder
 import me.lingci.dy.player.util.PlaybackTraceHelper
+import me.lingci.dy.player.util.PlayingListStore
 import me.lingci.dy.player.util.PlaybackLogCache
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.VideoDataBinder
@@ -102,8 +105,13 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         private const val KEY_INDEX = "index"
         private const val KEY_HISTORY = "history"
         private const val KEY_TEMP = "temp"
+        private const val KEY_PLAYING_LIST = "playing_list"
+        private const val KEY_SEASON_LABEL = "season_label"
 
         private const val BACKGROUND_RECOVERY_WINDOW_MS = 5000L
+
+        /** 连续播放失败达到该次数后停止自动切集，避免坏片队列 + loopList 无限跳集。 */
+        private const val MAX_AUTO_SKIP_ON_ERROR = 3
 
         // 超分开关广播 action（adb 和 LabSettingsFragment 都可发）
         const val ACTION_SUPER_RESOLUTION_ON = "me.lingci.dy.player.SUPER_RES_ON"
@@ -113,27 +121,66 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             val bundle = bundleOf()
             bundle.putInt(KEY_INDEX, index)
             bundle.putBoolean(KEY_HISTORY, history)
-            start(context, bundle, list)
+            start(context, bundle, list, "")
         }
 
         fun start(
             context: Context, mediaData: MediaData?, list: ArrayList<VideoData>,
             index: Int, history: Boolean
         ) {
+            start(context, mediaData, list, index, history, "")
+        }
+
+        /** 多季剧集入口：季名透传到播放页，季末给出提示。 */
+        fun start(
+            context: Context, mediaData: MediaData?, list: ArrayList<VideoData>,
+            index: Int, history: Boolean, seasonLabel: String
+        ) {
             val bundle = bundleOf()
             bundle.putInt(KEY_INDEX, index)
             bundle.putBoolean(KEY_HISTORY, history)
+            bundle.putString(KEY_SEASON_LABEL, seasonLabel)
             if (mediaData != null && !history) {
                 bundle.putParcelable(KEY_MEDIA, mediaData)
             }
-            start(context, bundle, list)
+            start(context, bundle, list, seasonLabel)
         }
 
-        private fun start(context: Context, bundle: Bundle, list: ArrayList<VideoData>) {
-            bundle.putString(KEY_TEMP, VideoListTempStore.write(context, list))
-            val intent = Intent(context, LongVideoActivity::class.java)
-            intent.putExtra(KEY_BUNDLE, bundle)
-            context.startActivity(intent)
+        /** 列表写 Room 在 IO 线程完成，主线程只负责 startActivity，避免大列表序列化卡顿。 */
+        private fun start(
+            context: Context,
+            bundle: Bundle,
+            list: ArrayList<VideoData>,
+            seasonLabel: String
+        ) {
+            PlayerApp.appScope.launch {
+                val sessionId = try {
+                    PlayingListStore.write(list, seasonLabel)
+                } catch (e: Exception) {
+                    Log.d("LongVideoActivity", "playing list room write failed: ${e.message}")
+                    null
+                }
+                // 降级路径的 JSON 序列化 + 写盘同样放 IO，主线程只负责 putExtra / startActivity
+                val tempPath = if (sessionId == null) {
+                    try {
+                        withContext(Dispatchers.IO) { VideoListTempStore.write(context, list) }
+                    } catch (e: Exception) {
+                        Log.d("LongVideoActivity", "playing list fallback write failed: ${e.message}")
+                        null
+                    }
+                } else null
+                withContext(Dispatchers.Main) {
+                    if (sessionId != null) {
+                        bundle.putString(KEY_PLAYING_LIST, sessionId)
+                    } else if (tempPath != null) {
+                        // Room 写失败时降级到临时 JSON，保证起播不丢
+                        bundle.putString(KEY_TEMP, tempPath)
+                    }
+                    val intent = Intent(context, LongVideoActivity::class.java)
+                    intent.putExtra(KEY_BUNDLE, bundle)
+                    context.startActivity(intent)
+                }
+            }
         }
     }
 
@@ -143,6 +190,12 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
     private var mCurPos = 0
     private val spUtil by lazy { SpUtil(this) }
     private var onHistory: Boolean = false
+    /** 当前季名；非空表示这是「本季连播」队列，季末提示用 */
+    private var seasonLabel: String = ""
+    /** Room 播放会话 id，读不删，仅主动结束时清理 */
+    private var playingListSessionId: String? = null
+    /** 连续播放失败次数：进入可播放状态时清零，用于给错误自动切集设上限 */
+    private var consecutivePlayErrors = 0
     private val itemViewModel: LongVideoViewModel by viewModels()
     private lateinit var binding: ActivityLongVideoBinding
     private lateinit var videoView: CustomVideoView
@@ -444,7 +497,16 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             outState.putInt(KEY_INDEX, mCurPos)
             outState.putBoolean(KEY_HISTORY, onHistory)
             outState.putParcelable(KEY_MEDIA, itemViewModel.getMediaData())
-            outState.putString(KEY_TEMP, VideoListTempStore.write(this, itemViewModel.getData()))
+            // 季名与播放会话也要恢复：配置变化不应丢掉季末提示，也不应重新写一份队列
+            outState.putString(KEY_SEASON_LABEL, seasonLabel)
+            val sessionId = playingListSessionId
+            if (sessionId != null) {
+                // Room 会话本身可重复读，无需磁盘快照；再写一份 KEY_TEMP 会留下永远不会被读取的孤儿 JSON
+                outState.putString(KEY_PLAYING_LIST, sessionId)
+            } else {
+                // 只有 Room 写失败的降级路径才需要磁盘快照兜底
+                outState.putString(KEY_TEMP, VideoListTempStore.write(this, itemViewModel.getData()))
+            }
 
         }
     }
@@ -475,26 +537,26 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     private fun init(bundle: Bundle?) {
         mCurPos = bundle?.getInt(KEY_INDEX, 0)?: 0
+        seasonLabel = bundle?.getString(KEY_SEASON_LABEL).orEmpty()
         itemViewModel.initData.observe(this) {
             if (it) {
+                val startedAt = System.currentTimeMillis()
                 itemViewModel.getData().let { data ->
                     data.map { item -> TitleItem(title = item.name) }
                         .let { list -> epSelectView.setData(list) }
                 }
+                Log.d(
+                    "LongVideoActivity",
+                    "episode select size=${itemViewModel.getItemSize()} " +
+                        "cost=${System.currentTimeMillis() - startedAt}ms"
+                )
                 if (itemViewModel.getItemSize() > 0 && !pendingBgReclaim && !videoView.hasPlayer()) {
                     startPlay(mCurPos)
                 }
             }
         }
         onHistory = bundle?.getBoolean(KEY_HISTORY, false)?: false
-        bundle?.getString(KEY_TEMP)?.let { path ->
-            lifecycleScope.launch(Dispatchers.IO) {
-                val list = VideoListTempStore.readAndDelete(path)
-                withContext(Dispatchers.Main) {
-                    itemViewModel.addAll(list)
-                }
-            }
-        }
+        loadPlayQueue(bundle)
         bundle?.safeGetParcelable<MediaData>(KEY_MEDIA)?.let {
             itemViewModel.setMediaData(it)
         }
@@ -511,6 +573,42 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             }
         })
         fromOpen()
+    }
+
+    /**
+     * 播放队列恢复：Room 会话优先；会话失效（启动清理 / 进程重启）时回退磁盘快照。
+     * 两条入口统一收敛，避免「写了快照却永远不读」留下孤儿 JSON。
+     */
+    private fun loadPlayQueue(bundle: Bundle?) {
+        val sessionId = bundle?.getString(KEY_PLAYING_LIST)
+        val tempPath = bundle?.getString(KEY_TEMP)
+        if (sessionId.isNullOrBlank()) {
+            if (!tempPath.isNullOrBlank()) readTempQueue(tempPath)
+            return
+        }
+        playingListSessionId = sessionId
+        lifecycleScope.launch(Dispatchers.IO) {
+            val list = try {
+                PlayingListStore.read(sessionId)
+            } catch (e: Exception) {
+                Log.d("LongVideoActivity", "playing list read failed: ${e.message}")
+                emptyList()
+            }
+            if (list.isNotEmpty()) {
+                withContext(Dispatchers.Main) { itemViewModel.addAll(list) }
+            } else if (!tempPath.isNullOrBlank()) {
+                withContext(Dispatchers.Main) { readTempQueue(tempPath) }
+            } else {
+                Log.d("LongVideoActivity", "playing list session expired: $sessionId")
+            }
+        }
+    }
+
+    private fun readTempQueue(path: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val list = VideoListTempStore.readAndDelete(path)
+            withContext(Dispatchers.Main) { itemViewModel.addAll(list) }
+        }
     }
 
     private fun initVideoView() {
@@ -681,6 +779,8 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
                 // commitInitialSeek 的 seekTo 才不被 isInPlaybackState() 丢弃（否则丢历史进度）。
                 // onPlayStart 内部按 requestId 去重，正常 PREPARED 路径不会重复执行。
                 if (playState == VideoView.STATE_PLAYING || playState == VideoView.STATE_BUFFERED) {
+                    // 有一集真正播起来了，连续失败计数归零；坏片队列才会连续累加到上限
+                    consecutivePlayErrors = 0
                     onPlayStart()
                 }
                 if (playState == VideoView.STATE_ERROR) {
@@ -732,12 +832,17 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
                     // 非后台恢复错误，或已重试过一次，执行正常错误处理
                     longDanmakuController.saveCacheInfo(binding.videoView.currentPosition, true)
-                    if (spUtil.autoNext) {
+                    if (spUtil.autoNext && consecutivePlayErrors < MAX_AUTO_SKIP_ON_ERROR - 1) {
+                        consecutivePlayErrors++
                         // F2-4：错误切集与完成切集、通知切集共用同一交接事务，
                         // 先把 Service 侧 player 收回，避免新旧 player 并存导致通知控制对象分裂。
                         reclaimFromServiceForSwitch(keepService = !isForeground)
                         longVideoControlView.showTips("播放错误，自动播放下一集")
                         onNextPlay()
+                    } else if (spUtil.autoNext) {
+                        // 坏片队列 + loopList 不再无限跳集：显式收尾，避免孤立 FGS 与 O(n²) 扫描
+                        closeBackgroundSession()
+                        longVideoControlView.showTips(getString(R.string.player_auto_skip_stopped))
                     } else {
                         // 不自动续播：显式终止后台会话，避免通知栏残留一个已损坏的会话。
                         closeBackgroundSession()
@@ -804,7 +909,14 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             longVideoControlView.showTips("循环到第一集")
         } else {
             danmakuView.release()
-            longVideoControlView.showTips("没有更多")
+            // 季末：本季队列播完，只提示返回详情页选季，不做一键跨季切换。
+            longVideoControlView.showTips(
+                if (seasonLabel.isNotEmpty()) {
+                    getString(R.string.player_season_end, seasonLabel)
+                } else {
+                    "没有更多"
+                }
+            )
             // 后台连播到达边界：没有新视频可交回，显式收尾避免孤立 FGS
             if (pendingBgSwitch) {
                 pendingBgSwitch = false
@@ -915,7 +1027,14 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
             videoView.start()
         }
         videoView.post { videoScaleControlView.applyCache() }
+        val selectStartedAt = System.nanoTime()
         epSelectView.selected(position)
+        // 千条队列回归用：selected() 已用缓存下标，耗时不应随队列长度增长
+        Log.d(
+            "LongVideoActivity",
+            "episode select pos=$position size=${itemViewModel.getItemSize()} " +
+                "costUs=${(System.nanoTime() - selectStartedAt) / 1000}"
+        )
         saveMediaInfo(videoBean.videoUrl)
     }
 
@@ -1583,6 +1702,12 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     override fun onDestroy() {
         super.onDestroy()
+        // 播放会话快照只在主动结束时清理；配置变化由 savedInstanceState 的磁盘队列恢复
+        if (isFinishing) {
+            playingListSessionId?.let { sessionId ->
+                PlayerApp.appScope.launch { PlayingListStore.delete(sessionId) }
+            }
+        }
         // 注销 PiP 广播接收器，避免内存泄漏
         unregisterPipActionReceiver()
         // 注销超分开关广播接收器

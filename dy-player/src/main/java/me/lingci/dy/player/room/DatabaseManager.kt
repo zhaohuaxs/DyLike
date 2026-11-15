@@ -2,10 +2,14 @@ package me.lingci.dy.player.room
 
 import androidx.room3.Room
 import androidx.room3.Transactor.SQLiteTransactionType
+import androidx.room3.migration.Migration
 import androidx.room3.useWriterConnection
+import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.AndroidSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 import me.lingci.dy.player.PlayerApp
+import me.lingci.dy.player.entity.MediaLibType
+import me.lingci.dy.player.util.SeriesKey
 import me.lingci.dy.player.room.dao.AppMetaDao
 import me.lingci.dy.player.room.dao.FavoriteDao
 import me.lingci.dy.player.room.dao.MediaDataDao
@@ -13,6 +17,7 @@ import me.lingci.dy.player.room.dao.MediaShuffleStateDao
 import me.lingci.dy.player.room.dao.PlayHistoryDao
 import me.lingci.dy.player.room.dao.PlaylistDao
 import me.lingci.dy.player.room.dao.PlaylistItemDao
+import me.lingci.dy.player.room.dao.PlayingListDao
 import me.lingci.dy.player.room.dao.SourceDataDao
 import me.lingci.dy.player.room.dao.VideoDataDao
 
@@ -37,6 +42,7 @@ object DatabaseManager {
         get() = _db ?: Room.databaseBuilder(PlayerApp.getAppContext(), AppDatabase::class.java, DB_NAME)
             .setDriver(AndroidSQLiteDriver()) // 2.7.1 起无参构造，路径由 Room builder 传入 open()
             .setQueryCoroutineContext(Dispatchers.IO)
+            .addMigrations(MIGRATION_1_2)
             .build()
             .also { _db = it }
 
@@ -57,6 +63,7 @@ object DatabaseManager {
     val playlistItemDao: PlaylistItemDao get() = db.playlistItemDao()
     val shuffleStateDao: MediaShuffleStateDao get() = db.mediaShuffleStateDao()
     val appMetaDao: AppMetaDao get() = db.appMetaDao()
+    val playingListDao: PlayingListDao get() = db.playingListDao()
 
     /**
      * 写事务包装（Room3）：块内的 suspend DAO 调用自动加入同一事务。
@@ -71,4 +78,92 @@ object DatabaseManager {
         }
     }
 
+}
+
+/**
+ * v1 → v2：多季分组列 + 播放队列暂存表。
+ *
+ * 只加列 / 加表 / 加索引，不改任何既有数据与外键，老行 series_key 取默认空串
+ * （按普通单级库处理），因此不需要回填，也不能用 destructive migration。
+ */
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        connection.exec("ALTER TABLE media_data ADD COLUMN series_key TEXT NOT NULL DEFAULT ''")
+        connection.exec("CREATE INDEX IF NOT EXISTS index_media_data_series_key ON media_data(series_key)")
+        connection.exec(
+            """
+            CREATE TABLE IF NOT EXISTS playing_list_item (
+                rowId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                session_id TEXT NOT NULL,
+                sort_in_session INTEGER NOT NULL,
+                season_label TEXT NOT NULL DEFAULT '',
+                id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                media_id TEXT NOT NULL,
+                video_url TEXT NOT NULL,
+                dm_url TEXT NOT NULL,
+                preview TEXT NOT NULL,
+                storage_type TEXT NOT NULL,
+                parent_path TEXT NOT NULL,
+                headers_json TEXT NOT NULL
+            )
+            """.trimIndent()
+        )
+        connection.exec(
+            "CREATE INDEX IF NOT EXISTS index_playing_list_item_session_id " +
+                "ON playing_list_item(session_id)"
+        )
+        connection.exec(
+            "CREATE INDEX IF NOT EXISTS index_playing_list_item_session_id_sort_in_session " +
+                "ON playing_list_item(session_id, sort_in_session)"
+        )
+        backfillSeriesKeys(connection)
+    }
+}
+
+/**
+ * 回填老数据的多季分组键。
+ *
+ * 加列只能让新入库的行打标；用户库里已存在的 `剧集/S01`、`剧集/S02` 两行若保持空串，
+ * 升级后不会聚合成一剧一卡。这里按 path 的季目录名重新推导，无需用户重新扫描。
+ */
+private fun backfillSeriesKeys(connection: SQLiteConnection) {
+    val pending = mutableListOf<Pair<String, String>>()
+    val select = connection.prepare(
+        "SELECT id, path, media_type, storage_id FROM media_data WHERE series_key = ''"
+    )
+    try {
+        while (select.step()) {
+            val id = select.getText(0)
+            val path = select.getText(1)
+            val type = MediaLibType.fromValue(select.getInt(2))
+            val storageId = if (select.isNull(3)) null else select.getText(3)
+            val key = SeriesKey.seriesKeyOf(path, type, storageId)
+            if (key.isNotBlank()) pending += id to key
+        }
+    } finally {
+        select.close()
+    }
+    if (pending.isEmpty()) return
+    val update = connection.prepare("UPDATE media_data SET series_key = ? WHERE id = ?")
+    try {
+        pending.forEach { (id, key) ->
+            update.reset()
+            update.clearBindings()
+            update.bindText(1, key)
+            update.bindText(2, id)
+            update.step()
+        }
+    } finally {
+        update.close()
+    }
+}
+
+private fun SQLiteConnection.exec(sql: String) {
+    val statement = prepare(sql)
+    try {
+        statement.step()
+    } finally {
+        statement.close()
+    }
 }

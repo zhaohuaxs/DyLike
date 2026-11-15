@@ -13,6 +13,7 @@ import me.lingci.dy.player.room.dao.MediaShuffleStateDao
 import me.lingci.dy.player.room.dao.PlayHistoryDao
 import me.lingci.dy.player.room.dao.PlaylistDao
 import me.lingci.dy.player.room.dao.PlaylistItemDao
+import me.lingci.dy.player.room.dao.PlayingListDao
 import me.lingci.dy.player.room.dao.SourceDataDao
 import me.lingci.dy.player.room.dao.VideoDataDao
 import me.lingci.dy.player.room.entity.AppMeta
@@ -21,6 +22,7 @@ import me.lingci.dy.player.room.entity.MediaShuffleStateEntity
 import me.lingci.dy.player.room.entity.PlayHistory
 import me.lingci.dy.player.room.entity.Playlist
 import me.lingci.dy.player.room.entity.PlaylistItem
+import me.lingci.dy.player.room.entity.PlayingListItem
 
 /**
  * Room数据库抽象类
@@ -38,9 +40,10 @@ import me.lingci.dy.player.room.entity.PlaylistItem
         Playlist::class,
         PlaylistItem::class,
         MediaShuffleStateEntity::class,
-        AppMeta::class
+        AppMeta::class,
+        PlayingListItem::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 @ColumnTypeConverters(
@@ -59,4 +62,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun playlistItemDao(): PlaylistItemDao
     abstract fun mediaShuffleStateDao(): MediaShuffleStateDao
     abstract fun appMetaDao(): AppMetaDao
+    abstract fun playingListDao(): PlayingListDao
 }

@@ -53,6 +53,7 @@ import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
 import me.lingci.dy.player.ui.compose.theme_screen.ThemeScreen
 import me.lingci.dy.player.util.LibraryCompat
+import me.lingci.dy.player.util.SeriesKey
 
 object Dest {
     const val Library = "library"
@@ -209,8 +210,8 @@ fun AppNavHost(
             DetailRoute(
                 mediaId = mediaId,
                 onBack = { navController.popBackStack() },
-                onPlay = { media, videos, index, isShort ->
-                    startPlayback(context, media, videos, index, isShort)
+                onPlay = { media, videos, index, isShort, seasonLabel ->
+                    startPlayback(context, media, videos, index, isShort, seasonLabel = seasonLabel)
                 }
             )
         }
@@ -330,13 +331,20 @@ private fun startPlayback(
     list: List<VideoData>,
     index: Int,
     isShort: Boolean,
+    seasonLabel: String = "",
     history: Boolean = media?.isHistory() == true
 ) {
     if (list.isEmpty()) return
     val arrayList = ArrayList(list)
+    // 多季剧集：把当前季名透传给播放页，季末在 onNextPlay 的边界分支给出提示。
+    // 剧集根库没有季目录 path，季名由详情页按当前选中的子目录传入；
+    // 一季一库仍可从 media.path 推导。历史 / 喜欢 / 播放列表入口季名为空，行为不变。
+    val season = seasonLabel.ifBlank {
+        media?.path?.let { SeriesKey.seasonLabelOf(it) }.orEmpty()
+    }
     if (isShort) {
         ShortVideoActivity.start(context, media, arrayList, index, history)
     } else {
-        LongVideoActivity.start(context, media, arrayList, index, history)
+        LongVideoActivity.start(context, media, arrayList, index, history, season)
     }
 }

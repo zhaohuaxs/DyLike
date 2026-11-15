@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -36,6 +37,7 @@ import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.CoverHelper
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.MediaManger
+import me.lingci.dy.player.util.SeriesKey
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.decodeHtmlEntities
 import me.lingci.dy.player.util.thumb.RemoteThumbSource
@@ -75,6 +77,14 @@ data class DetailEntryUi(
     val lastPlay: Boolean
 )
 
+/** 季 Tab 的一项：只含渲染所需字段，不含 Room 实体。 */
+@Immutable
+data class SeasonUi(
+    val mediaId: String,
+    val label: String,
+    val selected: Boolean
+)
+
 enum class DetailPhase { Loading, Content, Error }
 
 /** 一次性事件：滚动位置属于 Screen 的本地状态，不塞进 UiState。 */
@@ -105,7 +115,13 @@ data class DetailUiState(
     /** 正在补页以便跳到 [lastPlayedIndex]：按钮据此显示进度并防重复点击 */
     val jumpingToLastPlayed: Boolean = false,
     /** 本地媒体库缺少存储权限：空列表不是「没有视频」，而是根本读不到 */
-    val needsStoragePermission: Boolean = false
+    val needsStoragePermission: Boolean = false,
+    /** 同剧全部季（≥2 项时显示季 Tab） */
+    val seasons: List<SeasonUi> = emptyList(),
+    /** 当前季名，供播放页季末提示 */
+    val seasonLabel: String = "",
+    /** 换季重建列表期间保留旧内容，只显示顶部细进度条，避免整屏闪白 */
+    val switchingSeason: Boolean = false
 )
 
 private class StoragePermissionRequiredException : Exception()
@@ -145,6 +161,13 @@ class DetailViewModel(private val app: Application) : ViewModel() {
     private var loadedId: String? = null
 
     /**
+     * 剧集根库（根目录下是季子目录）的分组缓存。
+     * 跨季切换直接复用，避免每次点 Tab 都重新 PROPFIND / 遍历磁盘；换库按 mediaId 自动失效。
+     */
+    private var seasonGroupsCache: Pair<String, List<SeasonGroup>>? = null
+    private var activeSeasonDir: String = ""
+
+    /**
      * 缩略图生成请求：只保留最新一批。
      *
      * 旧实现进详情页就对整个列表抽帧，1000 条视频等于上千次 MediaMetadataRetriever，
@@ -169,31 +192,44 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         }
     }
 
-    fun load(mediaId: String, force: Boolean = false) {
+    /**
+     * [keepContent] 用于换季：不把整页推回 Loading，旧列表继续可见，
+     * 只由 [DetailUiState.switchingSeason] 驱动顶部细进度条；数据就绪后整体替换。
+     */
+    fun load(mediaId: String, force: Boolean = false, keepContent: Boolean = false) {
         if (!force && loadedId == mediaId && _state.value.phase == DetailPhase.Content) return
         loadedId = mediaId
         cancelJobs()
         generation++
         loadJob = viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
-            _state.value = DetailUiState(phase = DetailPhase.Loading)
+            if (keepContent) {
+                _state.value = _state.value.copy(switchingSeason = true)
+            } else {
+                _state.value = DetailUiState(phase = DetailPhase.Loading)
+            }
             val readStart = SystemClock.elapsedRealtime()
             val base = try {
                 withContext(Dispatchers.IO) { readBase(mediaId) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: StoragePermissionRequiredException) {
-                _state.value = DetailUiState(
-                    phase = DetailPhase.Error,
-                    needsStoragePermission = true
-                )
+                _state.value = if (keepContent) {
+                    _state.value.copy(switchingSeason = false)
+                } else {
+                    DetailUiState(phase = DetailPhase.Error, needsStoragePermission = true)
+                }
                 return@launch
             } catch (t: Throwable) {
                 null
             }
             val baseCost = SystemClock.elapsedRealtime() - readStart
             if (base == null) {
-                _state.value = DetailUiState(phase = DetailPhase.Error)
+                _state.value = if (keepContent) {
+                    _state.value.copy(switchingSeason = false)
+                } else {
+                    DetailUiState(phase = DetailPhase.Error)
+                }
                 return@launch
             }
             rows = base.rows
@@ -215,7 +251,9 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                 playList = ordered.map { it.video },
                 totalCount = ordered.size,
                 hasMore = loadedEnd < ordered.size,
-                lastPlayedIndex = lastPlayedIndexOf(ordered)
+                lastPlayedIndex = lastPlayedIndexOf(ordered),
+                seasons = base.seasons,
+                seasonLabel = base.seasonLabel
             )
             requestThumbs(ordered, 0, loadedEnd)
             // 验证用：1000 条视频时「元数据」随条数线性增长、「首屏卡片」恒等于一页的量
@@ -224,6 +262,31 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                 "首屏就绪 videos=${rows.size} 已解析=${first.size} 元数据=${baseCost}ms " +
                     "首屏卡片=${SystemClock.elapsedRealtime() - readStart - baseCost}ms"
             )
+        }
+    }
+
+    /** 季 Tab 点击：根库切季只换缓存里的分组；一季一库则切到对应 mediaId 重读。 */
+    fun selectSeason(key: String) {
+        if (key.isBlank()) return
+        val groups = seasonGroupsCache?.second.orEmpty()
+        val isSeasonDir = groups.any { it.path == key }
+        if (isSeasonDir && key == activeSeasonDir) return
+        if (!isSeasonDir && key == loadedId) return
+        // 乐观更新：Tab 立刻高亮、季名立刻刷新；旧列表保留到新数据就绪，不闪全屏 Loading
+        val current = _state.value
+        val seasons = current.seasons.map { it.copy(selected = it.mediaId == key) }
+        _state.value = current.copy(
+            seasons = seasons,
+            seasonLabel = seasons.firstOrNull { it.selected }?.label.orEmpty(),
+            switchingSeason = true
+        )
+        if (isSeasonDir) {
+            activeSeasonDir = key
+            load(loadedId ?: return, force = true, keepContent = true)
+        } else {
+            activeSeasonDir = ""
+            seasonGroupsCache = null
+            load(key, force = true, keepContent = true)
         }
     }
 
@@ -341,16 +404,22 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             if (playLast == media.playLast || gen != generation) return@launch
             media.playLast = playLast
             val source = ordered
-            rows.forEach { it.video.lastPlay = playLast.isNotBlank() && it.video.videoUrl == playLast }
-            val entries = _state.value.entries.map { entry ->
+            // 一次遍历同时清旧标记、定位新下标；不再额外重建 playList 或二次 indexOfFirst。
+            // playList 里的 VideoData 与 source 是同一批引用，顺序也没变，无需重建全量列表。
+            var newIndex: Int? = null
+            source.forEachIndexed { index, row ->
+                val match = playLast.isNotBlank() && row.video.videoUrl == playLast
+                row.video.lastPlay = match
+                if (match && newIndex == null) newIndex = index
+            }
+            // 异步期间用户可能输入了搜索词（只改 query、不递增 generation），取最新状态再写回
+            val latest = _state.value
+            if (latest.phase != DetailPhase.Content || gen != generation) return@launch
+            val entries = latest.entries.map { entry ->
                 entry.copy(lastPlay = source.getOrNull(entry.playIndex)?.video?.lastPlay == true)
             }
-            _state.value = _state.value.copy(
-                playList = source.map { it.video },
-                entries = entries,
-                lastPlayedIndex = lastPlayedIndexOf(source)
-            )
-            Log.d(TAG, "上次播放已刷新 index=${_state.value.lastPlayedIndex}")
+            _state.value = latest.copy(entries = entries, lastPlayedIndex = newIndex)
+            Log.d(TAG, "上次播放已刷新 index=$newIndex")
         }
     }
 
@@ -541,7 +610,19 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             else -> false
         }
         val listStart = SystemClock.elapsedRealtime()
-        val videos = loadVideos(media)
+        // 用户也可能通过「文件浏览 → 主目录」把剧集根直接加进媒体库：根下只有季子目录、
+        // 没有视频。此时逐季下钻，季 Tab 由子目录构造，播放队列天然等于当前季；
+        // 普通单级库 / 一季一库仍走原逻辑。
+        val groups = seasonGroupsCache?.takeIf { it.first == mediaId }?.second
+            ?: loadSeasonGroups(media).also { seasonGroupsCache = mediaId to it }
+        val activeDir = activeSeasonDir.takeIf { dir -> groups.any { it.path == dir } }
+            ?: groups.firstOrNull()?.path.orEmpty()
+        activeSeasonDir = activeDir
+        val videos = if (groups.isNotEmpty()) {
+            groups.first { it.path == activeDir }.videos
+        } else {
+            loadVideos(media)
+        }
         if (media.playLast.isNotBlank()) {
             videos.forEach { it.lastPlay = media.playLast == it.videoUrl }
         }
@@ -565,7 +646,48 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             coverPath = candidate?.path,
             coverHeaders = candidate?.headers ?: emptyMap()
         )
-        return DetailPayload(media, rows, shortMode, cover)
+        // 季 Tab 来源二选一：根库下钻出的季子目录 > 同 series_key 的一季一库集合。
+        // 老库（v1 升级上来）series_key 可能为空，这里按 path 现算兜底，避免升级后聚合失效。
+        val runtimeSeriesKey = SeriesKey.seriesKeyOf(media.path, media.type, media.storageId)
+            .ifBlank { media.seriesKey }
+        val seasonLabel = if (groups.isNotEmpty()) {
+            groups.first { it.path == activeDir }.label
+        } else {
+            SeriesKey.seasonLabelOf(media.path)
+        }
+        val seasons = when {
+            groups.isNotEmpty() -> groups.sortedWith(
+                compareBy<SeasonGroup> { SeriesKey.seasonNumberOf(it.label) }.thenBy { it.label }
+            ).map { group ->
+                SeasonUi(
+                    mediaId = group.path,
+                    label = group.label,
+                    selected = group.path == activeDir
+                )
+            }
+            runtimeSeriesKey.isBlank() -> emptyList()
+            else -> DatabaseManager.mediaDataDao.listLibrary()
+                // 不能只按 series_key 查库：旧版扫描 / 文件浏览「添加媒体库」曾直调 insert
+                // 绕过 LibraryCompat 打标，这些行 series_key 恒为空串，SQL 查不到。
+                // 这里按 path 现算兜底，与首页一剧一卡的 groupBy 口径保持一致。
+                .filter { candidate ->
+                    SeriesKey.seriesKeyOf(candidate.path, candidate.type, candidate.storageId)
+                        .ifBlank { candidate.seriesKey } == runtimeSeriesKey
+                }
+                .sortedWith(
+                    compareBy<MediaData> { SeriesKey.seasonNumberOf(SeriesKey.seasonLabelOf(it.path)) }
+                        .thenBy { it.title }
+                )
+                .map { season ->
+                    SeasonUi(
+                        mediaId = season.id,
+                        label = SeriesKey.seasonLabelOf(season.path)
+                            .ifBlank { season.title.decodeHtmlEntities() },
+                        selected = season.id == media.id
+                    )
+                }
+        }
+        return DetailPayload(media, rows, shortMode, cover, seasons, seasonLabel)
     }
 
     /**
@@ -579,9 +701,11 @@ class DetailViewModel(private val app: Application) : ViewModel() {
      * 该对象只存在于内存：不要拿它去 `MediaHelper.updateMedia` 落库。
      */
     private suspend fun readPlaylistAsMedia(playlistId: String): MediaData? {
+        val startedAt = SystemClock.elapsedRealtime()
         val playlist = DatabaseManager.playlistDao.getById(playlistId) ?: return null
-        val items = DatabaseManager.playlistItemDao.listByPlaylist(playlistId)
-            .mapNotNull { DatabaseManager.videoDataDao.getById(it.videoId) }
+        // 一条 JOIN 取回全部视频，替代「1 次全量 playlist_item + N 次 video_data 单条查」的 N+1
+        val items = DatabaseManager.playlistItemDao.listVideosByPlaylist(playlistId)
+        Log.d(TAG, "片单取数 items=${items.size} cost=${SystemClock.elapsedRealtime() - startedAt}ms")
         return MediaData(
             id = playlist.id,
             title = playlist.title,
@@ -598,8 +722,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             MediaLibType.LIKE -> DatabaseManager.favoriteDao.listFavoriteVideos()
             MediaLibType.PLAYLIST -> {
                 val items = if (media.items.isNotEmpty()) media.items
-                else DatabaseManager.playlistItemDao.listByPlaylist(media.id)
-                    .mapNotNull { DatabaseManager.videoDataDao.getById(it.videoId) }
+                else DatabaseManager.playlistItemDao.listVideosByPlaylist(media.id)
                 LibraryCompat.sortByParentPath(items.toMutableList())
             }
             MediaLibType.DEFAULT, MediaLibType.LOCAL -> {
@@ -649,6 +772,83 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         }
     }
 
+    /**
+     * 剧集根库：根目录只有季子目录时逐季下钻。
+     * 返回空列表表示「普通单级库」，由 [loadVideos] 按原逻辑处理。
+     */
+    private suspend fun loadSeasonGroups(media: MediaData): List<SeasonGroup> = when (media.type) {
+        MediaLibType.DEFAULT, MediaLibType.LOCAL -> loadLocalSeasonGroups(media)
+        MediaLibType.WEBDAV, MediaLibType.SMB -> loadRemoteSeasonGroups(media)
+        else -> emptyList()
+    }
+
+    private fun loadLocalSeasonGroups(media: MediaData): List<SeasonGroup> {
+        if (!PermissionUtil.hasStorageAccess(app)) return emptyList()
+        val root = File(media.path.ifBlank { FileOperator.movieFolder.path })
+        val children = root.listFiles()?.toList() ?: return emptyList()
+        // 根下直接有视频 → 普通单级库，不要下钻（避免把散落子目录误判成季）
+        if (children.any { it.isFile && it.name.isVideo() }) return emptyList()
+        val dirs = children.filter { it.isDirectory && !it.name.startsWith(".") }
+        if (dirs.isEmpty()) return emptyList()
+        // 单季新番也是「主目录 + 一个 Season 子目录」，只要求有子目录即可下钻；
+        // 过滤掉不含视频的子目录（字幕 / 花絮 / 空文件夹），避免把整库判成空。
+        return dirs.map { dir ->
+            SeasonGroup(
+                label = dir.name,
+                path = dir.path,
+                videos = FileOperator.getSortedFiles(dir, FileOperator.VIDEO_EXTENSIONS)
+                    .map { VideoData(it) }
+            )
+        }.filter { it.videos.isNotEmpty() }
+    }
+
+    private suspend fun loadRemoteSeasonGroups(media: MediaData): List<SeasonGroup> {
+        val sources = DatabaseManager.sourceDataDao.list()
+        val storageId = LibraryCompat.effectiveStorageId(media, sources) ?: return emptyList()
+        val source = sources.firstOrNull { it.id == storageId } ?: return emptyList()
+        val storage = source.toStorage() ?: return emptyList()
+        return try {
+            if (!storage.testConnect()) return emptyList()
+            val rootEntries = storage.listFile(media.path, false).toList()
+            if (rootEntries.any { it.isFile && it.name.isVideo() }) return emptyList()
+            val dirs = rootEntries.filter {
+                !it.isFile && it.name.isNotBlank() && !it.name.startsWith(".") && !it.returnParent
+            }
+            if (dirs.isEmpty()) return emptyList()
+            // 单季新番同样只有一个 Season 子目录；只保留真正含视频的分组
+            dirs.map { dir ->
+                val videos = storage.listFile(dir.path, false).toList()
+                    .filter { it.isFile && it.name.isVideo() }
+                    .map { item ->
+                        VideoData().apply {
+                            name = item.name
+                            videoUrl = storage.fullPath(item.path)
+                            putToken(storage.getToken())
+                            type = source.storageType()
+                            parentPath = item.path.substringBeforeLast("/").substringAfterLast("/")
+                            mediaId = media.id
+                            id = md5()
+                        }
+                    }
+                SeasonGroup(label = dir.name, path = dir.path, videos = videos)
+            }.filter { it.videos.isNotEmpty() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d(TAG, "剧集根逐季列目录失败: ${media.title} ${e.message}")
+            emptyList()
+        } finally {
+            storage.release()
+        }
+    }
+
+    /** 根目录的一个季子目录：只保留渲染与起播需要的字段。 */
+    private class SeasonGroup(
+        val label: String,
+        val path: String,
+        val videos: List<VideoData>
+    )
+
     private fun cancelJobs() {
         loadJob?.cancel()
         pageJob?.cancel()
@@ -668,7 +868,9 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         val media: MediaData,
         val rows: List<VideoRow>,
         val shortMode: Boolean,
-        val cover: MediaUiModel
+        val cover: MediaUiModel,
+        val seasons: List<SeasonUi>,
+        val seasonLabel: String
     )
 
     private fun VideoData.modifiedTime(): Long =

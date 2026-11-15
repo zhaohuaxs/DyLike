@@ -315,6 +315,9 @@ object LibraryCompat {
     private suspend fun writeMedia(media: MediaData, items: List<VideoData>) {
         val mediaDao = DatabaseManager.mediaDataDao
         val videoDao = DatabaseManager.videoDataDao
+        // 多季分组统一在唯一入库入口打标：Compose 扫描、旧 View 扫描、表单新增/编辑
+        // 都会经过这里，path 语义与稳定 id 均不变，旧版取数零影响。
+        media.seriesKey = SeriesKey.seriesKeyOf(media.path, media.type, media.storageId)
         val normalized = if (items.isEmpty()) {
             emptyList()
         } else {
