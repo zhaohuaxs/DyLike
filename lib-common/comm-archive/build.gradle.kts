@@ -42,4 +42,6 @@ dependencies {
     //api(libs.zip4j)
     //api(libs.commons.compress)
     //api(libs.xz)
+
+    testImplementation(libs.test.junit)
 }

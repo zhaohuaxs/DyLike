@@ -155,8 +155,11 @@ object TextFixer {
         // 纯 ASCII：旧实现原样返回，保持一致
         if (bytes.all { (it.toInt() and 0xFF) < 0x80 }) return input
 
-        // UTF-8 严格合法优先（与旧实现 candidate1 一致，且不会破坏已有 UTF-8 结果）
-        strictDecode(bytes, Charsets.UTF_8)?.let { return it }
+        // UTF-8 严格合法且解出汉字：是真正的 UTF-8 中文名，直接采用，保护既有 UTF-8 结果。
+        // 但 UTF-8 解出的若非汉字（如 GBK「一」D2BB 恰为合法 UTF-8 → 西里尔「һ」），不能早退，
+        // 否则 GBK 基准被跳过；此时让 UTF-8 作为候选与 GBK 共同评分，由汉字基准胜出。
+        val utf8Text = strictDecode(bytes, Charsets.UTF_8)
+        if (utf8Text != null && utf8Text.any { it in '\u4E00'..'\u9FFF' }) return utf8Text
 
         // 以旧实现的 GBK 结果作为默认基准：严格解码失败时退回宽松解码，复刻旧逻辑，
         // 保证「GBK 解出至少 1 个汉字」的既有输出逐字符不变；其它编码必须同时严格合法且评分更高才能覆盖它。
@@ -168,8 +171,9 @@ object TextFixer {
             bestScore = score(gbkText, "GBK")
         }
 
-        // 其余候选按优先级：Big5 > Shift_JIS > EUC-KR > KOI8-R > IBM437（均需严格解码通过）
+        // 其余候选按优先级：UTF-8 > Big5 > Shift_JIS > EUC-KR > KOI8-R > IBM437（均需严格解码通过）
         val candidates = mutableListOf<Pair<String, String>>()
+        if (utf8Text != null) candidates.add("UTF-8" to utf8Text)
         strictDecode(bytes, BIG5)?.let { candidates.add("Big5" to it) }
         if (hasDoubleByteSjis(bytes)) {
             strictDecode(bytes, SHIFT_JIS)?.let { candidates.add("Shift_JIS" to it) }
