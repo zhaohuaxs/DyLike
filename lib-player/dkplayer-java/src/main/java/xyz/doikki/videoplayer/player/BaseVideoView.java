@@ -438,13 +438,25 @@ public class BaseVideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void pause() {
+        pauseInternal(true);
+    }
+
+    /**
+     * 音频焦点短暂丢失（LOSS_TRANSIENT）导致的暂停：不 abandon 焦点，保留焦点栈注册，
+     * 焦点归还时系统才会派发 GAIN 触发自动续播；若在此 abandon，应用被移出焦点栈，GAIN 不再到达。
+     */
+    public void pauseForTransientFocusLoss() {
+        pauseInternal(false);
+    }
+
+    private void pauseInternal(boolean abandonFocus) {
         mPlayWhenReady = false;
         if (mMediaPlayer != null && (isInPlaybackState()
                 || mCurrentPlayState == STATE_PREPARING
                 || mCurrentPlayState == STATE_BUFFERING)) {
             mMediaPlayer.pause();
             setPlayState(STATE_PAUSED);
-            if (mAudioFocusHelper != null && !isMute()) {
+            if (abandonFocus && mAudioFocusHelper != null && !isMute()) {
                 mAudioFocusHelper.abandonFocus();
             }
             mPlayerContainer.setKeepScreenOn(false);
