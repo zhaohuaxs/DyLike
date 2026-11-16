@@ -13,7 +13,6 @@ import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.ui.BaseAdapter
-import me.lingci.lib.base.util.CodeUtil
 import java.io.File
 
 class VideoShortItemAdapter(
@@ -41,7 +40,9 @@ class VideoShortItemAdapter(
         item: VideoData,
         position: Int
     ) {
-        val cacheKey = CodeUtil.md5(item.videoUrl)
+        // key 必须与 MediaManger.scanVideoThumb 一致（那边用的是 VideoData.md5()，
+        // 有条目 id 时返回 id 而不是 videoUrl 的 md5），否则生成的缩略图永远对不上文件名
+        val cacheKey = item.md5()
         File(
             binding.ivThumb.context.externalCacheDir,
             ".thumb/${cacheKey}.${AppUtil.THUMB_TYPE}"

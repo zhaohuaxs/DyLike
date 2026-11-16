@@ -18,6 +18,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -65,6 +66,13 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
     companion object {
         const val KEY_MEDIA = "media"
 
+        /** 首屏预抽条数（瀑布流 3 列，约一屏多一点） */
+        private const val THUMB_INITIAL_BATCH = 12
+
+        /** 可见范围前后各补几项：停下时把相邻屏也带上，减少滑过去的空图 */
+        private const val THUMB_WINDOW_BEFORE = 3
+        private const val THUMB_WINDOW_AFTER = 6
+
         /**
          * 启动媒体库详情页面
          * @param context 上下文
@@ -93,18 +101,93 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
     private var originalVideoData: MutableList<VideoData> = mutableListOf() // 原始完整数据，用于搜索过滤时恢复
     private var currentKeyword = "" // 当前搜索关键词
     private var wasPaused = false // 是否曾离开过页面（区分 onCreate 后的首个 onResume，用于返回时重查收藏）
+    /**
+     * 缩略图预热窗口队列。
+     *
+     * 旧实现把整份列表交给 `MediaManger.scanVideoThumb`，千条库会串行抽几十秒；
+     * 线性格局长视频模式根本不用缩略图，等于纯浪费。这里只抽「瀑布流当前可见范围 ±buffer」，
+     * 快速滑动时旧窗口被覆盖（CONFLATED），与 Compose 详情页 `thumbQueue` 行为一致。
+     */
+    private val thumbQueue = Channel<ThumbWindow>(Channel.CONFLATED)
+    private var thumbConsumerStarted = false
+
+    /** 一段待抽窗口：`from` 是它在适配器数据中的起始下标，用于回推刷新位置 */
+    private class ThumbWindow(val from: Int, val items: List<VideoData>)
 
     /**
-     * 瀑布流布局滚动监听器，防止滚动停止时重新排列
+     * 瀑布流布局滚动监听器：滚动停止时防止重新排列，并补抽新露出区域的缩略图。
      */
     private val onScrollListener = object : RecyclerView.OnScrollListener() {
         override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
             super.onScrollStateChanged(recyclerView, newState)
-            // 防止瀑布流在滚动停止时重新排列
             if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                // 防止瀑布流在滚动停止时重新排列
                 staggeredLayoutManager?.invalidateSpanAssignments()
+                // 停下后再抽，滑动过程中不跟手抢 CPU
+                requestVisibleThumbs()
             }
         }
+    }
+
+    /**
+     * 缩略图预热消费者：串行处理队列里的窗口，窗口被新窗口覆盖时旧批次自然作废。
+     *
+     * 抽完一批后按生成结果局部刷新：卡片通常已经 bind 成占位图，不通知就一直是默认图。
+     * 批量通知（一批一次）比逐条 notify 少很多次布局，瀑布流高度变化也只抖一次。
+     */
+    private fun startThumbWarmup() {
+        if (thumbConsumerStarted) return
+        thumbConsumerStarted = true
+        lifecycleScope.launch {
+            for (window in thumbQueue) {
+                val generated = mutableListOf<Int>()
+                MediaManger.scanVideoThumb(baseContext, window.items) { index ->
+                    generated += window.from + index
+                }
+                if (generated.isEmpty()) continue
+                val adapter = if (shortMode) videoShortItemAdapter else mediaDetailAdapter
+                generated.forEach { position ->
+                    if (position in 0 until adapter.itemCount) adapter.notifyItemChanged(position)
+                }
+            }
+        }
+    }
+
+    /** 当前适配器持有的数据（搜索/排序后以适配器为准） */
+    private fun currentThumbData(): List<VideoData> =
+        if (shortMode) videoShortItemAdapter.getData() else mediaDetailAdapter.getData()
+
+    /**
+     * 请求「当前可见范围 ±buffer」的缩略图。
+     *
+     * 只有瀑布流（短视频模式）展示缩略图；线性格局长视频模式直接跳过。
+     * 首屏尚未 layout（`findFirstVisibleItemPosition` 返回 -1）时退回预抽前若干条。
+     */
+    private fun requestVisibleThumbs() {
+        if (!shortMode || !::videoShortItemAdapter.isInitialized) return
+        val data = currentThumbData()
+        if (data.isEmpty()) return
+        val lm = binding.recyclerView.layoutManager
+        var first = -1
+        var last = -1
+        when (lm) {
+            is LinearLayoutManager -> {
+                first = lm.findFirstVisibleItemPosition()
+                last = lm.findLastVisibleItemPosition()
+            }
+            is StaggeredGridLayoutManager -> {
+                first = lm.findFirstVisibleItemPositions(null).minOrNull() ?: -1
+                last = lm.findLastVisibleItemPositions(null).maxOrNull() ?: -1
+            }
+        }
+        if (first < 0 || last < first) {
+            thumbQueue.trySend(ThumbWindow(0, data.take(THUMB_INITIAL_BATCH)))
+            return
+        }
+        val from = (first - THUMB_WINDOW_BEFORE).coerceAtLeast(0)
+        val end = (last + THUMB_WINDOW_AFTER + 1).coerceAtMost(data.size)
+        if (from >= end) return
+        thumbQueue.trySend(ThumbWindow(from, data.subList(from, end).toList()))
     }
 
     private val onBackPressedCallback = object : OnBackPressedCallback(true) {
@@ -367,6 +450,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
         } else {
             mediaDetailAdapter.updateData(filtered)
         }
+        // 搜索/排序改变了可见内容，按新列表重新请求窗口
+        binding.recyclerView.post { requestVisibleThumbs() }
     }
 
     /**
@@ -866,11 +951,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
     private fun changeRecycler(videoData: MutableList<VideoData>) {
         originalVideoData = videoData.toMutableList()
         currentKeyword = ""
-        // 异步扫描视频缩略图
-        lifecycleScope.launch(Dispatchers.IO) {
-            logD("scanVideoThumb")
-            MediaManger.scanVideoThumb(baseContext, videoData.toList())
-        }
+        // 缩略图不再全量扫描：启动窗口消费者，布局完成后再请求首屏
+        startThumbWarmup()
         if (shortMode) {
             // 瀑布流高度不固定，关闭 hasFixedSize 优化，避免布局优化失效导致位置跳动
             binding.recyclerView.setHasFixedSize(false)
@@ -901,6 +983,8 @@ class MediaDetailActivity : BaseActivity(), MenuProvider {
             refreshDanmakuCount()
         }
         binding.recyclerView.setEmptyView(0, emptyTips)
+        // layout 完成后可见范围才有值；此时取不到就退回预抽首屏
+        binding.recyclerView.post { requestVisibleThumbs() }
     }
 
     /**

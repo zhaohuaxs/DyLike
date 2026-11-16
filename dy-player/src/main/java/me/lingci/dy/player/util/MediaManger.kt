@@ -184,25 +184,31 @@ object MediaManger {
      *
      * - 已存在的缓存要过一遍黑帧校验，旧版留下的纯黑图会被删掉重生成；
      * - 先写 .tmp 再原子改名，避免失败留下半截文件被当成有效缓存；
-     * - 抽帧与压缩都在 IO，逐条串行，页面切换时按 isActive 提前退出。
+     * - 抽帧与压缩都在 IO，逐条串行，页面切换时按 isActive 提前退出；
+     * - [onGenerated] 在每条真正落盘成功后回调其下标，供调用方局部刷新（View 侧
+     *   RecyclerView 靠它把已经 bind 成占位图的卡片换成真图）。
      */
-    suspend fun scanVideoThumb(context: Context, videos: List<VideoData>) =
+    suspend fun scanVideoThumb(
+        context: Context,
+        videos: List<VideoData>,
+        onGenerated: ((index: Int) -> Unit)? = null
+    ) =
         withContext(Dispatchers.IO) {
             var generated = 0
             var replaced = 0
             var reused = 0
-            for (video in videos) {
+            videos.forEachIndexed { index, video ->
                 if (!isActive) return@withContext
                 // HLS/DASH 清单无法被 MediaMetadataRetriever 解复用，跳过。
                 // 其余本地/WebDAV/SMB 都走同一套抽帧，列表不再只有本地视频有缩略图。
-                if (RemoteThumbSource.isManifest(video.videoUrl)) continue
+                if (RemoteThumbSource.isManifest(video.videoUrl)) return@forEachIndexed
                 val file = AppUtil.buildThumbFile(context, video.md5())
                 if (ThumbQuality.isUsableThumbFile(file)) {
                     reused++
-                    continue
+                    return@forEachIndexed
                 }
                 if (file.exists()) replaced++
-                val bitmap = extractThumbnail(video) ?: continue
+                val bitmap = extractThumbnail(video) ?: return@forEachIndexed
                 val tmp = File(file.parentFile, "${file.name}.tmp")
                 try {
                     file.parentFile?.mkdirs()
@@ -214,7 +220,12 @@ object MediaManger {
                     }
                     if (tmp.length() > 0L) {
                         if (file.exists()) file.delete()
-                        if (tmp.renameTo(file)) generated++ else file.deleteExists()
+                        if (tmp.renameTo(file)) {
+                            generated++
+                            onGenerated?.invoke(index)
+                        } else {
+                            file.deleteExists()
+                        }
                     }
                 } catch (e: Exception) {
                     file.deleteExists()
