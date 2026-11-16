@@ -34,6 +34,8 @@ import me.lingci.lib.base.util.md5
  * - video_data 三个来源（媒体 items / 历史 / 收藏 / 播放列表 items）必须全部落库，
  *   否则 playlist_item.video_id 等子表 FK 违约
  * - 孤儿视频按 §1.5 四档规则归属，最终回退虚拟媒体 id，绝不写空串/悬空 mediaId
+ * - ★ play_history 的 updated_at 必须**逐行唯一**：首页/历史页都按「每组最新一条」取数，
+ *   同一媒体多集写成同一个时间戳会让续播查询返回重复 mediaId，UI 的 Lazy key 直接崩
  * - ★ 合并语义：迁移可被「稍后再说」推迟，期间用户照常写 Room（加媒体/播放/收藏），
  *   重跑时同 id 行一律以库内为准（IGNORE 跳过而非主键冲突整批回滚），SP 快照只补空；
  *   写入前先按 id 去重，避免 SP 自身的重复记录互相冲突
@@ -231,8 +233,15 @@ object MigrationExecutor {
             val now = System.currentTimeMillis()
             val realMediaIds = mediaById.filterValues { !it.isVirtual }.keys
             val distinctHistory = historyVideos.distinctBy { it.id }
+            // ★ 时间戳必须逐行互不相同（哪怕同一媒体库的多集）。
+            //   首页「继续观看」/ 历史页都靠 updated_at 找「每组最新一条」：
+            //   以前这里统一写 now，同一库的多集并列 MAX，续播查询一次返回同一 mediaId 的多行，
+            //   UI 按 mediaId 做 Lazy key 直接崩（`Key "..." was already used`）。
+            //   SP 历史列表按播放先后升序（越靠后越新），据此以 1s 步长反推，最后一条 = now。
+            val historyTotal = distinctHistory.size
             var historySkipped = 0
             distinctHistory.forEachIndexed { idx, v ->
+                val playedAt = migratedPlayedAt(now, historyTotal, idx)
                 val inferredMediaId = mediaIdByVideo[v.id]
                 val isLibrary = inferredMediaId != null && inferredMediaId in realMediaIds
                 if (playHistoryDao.insertIgnore(
@@ -246,8 +255,8 @@ object MigrationExecutor {
                         },
                         progress = playSeekMap[v.id] ?: 0L,   // 事务外预读的 playSeek Map
                         duration = 0L,                        // info 文件无总时长，播放后由 updateProgress 补
-                        createdAt = now - (distinctHistory.size - idx) * 1000L, // 列表序号反推，越靠后越新
-                        updatedAt = now
+                        createdAt = playedAt,
+                        updatedAt = playedAt
                     )
                 ) == -1L) {
                     historySkipped++
@@ -346,3 +355,15 @@ object MigrationExecutor {
     private fun readPlaySeek(context: Context, v: VideoData): Long =
         runCatching { PlayHelper.loadInfoSync(context, v)?.playSeek ?: 0L }.getOrDefault(0L)
 }
+
+/**
+ * 迁移批次里第 [index] 条历史的「上次播放时刻」。
+ *
+ * SP 历史列表按播放先后升序（越靠后越新），这里以 1s 步长从 [now] 往前反推，
+ * 保证同批写入的行**严格递增且互不相同**——首页「继续观看」和历史页都靠
+ * `updated_at` 定位「每组最新一条」，并列会让续播查询返回同一 mediaId 的多行。
+ *
+ * 单独提出来是为了能被单测覆盖（纯函数，不依赖 Room / Context）。
+ */
+internal fun migratedPlayedAt(now: Long, total: Int, index: Int): Long =
+    now - (total - 1 - index) * 1000L

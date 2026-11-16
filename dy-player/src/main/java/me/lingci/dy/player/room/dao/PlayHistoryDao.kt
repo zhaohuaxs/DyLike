@@ -32,12 +32,21 @@ interface PlayHistoryDao {
     @Query("SELECT * FROM play_history WHERE source_type = 0 ORDER BY updated_at DESC LIMIT :limit")
     fun observeLibraryRecent(limit: Int): Flow<List<PlayHistory>>
 
-    /** 首页继续观看：按媒体库分组，每个媒体库取最新一条 */
+    /**
+     * 首页继续观看：按媒体库分组，每个媒体库取最新一条。
+     *
+     * 「取最新」用主键定位而不是 `updated_at = MAX(...)`：迁移写库时同一库的多集历史
+     * 可能共享同一个 updated_at（见 MigrationExecutor），等值比较会把整组都判成最新，
+     * 一次返回同一 mediaId 的多行，LazyRow 的 key 直接重复崩溃。
+     * 按 (updated_at DESC, id DESC) 取单行对并列免疫，id 兜底保证「后插入的更新」。
+     */
     @Query("""
         SELECT * FROM play_history
-        WHERE source_type = 0 AND updated_at = (
-            SELECT MAX(p2.updated_at) FROM play_history p2
+        WHERE source_type = 0 AND id = (
+            SELECT p2.id FROM play_history p2
             WHERE p2.source_key = play_history.source_key AND p2.source_type = 0
+            ORDER BY p2.updated_at DESC, p2.id DESC
+            LIMIT 1
         )
         ORDER BY updated_at DESC
         LIMIT :limit
@@ -49,6 +58,10 @@ interface PlayHistoryDao {
      *
      * 替代「先查历史、再逐条 getById 查 media / video」的 N+1，缩略图路径由调用方
      * 用返回的 videoId（即 video_data 主键）换算。
+     *
+     * ★ 稳定性：「每组最新一条」必须按 id 定位单行，不能用 `updated_at = MAX(updated_at)`。
+     * 时间戳并列（迁移写库 / 同一毫秒内两次打点）时等值比较会返回整组，UI 按 sourceKey
+     * 去前缀得到相同 mediaId，Lazy 列表 key 重复：`Key "..." was already used`。
      */
     @Query("""
         SELECT p.video_id AS video_id, p.source_key AS source_key,
@@ -57,9 +70,11 @@ interface PlayHistoryDao {
         FROM play_history p
         INNER JOIN media_data m ON m.id = substr(p.source_key, 5)
         INNER JOIN video_data v ON v.id = p.video_id
-        WHERE p.source_type = 0 AND p.updated_at = (
-            SELECT MAX(p2.updated_at) FROM play_history p2
+        WHERE p.source_type = 0 AND p.id = (
+            SELECT p2.id FROM play_history p2
             WHERE p2.source_key = p.source_key AND p2.source_type = 0
+            ORDER BY p2.updated_at DESC, p2.id DESC
+            LIMIT 1
         )
         ORDER BY p.updated_at DESC
         LIMIT :limit
@@ -67,7 +82,7 @@ interface PlayHistoryDao {
     fun observeResumeRows(limit: Int): Flow<List<ResumeRow>>
 
     /** 某一来源（某剧/某播放列表）的全部观看记录 */
-    @Query("SELECT * FROM play_history WHERE source_type = :source AND source_key = :sourceKey ORDER BY updated_at DESC")
+    @Query("SELECT * FROM play_history WHERE source_type = :source AND source_key = :sourceKey ORDER BY updated_at DESC, id DESC")
     fun observeBySource(source: PlaySource, sourceKey: String): Flow<List<PlayHistory>>
 
     /** 某时间点之后有观看记录的条目数（「我的」本月观看统计；只看最近一次进度时间） */
@@ -89,12 +104,12 @@ interface PlayHistoryDao {
                COALESCE((
                    SELECT p.progress FROM play_history p
                    WHERE p.source_type = h.source_type AND p.source_key = h.source_key
-                   ORDER BY p.updated_at DESC LIMIT 1
+                   ORDER BY p.updated_at DESC, p.id DESC LIMIT 1
                ), 0) AS progress,
                COALESCE((
                    SELECT p.duration FROM play_history p
                    WHERE p.source_type = h.source_type AND p.source_key = h.source_key
-                   ORDER BY p.updated_at DESC LIMIT 1
+                   ORDER BY p.updated_at DESC, p.id DESC LIMIT 1
                ), 0) AS duration,
                m.title AS media_title,
                pl.title AS playlist_title
@@ -117,12 +132,12 @@ interface PlayHistoryDao {
     @Query("SELECT * FROM play_history WHERE video_id = :videoId AND source_key = :sourceKey LIMIT 1")
     suspend fun getByVideoAndSource(videoId: String, sourceKey: String): PlayHistory?
 
-    /** 某来源的最新一条历史（分组项补全进度/时长） */
-    @Query("SELECT * FROM play_history WHERE source_type = :source AND source_key = :sourceKey ORDER BY updated_at DESC LIMIT 1")
+    /** 某来源的最新一条历史（分组项补全进度/时长）—— updated_at 并列时用 id 兜底，避免随机取到另一集 */
+    @Query("SELECT * FROM play_history WHERE source_type = :source AND source_key = :sourceKey ORDER BY updated_at DESC, id DESC LIMIT 1")
     suspend fun getLatestBySource(source: PlaySource, sourceKey: String): PlayHistory?
 
-    /** 「这剧看到第几集」（替代 media_data.playLast 的 URL 匹配） */
-    @Query("SELECT video_id FROM play_history WHERE source_key = :sourceKey ORDER BY updated_at DESC LIMIT 1")
+    /** 「这剧看到第几集」（替代 media_data.playLast 的 URL 匹配）—— 同上，并列时取后插入的行 */
+    @Query("SELECT video_id FROM play_history WHERE source_key = :sourceKey ORDER BY updated_at DESC, id DESC LIMIT 1")
     suspend fun lastPlayedVideoId(sourceKey: String): String?
 
     @Query("SELECT count(*) FROM play_history")

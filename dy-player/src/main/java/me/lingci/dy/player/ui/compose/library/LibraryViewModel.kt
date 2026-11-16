@@ -168,7 +168,10 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
             }
-        val resumeItems = snapshot.resume.map { row ->
+        // 一库一张卡：SQL 侧已按 (updated_at, id) 定位每组唯一一行，这里再去一次重
+        // 作为 UI 契约的兜底——mediaId 同时是 LazyRow 的稳定 key，重复即崩
+        // （`Key "..." was already used`，历史时间戳并列时最容易触发）。
+        val resumeItems = snapshot.resume.distinctBy { it.sourceKey }.map { row ->
             val mediaId = row.sourceKey.removePrefix(LIBRARY_PREFIX)
             val thumbFile = AppUtil.buildThumbFile(getApplication(), row.videoId)
             val progress = if (row.duration > 0) {
