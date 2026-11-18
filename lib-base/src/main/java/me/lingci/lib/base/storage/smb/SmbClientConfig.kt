@@ -16,8 +16,7 @@ object SmbClientConfig {
     /**
      * 集中产出 jcifs 属性。
      * - 超时与浏览侧原配置保持一致（responseTimeout 30s / soTimeout 35s / maxConnections 4）
-     * - dfs.disabled=true：Nova 实测为 Win10/11 微软账号共享可连的必要项，
-     *   见 dev_docs/smbj-migration-plan.md 阶段 A2
+     * - dfs.disabled=true：Nova 实测为 Win10/11 微软账号共享可连的必要项（阶段 A2 实测结论）
      */
     fun properties(): Properties = Properties().apply {
         setProperty("jcifs.smb.client.responseTimeout", "30000")

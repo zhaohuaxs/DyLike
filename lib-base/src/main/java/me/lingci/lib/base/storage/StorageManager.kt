@@ -1,6 +1,7 @@
 package me.lingci.lib.base.storage
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
 import me.lingci.lib.base.storage.entity.FileEntity
@@ -69,12 +70,13 @@ class StorageManager() {
      * 搜索所有存储中的文件
      */
     fun searchAllStorages(query: String): Flow<List<FileEntity>> {
-        val flows = storageConfigs.map { config ->
-            getFileSystem(config.id)?.searchFiles(query) ?: flow { emit(emptyList()) }
+        // 一个站点断网不应让整次搜索失败，逐流兜底为空列表。
+        val flows = storageConfigs.mapNotNull { config ->
+            getFileSystem(config.id)?.searchFiles(query)?.catch { emit(emptyList()) }
         }
-        return combine(flows) { results ->
-            results[0]
-        }
+        // combine 的空集合不会发射任何值，这里显式给一次空结果。
+        if (flows.isEmpty()) return flow { emit(emptyList()) }
+        return combine(flows) { results -> results.flatMap { it } }
     }
 
     /**

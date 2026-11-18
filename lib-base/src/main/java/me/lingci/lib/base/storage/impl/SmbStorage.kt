@@ -30,6 +30,10 @@ class SmbStorage(
     companion object {
         // 搜索最大递归深度，避免深层目录树长时间阻塞（阶段 A5）
         private const val MAX_SEARCH_DEPTH = 16
+
+        // 与播放侧 SmbDataSource 的 READ_AHEAD_SIZE 对齐：同一 NAS 实测 512KB 12.74MB/s、
+        // 1MB 14.91MB/s，继续增大无增益（rcv_buf_size 叠加也无增益）。
+        private const val COPY_BUFFER_SIZE = 1024 * 1024
     }
 
     // SMB上下文，配置统一走 SmbClientConfig（阶段 A1/A2，与播放侧一致）
@@ -468,7 +472,7 @@ class SmbStorage(
         return try {
             source.inputStream.use { input ->
                 target.outputStream.use { output ->
-                    val buffer = ByteArray(8192)
+                    val buffer = ByteArray(COPY_BUFFER_SIZE)
                     val total = source.length()
                     var copied = 0L
 
@@ -495,7 +499,7 @@ class SmbStorage(
     ) {
         source.inputStream.use { input ->
             target.outputStream().use { output ->
-                val buffer = ByteArray(8192)
+                val buffer = ByteArray(COPY_BUFFER_SIZE)
                 val total = source.length()
                 var copied = 0L
 
@@ -517,7 +521,7 @@ class SmbStorage(
     ) {
         source.inputStream().use { input ->
             target.outputStream.use { output ->
-                val buffer = ByteArray(8192)
+                val buffer = ByteArray(COPY_BUFFER_SIZE)
                 val total = source.length()
                 var copied = 0L
 

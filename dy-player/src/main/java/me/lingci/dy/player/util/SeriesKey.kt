@@ -6,7 +6,7 @@ import me.lingci.lib.base.util.CodeUtil
 /**
  * 多季剧集的目录识别与稳定分组键。
  *
- * 设计约束（见 opencode/docs/multiseason-room-cache-plan-2026-11-15.md）：
+ * 设计约束：
  * - 不改 `media_data.path` 语义，仍是「一个入库目录」；
  * - 同剧多季通过 `series_key` 在 UI 层聚合成一张卡片；
  * - 剧集根库（根下是季子目录）由详情页下钻，不依赖分组键；

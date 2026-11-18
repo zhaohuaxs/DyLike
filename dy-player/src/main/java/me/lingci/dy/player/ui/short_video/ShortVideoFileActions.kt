@@ -90,11 +90,21 @@ class ShortVideoFileActions(
                     if (!cacheFile.exists()) {
                         cacheFile.parentFile?.mkdirs()
                         val storage = resolveStorage(videoData)
-                        if (storage != null) {
-                            storage.download(videoData.videoUrl, cacheFile.absolutePath)
-                        } else {
+                        if (storage == null) {
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(activity, "无法分享远程文件", Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
+                        }
+                        // 先写临时文件，成功后再原子改名。否则下载中断留下的半成品
+                        // 会被下面的 exists() 判定当成完整缓存，直接分享出去。
+                        val tempFile = File(cacheFile.parentFile, "${cacheFile.name}.part")
+                        tempFile.delete()
+                        val downloaded = storage.download(videoData.videoUrl, tempFile.absolutePath)
+                        if (!downloaded || !tempFile.renameTo(cacheFile)) {
+                            tempFile.delete()
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(activity, "下载失败，无法分享", Toast.LENGTH_SHORT).show()
                             }
                             return@launch
                         }

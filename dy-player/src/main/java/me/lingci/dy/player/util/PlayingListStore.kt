@@ -14,7 +14,7 @@ import java.util.UUID
 /**
  * 播放会话队列的 Room 后端。
  *
- * 与 `player-compose-migration-plan` 的 QueueRef.Snapshot 对齐：**读取不删除**，
+ * 队列快照语义与播放页一致：**读取不删除**，
  * 会话由播放页在 onDestroy(isFinishing) 时显式结束，异常退出残留由启动 cleanup 兜底。
  */
 object PlayingListStore {

@@ -79,8 +79,8 @@ object MediaManger {
      * 取一张可用缩略图：一次 setDataSource 内按「首帧 → 片长 10% → 1s → 3s」尝试，
      * 用 [ThumbQuality.isMostlyBlack] 过滤黑屏片头，返回前统一缩到 [maxWidth]。
      *
-     * 原实现固定取第 0 帧且不判黑，真机缓存中 21.1% 是纯黑首帧；片头 10% 的候选
-     * 来自 FormaUIChatDemo 的做法（同设备黑帧率 3.8%）。全部候选都黑时保留一帧，
+     * 原实现固定取第 0 帧且不判黑，真机缓存中 21.1% 是纯黑首帧；改用片长 10% 处的候选后，
+     * 同设备黑帧率实测降到 3.8%。全部候选都黑时保留一帧，
      * 避免文件始终不存在导致每次进页面重复抽帧。
      */
     fun extractThumbnail(videoPath: String, maxWidth: Int = THUMB_MAX_WIDTH): Bitmap? {
