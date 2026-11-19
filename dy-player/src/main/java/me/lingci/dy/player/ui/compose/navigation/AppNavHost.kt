@@ -1,7 +1,6 @@
 package me.lingci.dy.player.ui.compose.navigation
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -10,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -20,19 +20,25 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.entity.VideoData
-import me.lingci.dy.player.migrate.MigrationActivity
-import me.lingci.dy.player.ui.about.AboutActivity
+import me.lingci.dy.player.ui.compose.about.AboutRoute
+import me.lingci.dy.player.ui.compose.backup.BackupsRoute
 import me.lingci.dy.player.ui.compose.browser.BrowserScreen
+import me.lingci.dy.player.ui.compose.danmaku_binding.DanmakuBindingRoute
+import me.lingci.dy.player.ui.compose.danmaku_binding.DanmakuBindingTransfer
 import me.lingci.dy.player.ui.compose.detail.DetailRoute
 import me.lingci.dy.player.ui.compose.history.HistoryRoute
 import me.lingci.dy.player.ui.compose.likes.LikesRoute
 import me.lingci.dy.player.ui.compose.library.LibraryRoute
 import me.lingci.dy.player.ui.compose.playlist.PlaylistRoute
 import me.lingci.dy.player.ui.compose.me.MeScreen
+import me.lingci.dy.player.ui.compose.migration.MigrationRoute
 import me.lingci.dy.player.ui.compose.scan.MediaScanRoute
 import me.lingci.dy.player.ui.compose.settings.DanmakuSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.KernelSettingsDetail
@@ -43,10 +49,9 @@ import me.lingci.dy.player.ui.compose.settings.settingsViewModel
 import me.lingci.dy.player.ui.compose.sources.BuiltinSources
 import me.lingci.dy.player.ui.compose.sources.SourceByIdViewModel
 import me.lingci.dy.player.ui.compose.sources.SourcesScreen
-import me.lingci.dy.player.ui.icon.IconSettingActivity
+import me.lingci.dy.player.ui.compose.icon.IconSettingsRoute
 import me.lingci.dy.player.ui.long_video.LongVideoActivity
 import me.lingci.dy.player.ui.short_video.ShortVideoActivity
-import me.lingci.dy.player.ui.tool.ToolActivity
 import me.lingci.dy.player.BuildConfig
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.dy.player.ui.compose.theme.BrandHue
@@ -70,6 +75,7 @@ object Dest {
     const val SettingsKernel = "settings/kernel"
     const val SettingsDanmaku = "settings/danmaku"
     const val SettingsLab = "settings/lab"
+    const val SettingsBackup = "settings/backup"
     const val ShortPlayer = "shortPlayer"
     const val LongPlayer = "longPlayer"
     const val LongPlayerWithVideo = "longPlayer/{videoId}"
@@ -79,6 +85,13 @@ object Dest {
     /** 首次进入的自动扫描入口：同页但进页面即开始，对齐 View 侧 MediaScanActivity(autoStart=true) */
     const val ScanAuto = "scan/auto"
     const val Danmaku = "danmaku"
+    /** 弹幕绑定页：mediaId 用于记住上次弹幕目录，temp 是详情页传来的视频列表临时文件路径 */
+    const val DanmakuWithMedia = "danmaku/{mediaId}?temp={temp}"
+    /** 旧版数据迁移页：既能被冷启动闸门推入，也能从「我的」手动进入 */
+    const val Migration = "migration"
+    const val About = "about"
+    /** 桌面图标切换：入口在「个性化」页，属于外观设置 */
+    const val Icon = "icon"
 }
 
 val TopLevelRoutes = setOf(Dest.Library, Dest.Sources, Dest.Me)
@@ -166,7 +179,6 @@ fun AppNavHost(
             )
         }
         composable(Dest.Me) {
-            val context = LocalContext.current
             MeScreen(
                 themeMode = themeMode,
                 brand = brand,
@@ -178,12 +190,9 @@ fun AppNavHost(
                 onKernel = { navController.navigate(Dest.SettingsKernel) },
                 onDanmaku = { navController.navigate(Dest.SettingsDanmaku) },
                 onLab = { navController.navigate(Dest.SettingsLab) },
-                // 备份还原仍在旧 ToolActivity 里，页面迁移完成前先桥接过去
-                onBackup = { ToolActivity.start(context, ToolActivity.PAGE_BACKUP) },
-                onFeedback = { context.startActivity(Intent(context, AboutActivity::class.java)) },
-                onMigration = {
-                    context.startActivity(Intent(context, MigrationActivity::class.java))
-                }
+                onBackup = { navController.navigate(Dest.SettingsBackup) },
+                onFeedback = { navController.navigate(Dest.About) },
+                onMigration = { navController.navigate(Dest.Migration) }
             )
         }
         composable(Dest.SettingsPlayback) {
@@ -201,17 +210,52 @@ fun AppNavHost(
         composable(Dest.SettingsLab) {
             LabSettingsDetail(onBack = { navController.popBackStack() })
         }
+        composable(Dest.SettingsBackup) {
+            BackupsRoute(
+                onBack = { navController.popBackStack() },
+                onOpenMigration = { navController.navigate(Dest.Migration) }
+            )
+        }
+        composable(Dest.Migration) {
+            // 迁移完成只写 app_meta 标记，设置页的入口显隐由它自己的缓存决定，需要主动刷新一次
+            val settingsVm = settingsViewModel()
+            MigrationRoute(
+                onBack = { navController.popBackStack() },
+                onDone = {
+                    settingsVm.refreshMigrationPending()
+                    navController.popBackStack()
+                }
+            )
+        }
+        composable(Dest.About) {
+            AboutRoute(onBack = { navController.popBackStack() })
+        }
+        composable(Dest.Icon) {
+            IconSettingsRoute(onBack = { navController.popBackStack() })
+        }
         composable(
             route = "detail/{mediaId}",
             arguments = listOf(navArgument("mediaId") { type = NavType.StringType })
         ) { backStackEntry ->
             val mediaId = backStackEntry.arguments?.getString("mediaId") ?: ""
             val context = LocalContext.current
+            val scope = rememberCoroutineScope()
             DetailRoute(
                 mediaId = mediaId,
                 onBack = { navController.popBackStack() },
                 onPlay = { media, videos, index, isShort, seasonLabel ->
                     startPlayback(context, media, videos, index, isShort, seasonLabel = seasonLabel)
+                },
+                onOpenDanmaku = { videos, targetMediaId ->
+                    // 视频列表远超路由/Bundle 承载能力：先落临时文件，路由只带路径
+                    scope.launch {
+                        val tempPath = withContext(Dispatchers.IO) {
+                            DanmakuBindingTransfer.writeTempVideos(context, videos)
+                        }
+                        navController.navigate(
+                            "${Dest.Danmaku}/${Uri.encode(targetMediaId)}?temp=${Uri.encode(tempPath)}"
+                        )
+                    }
                 }
             )
         }
@@ -244,7 +288,6 @@ fun AppNavHost(
             )
         }
         composable(Dest.Theme) {
-            val context = LocalContext.current
             // 个性化页要改「新首页 UI」开关，状态仍走设置页的同一个 ViewModel（Activity 作用域），
             // 这样「我的 → 个性化」与「我的 → 媒体库」读到的是同一份值
             val settingsVm = settingsViewModel()
@@ -263,7 +306,7 @@ fun AppNavHost(
                 onLaunchComposeHome = { on ->
                     settingsVm.applyLibrary(settingsState.library.copy(launchComposeHome = on))
                 },
-                onIcon = { context.startActivity(Intent(context, IconSettingActivity::class.java)) }
+                onIcon = { navController.navigate(Dest.Icon) }
             )
         }
         composable(Dest.ShortPlayer) { Placeholder("短视频播放") }
@@ -308,7 +351,24 @@ fun AppNavHost(
                 autoStart = true
             )
         }
-        composable(Dest.Danmaku) { Placeholder("弹幕绑定") }
+        composable(
+            route = Dest.DanmakuWithMedia,
+            arguments = listOf(
+                navArgument("mediaId") { type = NavType.StringType },
+                navArgument("temp") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
+            )
+        ) { entry ->
+            val targetMediaId = entry.arguments?.getString("mediaId").orEmpty()
+            val tempPath = entry.arguments?.getString("temp").orEmpty()
+            DanmakuBindingRoute(
+                mediaId = targetMediaId,
+                tempFilePath = tempPath,
+                onBack = { navController.popBackStack() }
+            )
+        }
     }
 }
 

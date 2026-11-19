@@ -53,6 +53,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<SettingsState> = _state.asStateFlow()
 
     init {
+        refreshMigrationPending()
+    }
+
+    /**
+     * 重读迁移标记。
+     *
+     * 迁移入口的显隐只能靠这一处查询刷新：状态是「库里有标记吗」，
+     * 迁移页写完标记后不会通知这里，必须由调用方（迁移完成回调）主动触发。
+     */
+    fun refreshMigrationPending() {
         viewModelScope.launch {
             val pending = runCatching { MigrationChecker.isMigrationPending() }.getOrDefault(false)
             update { it.copy(lab = it.lab.copy(migrationPending = pending)) }

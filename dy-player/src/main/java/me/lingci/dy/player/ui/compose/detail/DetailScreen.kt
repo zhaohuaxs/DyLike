@@ -66,7 +66,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
@@ -99,7 +98,6 @@ import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
 import me.lingci.dy.player.ui.compose.theme.DyLikeType
 import me.lingci.dy.player.ui.compose.theme.LocalDyLikeColors
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
-import me.lingci.dy.player.ui.danmaku_binding.DanmakuBindingActivity
 import me.lingci.dy.player.util.decodeHtmlEntities
 import kotlin.math.abs
 
@@ -132,7 +130,9 @@ fun DetailRoute(
      * [MediaData] 只在这里透传给播放页：播放页要靠它写回 `play_last` / 历史 / 进度，
      * 不传的话从详情页起播就是「无媒体上下文」，记录会全部丢失。
      */
-    onPlay: (MediaData?, List<VideoData>, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> }
+    onPlay: (MediaData?, List<VideoData>, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> },
+    /** 打开弹幕绑定页：视频列表与所属媒体 id 由详情页提供，目标页不在组合期做 IO。 */
+    onOpenDanmaku: (List<VideoData>, String) -> Unit = { _, _ -> }
 ) {
     val vm: DetailViewModel = viewModel(factory = DetailViewModel.Factory)
     val state by vm.state.collectAsStateWithLifecycle()
@@ -173,7 +173,8 @@ fun DetailRoute(
         onSortChange = vm::setSortMode,
         onLoadMore = vm::loadMore,
         onJumpLastPlayed = vm::jumpToLastPlayed,
-        onSelectSeason = vm::selectSeason
+        onSelectSeason = vm::selectSeason,
+        onOpenDanmaku = onOpenDanmaku
     )
 }
 
@@ -198,10 +199,10 @@ fun DetailScreen(
     onSortChange: (Int) -> Unit = {},
     onLoadMore: () -> Unit = {},
     onJumpLastPlayed: () -> Unit = {},
-    onSelectSeason: (String) -> Unit = {}
+    onSelectSeason: (String) -> Unit = {},
+    onOpenDanmaku: (List<VideoData>, String) -> Unit = { _, _ -> }
 ) {
     val c = LocalDyLikeColors.current
-    val context = LocalContext.current
     val configuration = LocalConfiguration.current
     // 平板 / 横屏：头部卡片与「选择季」固定左栏，搜索与分集列表在右栏。
     // 断点统一走 adaptive/AdaptiveLayout.windowWidthClass，页面内不再另写一套宽度判断。
@@ -450,9 +451,7 @@ fun DetailScreen(
                             },
                             onOpEdClick = { opEdDialogOpen = true },
                             onDanmakuClick = {
-                                state.media?.let {
-                                    DanmakuBindingActivity.start(context, playList, it.id)
-                                }
+                                state.media?.let { onOpenDanmaku(playList, it.id) }
                             },
                             onSelectSeason = onSelectSeason
                         )
@@ -506,9 +505,7 @@ fun DetailScreen(
                             },
                             onOpEdClick = { opEdDialogOpen = true },
                             onDanmakuClick = {
-                                state.media?.let {
-                                    DanmakuBindingActivity.start(context, playList, it.id)
-                                }
+                                state.media?.let { onOpenDanmaku(playList, it.id) }
                             },
                             onSelectSeason = onSelectSeason
                         )

@@ -276,6 +276,7 @@
     <!-- 数据迁移（SP → Room） -->
     <string name="migration_title">数据迁移</string>
     <string name="migration_desc">检测到旧版本本地数据，需要迁移到新数据库</string>
+    <string name="migration_done_desc">旧数据已写入新数据库，旧版数据保留未删除</string>
     <string name="migration_will_migrate">将迁移以下内容：</string>
     <string name="migration_progress_restore_hint">✓ 播放进度将从播放记录文件中恢复</string>
     <string name="migration_notes">⚠ 注意：\n· 原有数据将保留，不会删除\n· 迁移期间请勿关闭应用</string>
@@ -297,6 +298,13 @@
     <string name="migration_stat_shuffles">随机播放状态</string>
     <string name="migration_entry">数据迁移（旧版数据）</string>
     <string name="migration_entry_desc">将旧版本本地数据迁移到新数据库</string>
+    <string name="migration_kicker">MIGRATION</string>
+    <string name="migration_loading">正在读取旧数据…</string>
+    <string name="migration_section_result">已迁移以下内容</string>
+    <string name="migration_stat_playlists_value">%1$d 个（%2$d 项）</string>
+    <string name="migration_prepare_failed">读取旧数据失败：%1$s</string>
+    <string name="migration_empty_hint">未检测到旧版本数据，开始迁移只会写入迁移完成标记。</string>
+    <string name="migration_virtual_note">无法归属到媒体库的条目已归入「未归类」</string>
 
     <string name="permission_storage_title">需要存储权限</string>
     <string name="permission_storage_rationale">DyLike 需要读取设备上的视频文件，才能扫描本地媒体、浏览目录并播放。授权后媒体库会自动载入。</string>
@@ -489,5 +497,106 @@
     <string name="detail_season_episodes">%1$s · 本季 %2$d 集 · 共 %3$d 季</string>
     <string name="player_season_end">%1$s 已播完，返回详情页选择下一季</string>
     <string name="player_auto_skip_stopped">连续播放失败，已停止自动切集</string>
+
+    <!-- 本地弹幕绑定 -->
+    <string name="title_danmaku_binding">本地弹幕绑定</string>
+    <string name="hint_danmaku_binding_summary">共 %1$d 条媒体，已绑定 %2$d 条，共 %3$d 个轨道，待保存 %4$d 条</string>
+    <string name="hint_danmaku_binding_folder">弹幕目录：%1$s</string>
+    <string name="hint_danmaku_binding_search">搜索视频或弹幕文件</string>
+    <string name="action_danmaku_binding_select_folder">选择目录</string>
+    <string name="action_danmaku_binding_save">保存</string>
+    <string name="action_danmaku_binding_clear_all">清空所有</string>
+    <string name="action_danmaku_binding_clear_current">清空当前</string>
+    <string name="action_danmaku_binding_reset">还原选择</string>
+    <string name="danmaku_binding_loading">正在加载…</string>
+    <string name="danmaku_binding_error">加载失败，请返回重试</string>
+    <string name="danmaku_binding_empty_media">没有可绑定的视频</string>
+    <string name="danmaku_binding_empty_search">没有匹配的视频</string>
+    <string name="danmaku_binding_empty_files">请选择右侧弹幕文件夹</string>
+    <string name="danmaku_binding_unbound">未绑定</string>
+    <string name="danmaku_binding_bound_count">已绑定 %1$d 个</string>
+    <string name="danmaku_binding_primary">主弹幕：%1$s</string>
+    <string name="danmaku_binding_pending_save">待保存</string>
+    <string name="danmaku_binding_hint_unresolved_archive">有 %1$d 个压缩包弹幕需在播放器内重选</string>
+    <string name="danmaku_binding_hint_unmatched">未匹配</string>
+    <string name="danmaku_binding_hint_primary_switched">主弹幕切换为 %1$s</string>
+    <string name="danmaku_binding_hint_manual_bound">手动绑定 %1$s</string>
+    <string name="danmaku_binding_hint_auto_matched">自动匹配 %1$s</string>
+    <string name="danmaku_binding_hint_score">匹配度 %1$d</string>
+    <string name="danmaku_binding_hint_episode_same">集数一致</string>
+    <string name="danmaku_binding_hint_episode_diff">集数不同</string>
+    <string name="danmaku_binding_primary_for_current">已作为主弹幕</string>
+    <string name="danmaku_binding_bound_to_current">已绑定到当前媒体</string>
+    <string name="danmaku_binding_bound_to_owner">已绑定到 %1$s</string>
+    <string name="danmaku_binding_dialog_clear_all_title">清空全部绑定</string>
+    <string name="danmaku_binding_dialog_clear_all_message">将清空当前页面所有媒体的弹幕绑定，保存后生效</string>
+    <string name="danmaku_binding_action_bind_current">绑定到当前媒体</string>
+    <string name="danmaku_binding_action_set_primary">设为主弹幕</string>
+    <string name="danmaku_binding_action_unbind_current">解绑当前媒体</string>
+    <string name="danmaku_binding_action_rebind_current">换绑到当前媒体</string>
+    <string name="danmaku_binding_action_view_owner">查看当前归属</string>
+    <string name="danmaku_binding_action_remove">移除绑定</string>
+    <string name="danmaku_binding_dialog_rebind_title">重新绑定弹幕</string>
+    <string name="danmaku_binding_dialog_rebind_message">%1$s 已绑定到 %2$s，是否改绑到 %3$s？</string>
+    <string name="danmaku_binding_track_primary_prefix">[主弹幕] %1$s</string>
+    <string name="danmaku_binding_hint_folder_loaded">已加载 %1$d 个弹幕文件</string>
+    <string name="danmaku_binding_hint_nothing_to_clear">当前没有可清空的绑定</string>
+    <string name="danmaku_binding_hint_cleared_all">已清空全部绑定</string>
+    <string name="danmaku_binding_hint_reset">已还原选择</string>
+    <string name="danmaku_binding_hint_archive_unsupported">压缩包含多个弹幕条目，请在播放器内通过弹幕选择面板绑定</string>
+    <string name="danmaku_binding_hint_no_bound_tracks">当前媒体还没有绑定弹幕</string>
+    <string name="danmaku_binding_hint_owner">当前绑定：%1$s</string>
+    <string name="danmaku_binding_hint_saved">已保存 %1$d 条绑定</string>
+    <string name="danmaku_binding_hint_save_failed">保存完成，失败 %1$d 条</string>
+    <string name="danmaku_binding_hint_no_changes">没有需要保存的变化</string>
+    <string name="cd_danmaku_binding_tracks">已绑定弹幕</string>
+
+    <!-- 备份与还原 -->
+    <string name="title_backup_restore">备份与还原</string>
+    <string name="hint_backup_note">备份包含媒体库、播放历史、收藏、播放列表、播放设置与本地弹幕绑定；还原会覆盖当前数据。</string>
+    <string name="hint_backup_location">备份文件保存在 Download/DyLike 目录，可在文件管理器中复制或转移。</string>
+    <string name="action_backup_now">立即备份</string>
+    <string name="action_choose_file">选择文件</string>
+    <string name="action_backup_running">备份中…</string>
+    <string name="action_restore_running">还原中…</string>
+    <string name="dialog_restore_entry_title">还原APP数据</string>
+    <string name="dialog_restore_entry_message">会覆盖掉当前数据，谨慎使用</string>
+    <string name="dialog_restore_confirm_title">确认还原APP数据</string>
+    <string name="dialog_restore_confirm_message">会覆盖掉当前数据，再次确认</string>
+    <string name="dialog_restore_done_title">还原APP数据</string>
+    <string name="dialog_restore_done_message">导入完成。部分设置（主题、播放内核等）需重启应用后生效。</string>
+    <string name="hint_backup_done">备份完成，/Download/DyLike/%1$s</string>
+    <string name="hint_backup_failed">备份失败，请检查存储权限</string>
+    <string name="hint_restore_invalid">导入文件非 DyLike 备份</string>
+    <string name="hint_restore_failed">数据还原失败：%1$s</string>
+    <string name="hint_restore_migrating">备份已恢复，正在重建数据…</string>
+
+    <!-- 关于 -->
+    <string name="about_version">当前版本 %1$s</string>
+    <string name="about_group_feedback">反馈Q群</string>
+    <string name="about_group_number">811806197</string>
+    <string name="about_action_join">加入</string>
+    <string name="about_license">开源协议</string>
+    <string name="about_license_none">暂无</string>
+    <string name="about_app_record">App备案号</string>
+    <string name="about_app_record_none">暂未申请</string>
+    <string name="about_protocol">DyLike服务协议</string>
+    <string name="about_copyright">DyLike © 2025 零次版权所有</string>
+    <string name="about_pending">等待后续添加</string>
+    <string name="about_qq_missing">未安装手Q或安装的版本不支持</string>
+    <string name="about_kicker">ABOUT</string>
+    <string name="about_section_info">应用信息</string>
+
+    <!-- 桌面图标 -->
+    <string name="icon_title">桌面图标</string>
+    <string name="icon_kicker">ICON</string>
+    <string name="icon_option_default">默认图标</string>
+    <string name="icon_option_line">线条图标</string>
+    <string name="icon_pick">选我</string>
+    <string name="icon_picked">已选中</string>
+    <string name="icon_current">当前选择：%1$s</string>
+    <string name="icon_changed">图标已切换，桌面生效可能延迟几秒</string>
+    <string name="icon_failed">图标切换失败，请检查启动器别名状态</string>
+    <string name="icon_note">切换只影响桌面入口，不会重启应用；部分启动器需要几秒才会刷新图标。</string>
 
 </resources>

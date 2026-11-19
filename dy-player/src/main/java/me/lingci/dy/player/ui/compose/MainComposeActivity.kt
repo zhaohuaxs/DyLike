@@ -47,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import me.lingci.dy.player.R
+import me.lingci.dy.player.PlayerApp
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.ui.compose.components.FloatingNavBar
@@ -348,6 +349,14 @@ private fun ComposeApp(
         if (!firstScanPending) return@LaunchedEffect
         onFirstScanHandled()
         nav.navigate(Dest.ScanAuto)
+    }
+
+    // 冷启动闸门：旧数据未迁移时先进迁移页。应用级检查在 PlayerApp 里只跑一次，
+    // 走 MainActivity 时不带 Compose 首页开关就不会到这里；这段兜的是「直接以 Compose 为入口」，
+    // 避免迁移被绕过。Activity 已接管常见 configChanges，重建只有真正的进程/Activity 重建，
+    // 因此不会因为旋转屏幕重复弹迁移页。
+    LaunchedEffect(nav) {
+        if (PlayerApp.awaitMigrationNeeded()) nav.navigate(Dest.Migration)
     }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {

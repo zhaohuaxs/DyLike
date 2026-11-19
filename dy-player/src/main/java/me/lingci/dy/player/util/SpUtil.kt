@@ -1,6 +1,7 @@
 package me.lingci.dy.player.util
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.preference.PreferenceManager
 import me.lingci.dy.player.core.DyPlayerCore
 import me.lingci.dy.player.core.ShortTitleStrategy
@@ -45,6 +46,28 @@ open class SpUtil(context: Context) : SpBase(context) {
         set(value) {
             videoPlayerCore = value.value
         }
+
+    /**
+     * 备份用：整份 SharedPreferences 快照。
+     *
+     * 返回的是原始存储值（Boolean/Int/Long/Float/String/Set），不经过任何 getter，
+     * 因此不会触发 [videoPlayerCore] 这类「读取时顺带迁移」的副作用。
+     * 新增偏好字段自动纳入备份，不需要再到备份代码里补一行。
+     */
+    val allPreferences: Map<String, Any?>
+        get() = preferences.all
+
+    /**
+     * 备份还原用：一次 editor 提交写入整批键。
+     *
+     * 逐键 `edit{}.apply()` 会在写入过程中让其它线程读到“还原了一半”的配置，
+     * 这里收成一个 editor，内存里的值一次生效。
+     */
+    fun editAll(block: (SharedPreferences.Editor) -> Unit) {
+        val editor = preferences.edit()
+        block(editor)
+        editor.apply()
+    }
 
     var isFirst by SPManager.boolean(true)
 
