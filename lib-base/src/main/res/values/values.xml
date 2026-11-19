@@ -39,6 +39,7 @@
     <string name="action_help">帮助</string>
     <string name="action_analysis">解析</string>
     <string name="action_select_all">全选</string>
+    <string name="action_select_current_folder">选中当前目录</string>
     <string name="action_select_invert">反选</string>
     <string name="action_roger">知道啦</string>
     <string name="action_input">导入</string>

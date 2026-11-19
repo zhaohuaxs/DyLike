@@ -23,6 +23,10 @@ class FileSelectorItemAdapter(
     private var onItemSelect: ((item: FileEntity, position: Int) -> Unit)? = null
     private var onFolderMenu: ((v: View, item: FileEntity) -> Unit)? = null
     private var multiSelectMode = true
+    private var folderSelectMode = false
+
+    /** 多目录模式下的已选目录，跨目录导航保持 */
+    private val selectedFolders = linkedSetOf<String>()
 
     override fun createBinding(
         inflater: LayoutInflater,
@@ -58,6 +62,23 @@ class FileSelectorItemAdapter(
         } else {
             binding.ivImg.visibility = View.GONE
         }
+        // 多目录模式：目录右侧显示勾选框，点击勾选；整行点击仍然进入目录
+        if (folderSelectMode && !item.isFile) {
+            item.selected = selectedFolders.contains(item.path)
+            binding.ivImg.visibility = if (item.selected) View.VISIBLE else View.GONE
+            binding.flImage.setOnClickListener {
+                val selected = !selectedFolders.contains(item.path)
+                if (selected) {
+                    selectedFolders.add(item.path)
+                } else {
+                    selectedFolders.remove(item.path)
+                }
+                item.selected = selected
+                notifyItemChanged(position)
+            }
+        } else {
+            binding.ivImg.setOnClickListener(null)
+        }
         binding.root.setOnClickListener {
             if (item.isFile) {
                 if (!multiSelectMode) {
@@ -85,6 +106,46 @@ class FileSelectorItemAdapter(
 
     fun changeSelectMode(multi: Boolean) {
         this.multiSelectMode = multi
+    }
+
+    /** 目录多选模式：目录右侧显示勾选框 */
+    fun changeFolderSelectMode(enabled: Boolean) {
+        this.folderSelectMode = enabled
+        notifyAllChanged()
+    }
+
+    /** 获取已勾选的目录（保持勾选顺序，第一个默认为主源） */
+    fun getSelectedFolders(): List<String> {
+        return selectedFolders.toList()
+    }
+
+    /** 选中指定目录（用于「选中当前目录」） */
+    fun addSelectedFolder(path: String) {
+        selectedFolders.add(path)
+        notifyAllChanged()
+    }
+
+    /** 全选当前目录列表中的目录 */
+    fun selectAllFolders() {
+        dataList.filter { !it.isFile }.forEach {
+            selectedFolders.add(it.path)
+            it.selected = true
+        }
+        notifyAllChanged()
+    }
+
+    /** 反选当前目录列表中的目录 */
+    fun selectInvertFolders() {
+        dataList.filter { !it.isFile }.forEach {
+            if (selectedFolders.contains(it.path)) {
+                selectedFolders.remove(it.path)
+                it.selected = false
+            } else {
+                selectedFolders.add(it.path)
+                it.selected = true
+            }
+        }
+        notifyAllChanged()
     }
 
     fun getSelect(): MutableList<String> {
