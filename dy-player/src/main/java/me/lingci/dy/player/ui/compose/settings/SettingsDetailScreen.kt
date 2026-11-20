@@ -43,7 +43,7 @@ import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
 import me.lingci.dy.player.ui.compose.theme.LocalDyLikeColors
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.FileOperator
 
 /**

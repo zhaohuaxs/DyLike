@@ -67,7 +67,7 @@ import me.lingci.dy.player.ui.compose.theme.DyLikeType
 import me.lingci.dy.player.ui.compose.theme.LocalDyLikeColors
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
 import me.lingci.dy.player.ui.compose.theme.findActivity
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.ToastUtil
 
 /** 路由入口：订阅状态与一次性提示，页面本身无状态。 */

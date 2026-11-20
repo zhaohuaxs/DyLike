@@ -180,11 +180,6 @@
             android:configChanges = "orientation|keyboardHidden|navigation|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:exported="false" />
 
-        <activity
-            android:name="me.lingci.lib.base.ui.file_select.FileSelectorActivity"
-            android:label="@string/hint_sel_file_name"
-            android:configChanges="orientation|keyboardHidden|navigation|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"/>
-
         <service
             android:name=".service.PlaybackService"
             android:exported="false"

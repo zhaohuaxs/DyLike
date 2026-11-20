@@ -17,7 +17,7 @@ import me.lingci.dy.player.R
 import me.lingci.dy.player.databinding.FragmentDanmakuSettingBinding
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.ui.BaseFragment
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.AppFile
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.Log

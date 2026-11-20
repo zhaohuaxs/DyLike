@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name=".fileselect.FileSelectorActivity"
+            android:exported="false"
+            android:label="@string/file_picker_title"
+            android:configChanges="orientation|keyboardHidden|navigation|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode" />
+    </application>
+
+</manifest>

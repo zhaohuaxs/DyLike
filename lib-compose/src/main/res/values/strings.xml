@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="file_picker_title">选择文件</string>
+
+    <string name="file_picker_select_all">全选</string>
+    <string name="file_picker_select_invert">反选</string>
+    <string name="file_picker_confirm">确定</string>
+    <string name="file_picker_select_current">选中当前目录</string>
+    <string name="file_picker_set_favorite">设为常用</string>
+    <string name="file_picker_unset_favorite">取消常用</string>
+
+    <string name="file_picker_empty">没有可显示的内容</string>
+    <string name="file_picker_error">读取目录失败</string>
+    <string name="file_picker_folder_hint">目录 包含%1$d项</string>
+
+    <string name="file_picker_need_two_folders">请至少选择两个目录</string>
+    <string name="file_picker_need_concrete_folder">请进入具体的剧集目录后再选中</string>
+    <string name="file_picker_current_selected">已选中当前目录</string>
+</resources>

@@ -23,6 +23,7 @@ rootProject.name = "zhxs"
 
 // lib
 include(":lib-base")
+include(":lib-compose")
 include(":lib-common:comm-archive")
 include(":lib-dm:dm-view")
 include(":lib-player:dkplayer-java")

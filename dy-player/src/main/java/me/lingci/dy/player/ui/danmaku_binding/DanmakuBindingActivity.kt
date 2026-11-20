@@ -31,7 +31,7 @@ import me.lingci.dy.player.room.entity.AppMeta
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.FileEntity
 import me.lingci.lib.base.ui.BaseActivity
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.AppFile
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.JsonUtil

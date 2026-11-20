@@ -1,7 +1,9 @@
 package me.lingci.dy.player.ui.compose
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.res.Resources
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -64,11 +66,30 @@ import me.lingci.dy.player.ui.compose.theme.ThemeMode
 import me.lingci.dy.player.ui.compose.media_add.MediaLinkAddSheet
 import me.lingci.dy.player.ui.compose.media_add.MediaManagerSheet
 
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.PermissionUtil
 import me.lingci.lib.base.util.ToastUtil
 
 class MainComposeActivity : ComponentActivity() {
+
+    // 与旧版首页 MainActivity(BaseDisplayActivity) 行为一致：固定字体缩放，
+    // 避免系统放大字体时撑破固定尺寸的工具栏与胶囊控件。
+    override fun attachBaseContext(newBase: Context) {
+        val configuration = newBase.resources.configuration
+        configuration.fontScale = 1f
+        super.attachBaseContext(newBase.createConfigurationContext(configuration))
+    }
+
+    override fun getResources(): Resources {
+        val resources = super.getResources()
+        val configuration = resources.configuration
+        return if (configuration.fontScale != 1f) {
+            configuration.fontScale = 1f
+            baseContext.createConfigurationContext(configuration).resources
+        } else {
+            resources
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

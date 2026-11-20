@@ -208,6 +208,7 @@ androidComponents {
 dependencies {
 
     implementation(project(":lib-base"))
+    implementation(project(":lib-compose"))
     implementation(project(":lib-player:player-ui"))
     implementation(project(":lib-player:player-exo"))
     implementation(project(":lib-player:player-mpv"))

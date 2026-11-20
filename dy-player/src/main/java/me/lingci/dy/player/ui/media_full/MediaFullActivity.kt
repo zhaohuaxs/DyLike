@@ -37,7 +37,7 @@ import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.ui.BaseActivity
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.base.util.ToastUtil

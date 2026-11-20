@@ -64,7 +64,7 @@ import java.io.FileOutputStream
 import me.lingci.lib.base.dailog.DialogHelper
 import me.lingci.lib.base.dailog.ValueSetDialog
 import me.lingci.lib.base.okhttp.httpGet
-import me.lingci.lib.base.ui.file_select.FileSelectorActivity
+import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.Log
