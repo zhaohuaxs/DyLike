@@ -21,6 +21,7 @@ import me.lingci.dy.player.room.entity.MediaShuffleStateEntity
 import me.lingci.dy.player.ui.long_video.PlayHelper
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.base.util.md5
@@ -116,6 +117,7 @@ object MigrationExecutor {
             }
             // 按 parentPath 排序写入 sort_index（查询时 ORDER BY sort_index，不再内存排序）
             libraryMedia.forEach { m ->
+                m.refreshLibraryMetadata()
                 LibraryCompat.sortByParentPath(m.items).forEachIndexed { idx, v ->
                     v.sortIndex = idx
                     if (v.id.isBlank()) v.id = v.beanId()
@@ -154,6 +156,7 @@ object MigrationExecutor {
                         storageType = v.type,
                         isVirtual = false
                     )
+                    rebuilt.refreshLibraryMetadata()
                     //    库内可能已有同 id 媒体（迁移被推迟期间用户重新添加过该目录）→ 跳过而非冲突
                     val rowId = mediaDao.insertIgnore(rebuilt)
                     if (rowId == -1L) {

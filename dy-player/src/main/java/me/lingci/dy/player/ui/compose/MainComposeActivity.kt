@@ -103,13 +103,9 @@ class MainComposeActivity : ComponentActivity() {
             val firstScanPending by mediaVm.firstScanPending.collectAsStateWithLifecycle()
             val lifecycleOwner = LocalLifecycleOwner.current
 
-            // 首帧即检查存储权限：targetSdk=28，读写外部存储属于运行时权限，
-            // 未授予时 Room 查询会静默返回空列表，用户只会看到「空的媒体库」而没有任何解释。
-            // 不能用 rememberSaveable：进程恢复时会把旧的「已授权」带回来，
-            // 而权限可能在后台被撤销（或只被 adb grant 改了运行时位）。
-            var storageGranted by remember {
-                mutableStateOf(PermissionUtil.hasStorageAccess(context))
-            }
+            // 存储权限由 MediaLibraryViewModel 持有：授权变化时由数据层重订阅，
+            // 不再用 key(...) 重建内容树，导航回退栈与滚动位置得以保留。
+            val storageAccess by mediaVm.storageAccess.collectAsStateWithLifecycle()
             var permissionPromptDismissed by rememberSaveable { mutableStateOf(false) }
 
             // 弹出层只记 id：实体由各自的 ViewModel 按 id 读库，
@@ -120,6 +116,7 @@ class MainComposeActivity : ComponentActivity() {
             var editingOnlineMediaId by remember { mutableStateOf<String?>(null) }
             var showDeleteConfirm by remember { mutableStateOf(false) }
             var deletingMediaId by remember { mutableStateOf<String?>(null) }
+            var deletingMediaSeriesKey by remember { mutableStateOf("") }
 
             LaunchedEffect(lifecycleOwner, mediaVm) {
                 lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -129,6 +126,13 @@ class MainComposeActivity : ComponentActivity() {
                                 ToastUtil.showToast(context, context.getString(event.textRes))
                         }
                     }
+                }
+            }
+
+            // 权限可能在后台被撤销（或从系统设置返回后才授予）：每次回前台复核一次
+            LaunchedEffect(lifecycleOwner, mediaVm) {
+                lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                    mediaVm.refreshStorageAccess()
                 }
             }
 
@@ -147,61 +151,59 @@ class MainComposeActivity : ComponentActivity() {
                 brand = appearance.brand,
                 dynamicColor = appearance.dynamicColor
             ) {
-                if (!storageGranted && !permissionPromptDismissed) {
+                if (!storageAccess && !permissionPromptDismissed) {
                     StoragePermissionDialog(
-                        onGranted = { storageGranted = true },
+                        onGranted = { mediaVm.refreshStorageAccess() },
                         onDismiss = { permissionPromptDismissed = true }
                     )
                 }
 
-                // 授权后重建内容树：Room 的 Flow 查询按「订阅时」取数，
-                // 不重建则首帧的空结果会一直留在页面上。
-                key(storageGranted) {
-                    ComposeApp(
-                        navLabels = appearance.navLabels,
-                        themeMode = appearance.mode,
-                        brand = appearance.brand,
-                        dynamicColor = appearance.dynamicColor,
-                        onThemeMode = appearanceVm::setMode,
-                        onBrand = appearanceVm::setBrand,
-                        onDynamicColor = appearanceVm::setDynamicColor,
-                        onNavLabels = appearanceVm::setNavLabels,
-                        onAddLocalMedia = {
-                            editingMediaId = null
-                            showMediaManagerSheet = true
-                        },
-                        onAddOnlineMedia = {
-                            editingOnlineMediaId = null
-                            showMediaLinkAddSheet = true
-                        },
-                        onImportOnlineMedia = {
-                            FileSelectorActivity.startSingle(
-                                context as Activity,
-                                arrayListOf(".txt"),
-                                importOnlineLauncher
-                            )
-                        },
+                ComposeApp(
+                    navLabels = appearance.navLabels,
+                    storageAccess = storageAccess,
+                    themeMode = appearance.mode,
+                    brand = appearance.brand,
+                    dynamicColor = appearance.dynamicColor,
+                    onThemeMode = appearanceVm::setMode,
+                    onBrand = appearanceVm::setBrand,
+                    onDynamicColor = appearanceVm::setDynamicColor,
+                    onNavLabels = appearanceVm::setNavLabels,
+                    onAddLocalMedia = {
+                        editingMediaId = null
+                        showMediaManagerSheet = true
+                    },
+                    onAddOnlineMedia = {
+                        editingOnlineMediaId = null
+                        showMediaLinkAddSheet = true
+                    },
+                    onImportOnlineMedia = {
+                        FileSelectorActivity.startSingle(
+                            context as Activity,
+                            arrayListOf(".txt"),
+                            importOnlineLauncher
+                        )
+                    },
 
-                        onEditMedia = { media ->
-                            if (media.type == MediaLibType.ONLINE) {
-                                editingOnlineMediaId = media.id
-                                showMediaLinkAddSheet = true
-                            } else {
-                                // 本地/远端共用表单：远端库在表单内锁定目录，
-                                // 落库走读改写，来源（type/storageType/storageId）不会丢
-                                editingMediaId = media.id
-                                showMediaManagerSheet = true
-                            }
-                        },
-                        onDeleteMedia = { media ->
-                            deletingMediaId = media.id
-                            showDeleteConfirm = true
-                        },
-                        onTogglePin = { media -> mediaVm.togglePin(media.id) },
-                        firstScanPending = firstScanPending,
-                        onFirstScanHandled = mediaVm::consumeFirstScan
-                    )
-                }
+                    onEditMedia = { media ->
+                        if (media.type == MediaLibType.ONLINE) {
+                            editingOnlineMediaId = media.id
+                            showMediaLinkAddSheet = true
+                        } else {
+                            // 本地/远端共用表单：远端库在表单内锁定目录，
+                            // 落库走读改写，来源（type/storageType/storageId）不会丢
+                            editingMediaId = media.id
+                            showMediaManagerSheet = true
+                        }
+                    },
+                    onDeleteMedia = { media ->
+                        deletingMediaId = media.id
+                        deletingMediaSeriesKey = media.seriesKey
+                        showDeleteConfirm = true
+                    },
+                    onTogglePin = { media -> mediaVm.togglePin(media.id) },
+                    firstScanPending = firstScanPending,
+                    onFirstScanHandled = mediaVm::consumeFirstScan
+                )
 
                 if (showMediaManagerSheet) {
                     MediaManagerSheet(
@@ -230,7 +232,7 @@ class MainComposeActivity : ComponentActivity() {
                         text = { Text(getString(R.string.hint_delete_media_cascade)) },
                         confirmButton = {
                             TextButton(onClick = {
-                                deletingMediaId?.let(mediaVm::delete)
+                                deletingMediaId?.let { mediaVm.delete(it, deletingMediaSeriesKey) }
                                 showDeleteConfirm = false
                             }) { Text(getString(R.string.action_confirmed)) }
                         },
@@ -358,14 +360,15 @@ private fun ComposeApp(
     onDeleteMedia: (MediaUiModel) -> Unit,
     onTogglePin: (MediaUiModel) -> Unit,
     firstScanPending: Boolean,
+    storageAccess: Boolean,
     onFirstScanHandled: () -> Unit
 ) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
 
-    // 与 View 侧 MediaFragment.onStart() 的 scanMedia() 对齐：首次进入自动打开扫描页并开始扫描。
-    // 先消费再导航，权限授权导致整树重建时不会重复触发。
+    // 首次进入自动打开扫描页并开始扫描，与旧页的首次扫描时机一致。
+    // 先消费再导航：状态消费后置 false，重建时不会重复触发。
     LaunchedEffect(firstScanPending, nav) {
         if (!firstScanPending) return@LaunchedEffect
         onFirstScanHandled()
@@ -388,6 +391,7 @@ private fun ComposeApp(
             brand = brand,
             dynamicColor = dynamicColor,
             navLabels = navLabels,
+            storageAccess = storageAccess,
             onThemeMode = onThemeMode,
             onBrand = onBrand,
             onDynamicColor = onDynamicColor,

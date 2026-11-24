@@ -36,6 +36,7 @@ import me.lingci.dy.player.ui.source.ItemActionDialog
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.lib.base.ui.BaseActivity
 import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.FileOperator
@@ -476,6 +477,7 @@ class MediaFullActivity : BaseActivity(), MenuProvider {
                     DatabaseManager.mediaDataDao.delete(media)
                 }
                 newList.forEach { media ->
+                    media.refreshLibraryMetadata()
                     DatabaseManager.mediaDataDao.upsert(media)
                     // items 为 @Ignore 字段不随媒体落库：新建/编辑的在线媒体库携带剧集列表，
                     // 按「先清后插」重建 video_data 子表（本地媒体库 items 恒为空，自动跳过）

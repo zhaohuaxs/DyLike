@@ -25,7 +25,7 @@ import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
-import me.lingci.dy.player.util.SeriesKey
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.ui.BaseActivity
@@ -362,7 +362,7 @@ class MediaScanActivity : BaseActivity() {
                 media.id = LibraryCompat.mediaId(media, sourceList)
                 // 与 LibraryCompat.writeMedia 同一口径打标：旧版扫描是直调 insert 的旁路，
                 // 不打标会让同一部剧的 S01/S02 在 Compose 侧拿不到季 Tab。
-                media.seriesKey = SeriesKey.seriesKeyOf(media.path, media.type, media.storageId)
+                media.refreshLibraryMetadata()
                 if (mediaList.none { LibraryCompat.sameMedia(it, media, sourceList) }) {
                     // 单条新增（本地媒体库无 items，播放时按目录实时枚举）
                     DatabaseManager.mediaDataDao.insert(media)

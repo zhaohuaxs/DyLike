@@ -8,8 +8,10 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.AndroidSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 import me.lingci.dy.player.PlayerApp
+import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.util.SeriesKey
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.dy.player.room.dao.AppMetaDao
 import me.lingci.dy.player.room.dao.FavoriteDao
 import me.lingci.dy.player.room.dao.MediaDataDao
@@ -42,7 +44,7 @@ object DatabaseManager {
         get() = _db ?: Room.databaseBuilder(PlayerApp.getAppContext(), AppDatabase::class.java, DB_NAME)
             .setDriver(AndroidSQLiteDriver()) // 2.7.1 起无参构造，路径由 Room builder 传入 open()
             .setQueryCoroutineContext(Dispatchers.IO)
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
             .also { _db = it }
 
@@ -118,6 +120,58 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
                 "ON playing_list_item(session_id, sort_in_session)"
         )
         backfillSeriesKeys(connection)
+    }
+}
+
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override suspend fun migrate(connection: SQLiteConnection) {
+        connection.exec(
+            "ALTER TABLE media_data ADD COLUMN season_number INTEGER NOT NULL DEFAULT 2147483647"
+        )
+        connection.exec("ALTER TABLE media_data ADD COLUMN search_title TEXT NOT NULL DEFAULT ''")
+        backfillLibraryMetadata(connection)
+    }
+}
+
+/** 回填 SQL 分组、代表行排序和搜索解码文本。 */
+private fun backfillLibraryMetadata(connection: SQLiteConnection) {
+    val pending = mutableListOf<Pair<String, MediaData>>()
+    val select = connection.prepare(
+        "SELECT id, title, path, media_type, storage_id, series_key FROM media_data"
+    )
+    try {
+        while (select.step()) {
+            val id = select.getText(0)
+            val media = MediaData(
+                id = id,
+                title = select.getText(1),
+                path = select.getText(2),
+                type = MediaLibType.fromValue(select.getInt(3)),
+                storageId = if (select.isNull(4)) null else select.getText(4),
+                seriesKey = select.getText(5)
+            )
+            media.refreshLibraryMetadata(preserveExistingKey = true)
+            pending += id to media
+        }
+    } finally {
+        select.close()
+    }
+    if (pending.isEmpty()) return
+    val update = connection.prepare(
+        "UPDATE media_data SET series_key = ?, season_number = ?, search_title = ? WHERE id = ?"
+    )
+    try {
+        pending.forEach { (id, media) ->
+            update.reset()
+            update.clearBindings()
+            update.bindText(1, media.seriesKey)
+            update.bindLong(2, media.seasonNumber.toLong())
+            update.bindText(3, media.searchTitle)
+            update.bindText(4, id)
+            update.step()
+        }
+    } finally {
+        update.close()
     }
 }
 

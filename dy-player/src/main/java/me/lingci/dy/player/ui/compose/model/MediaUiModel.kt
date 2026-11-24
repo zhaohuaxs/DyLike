@@ -1,6 +1,8 @@
 package me.lingci.dy.player.ui.compose.model
 
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Immutable
+import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.MediaLibType
 
 /**
@@ -26,19 +28,18 @@ data class MediaUiModel(
     val seriesKey: String = "",
     /** 同剧季数；>1 时卡片显示「N 季」 */
     val seasonCount: Int = 0
-)
+) {
+    /** 列表身份只跟分组走，代表季切换时保持不变。 */
+    val cardKey: String
+        get() = if (seriesKey.isBlank()) "media:$id" else "series:$seriesKey"
+}
 
-/**
- * 媒体类型的中文名。
- *
- * 筛选条与卡片角标共用同一份映射：之前筛选按 `mediaTypeName`、卡片按 `source`
- * 各写一遍，两边口径不一致时会出现「筛得出来的卡片角标写着别的类型」。
- * 待 §11 P3.6 做文案迁移时，这里换成 `@StringRes`。
- */
-fun mediaTypeLabel(type: MediaLibType): String = when (type) {
-    MediaLibType.LOCAL -> "本地"
-    MediaLibType.ONLINE -> "在线"
-    MediaLibType.WEBDAV -> "WebDAV"
-    MediaLibType.SMB -> "SMB"
-    else -> "媒体"
+/** 筛选条与卡片角标共用同一份类型文案。 */
+@StringRes
+fun mediaTypeLabelRes(type: MediaLibType): Int = when (type) {
+    MediaLibType.LOCAL -> R.string.library_type_local
+    MediaLibType.ONLINE -> R.string.library_type_online
+    MediaLibType.WEBDAV -> R.string.library_type_webdav
+    MediaLibType.SMB -> R.string.library_type_smb
+    else -> R.string.library_type_media
 }

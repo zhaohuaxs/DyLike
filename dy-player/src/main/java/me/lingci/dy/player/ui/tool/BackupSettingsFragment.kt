@@ -33,6 +33,7 @@ import me.lingci.dy.player.room.entity.PlaylistItem
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.lib.base.dailog.DialogHelper
 import me.lingci.lib.base.json.JSONObject
 import me.lingci.lib.base.ui.BaseFragment
@@ -485,6 +486,7 @@ class BackupSettingsFragment : BaseFragment() {
         // 各表 JSON 字符串还原实体列表（导出端逐表 toJsonString 存储，缺 key 时 getString 返回空串 → 空列表）
         val sources = JsonUtil.toList<SourceData>(tables.getString("source_data"))
         val medias = JsonUtil.toList<MediaData>(tables.getString("media_data"))
+            .onEach { it.refreshLibraryMetadata(preserveExistingKey = true) }
         val videos = JsonUtil.toList<VideoData>(tables.getString("video_data"))
         val histories = JsonUtil.toList<PlayHistory>(tables.getString("play_history"))
         val favorites = JsonUtil.toList<Favorite>(tables.getString("favorite"))

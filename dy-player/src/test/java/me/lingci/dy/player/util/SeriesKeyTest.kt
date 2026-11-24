@@ -1,5 +1,6 @@
 package me.lingci.dy.player.util
 
+import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -79,5 +80,31 @@ class SeriesKeyTest {
             SeriesKey.seriesKeyOf("/storage/emulated/0/Movies/成片", MediaLibType.LOCAL, null)
                 .isEmpty()
         )
+    }
+
+    @Test
+    fun libraryMetadata_usesDecodedTitleAndSeriesTitle() {
+        val media = MediaData(
+            title = "S01&#58; 第一季",
+            path = "/storage/emulated/0/剧集/S01",
+            type = MediaLibType.LOCAL
+        )
+        media.refreshLibraryMetadata()
+        assertEquals(1, media.seasonNumber)
+        assertEquals("S01: 第一季 剧集", media.searchTitle)
+    }
+
+    @Test
+    fun libraryMetadata_preservesStoredKeyOnlyWhenPathHasNoSeason() {
+        val media = MediaData(
+            title = "自定义剧集",
+            path = "/storage/emulated/0/Movies/成片",
+            type = MediaLibType.LOCAL,
+            seriesKey = "stored-key"
+        )
+        media.refreshLibraryMetadata(preserveExistingKey = true)
+        assertEquals("stored-key", media.seriesKey)
+        media.refreshLibraryMetadata()
+        assertEquals("", media.seriesKey)
     }
 }

@@ -12,6 +12,7 @@ import androidx.room3.Upsert
 import kotlinx.coroutines.flow.Flow
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
+import me.lingci.dy.player.room.entity.LibraryCardRow
 import me.lingci.dy.player.room.entity.MediaWithVideos
 
 /**
@@ -49,7 +50,10 @@ interface MediaDataDao {
      * [observedEntities] 必须写明：Flow 的失效通知靠它订阅表变化，漏了就不会自动刷新。
      */
     @RawQuery(observedEntities = [MediaData::class])
-    fun observeLibraryPageRaw(query: RoomRawQuery): Flow<List<MediaData>>
+    fun observeLibraryCardsRaw(query: RoomRawQuery): Flow<List<LibraryCardRow>>
+
+    @Query("SELECT DISTINCT media_type FROM media_data WHERE media_type IN (1,2,3,4,7) AND is_virtual = 0 ORDER BY media_type")
+    fun observeLibraryTypes(): Flow<List<MediaLibType>>
 
     @Query("SELECT * FROM media_data WHERE media_type = :type AND is_virtual = 0 ORDER BY pinned DESC, pinned_at DESC, last_played_at DESC")
     fun observeByType(type: MediaLibType): Flow<List<MediaData>>

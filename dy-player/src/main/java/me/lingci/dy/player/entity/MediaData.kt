@@ -97,7 +97,11 @@ data class MediaData(
     // 多季剧集分组键：同剧多季共享一个 key，空串表示普通单级库。
     // path 语义不变（仍是一个直接含视频的目录），旧 View 取数不受影响。
     @ColumnInfo(name = "series_key", defaultValue = "''")
-    var seriesKey: String = ""
+    var seriesKey: String = "",
+    @ColumnInfo(name = "season_number", defaultValue = "2147483647")
+    var seasonNumber: Int = Int.MAX_VALUE,
+    @ColumnInfo(name = "search_title", defaultValue = "''")
+    var searchTitle: String = ""
 
 ) : Parcelable {
 

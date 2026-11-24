@@ -105,6 +105,8 @@ fun AppNavHost(
     brand: BrandHue = BrandHue.Purple,
     dynamicColor: Boolean = false,
     navLabels: Boolean = false,
+    /** 存储权限：媒体库查询据此重订阅，权限变化不再重建整棵导航树 */
+    storageAccess: Boolean = true,
     onThemeMode: (ThemeMode) -> Unit = {},
     onBrand: (BrandHue) -> Unit = {},
     onDynamicColor: (Boolean) -> Unit = {},
@@ -137,6 +139,7 @@ fun AppNavHost(
     ) {
         composable(Dest.Library) {
             LibraryRoute(
+                storageAccess = storageAccess,
                 onOpen = { mediaId -> navController.navigate("${Dest.Detail}/${Uri.encode(mediaId)}") },
                 onResume = { mediaId -> navController.navigate("${Dest.Detail}/${Uri.encode(mediaId)}") },
                 onHistory = { navController.navigate(Dest.History) },

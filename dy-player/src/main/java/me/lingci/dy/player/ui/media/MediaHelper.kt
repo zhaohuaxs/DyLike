@@ -8,7 +8,7 @@ import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.util.LibraryCompat
-import me.lingci.dy.player.util.SeriesKey
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.dy.player.util.SpUtil
 import me.lingci.lib.base.storage.entity.StorageType
 import me.lingci.lib.base.util.Log
@@ -98,8 +98,7 @@ object MediaHelper {
             mediaData.id = LibraryCompat.mediaId(mediaData, sources)
         }
         // 旁路 insert 也要打标（与 LibraryCompat.writeMedia 同口径），否则同剧多季无季 Tab
-        mediaData.seriesKey =
-            SeriesKey.seriesKeyOf(mediaData.path, mediaData.type, mediaData.storageId)
+        mediaData.refreshLibraryMetadata()
         val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
         val index = list.indexOfFirst { media ->
             LibraryCompat.sameMedia(media, mediaData, sources)
@@ -121,8 +120,7 @@ object MediaHelper {
         }
         // 编辑页传入的是完整对象，但可能来自旧构造（seriesKey 为空串）；
         // 这里按 path 重算一次，避免 upsert 把库里已有的分组键覆盖掉。
-        mediaData.seriesKey =
-            SeriesKey.seriesKeyOf(mediaData.path, mediaData.type, mediaData.storageId)
+        mediaData.refreshLibraryMetadata()
         val list = DatabaseManager.mediaDataDao.observeLibraryPage(200, 0).first().toMutableList()
         val index = list.indexOfFirst { media ->
             LibraryCompat.sameMedia(media, mediaData, sources)

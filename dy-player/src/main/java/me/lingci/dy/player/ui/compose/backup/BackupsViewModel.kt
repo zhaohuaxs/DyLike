@@ -29,6 +29,7 @@ import me.lingci.dy.player.room.entity.PlaylistItem
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.dy.player.util.refreshLibraryMetadata
 import me.lingci.lib.base.json.JSONObject
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.base.util.JsonUtil
@@ -301,6 +302,7 @@ class BackupsViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun restoreRoomTables(tables: JSONObject) {
         val sources = JsonUtil.toList<SourceData>(tables.getString("source_data"))
         val medias = JsonUtil.toList<MediaData>(tables.getString("media_data"))
+            .onEach { it.refreshLibraryMetadata(preserveExistingKey = true) }
         val videos = JsonUtil.toList<VideoData>(tables.getString("video_data"))
         val histories = JsonUtil.toList<PlayHistory>(tables.getString("play_history"))
         val favorites = JsonUtil.toList<Favorite>(tables.getString("favorite"))

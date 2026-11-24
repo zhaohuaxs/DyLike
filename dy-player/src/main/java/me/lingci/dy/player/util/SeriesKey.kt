@@ -1,5 +1,6 @@
 package me.lingci.dy.player.util
 
+import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
 import me.lingci.lib.base.util.CodeUtil
 
@@ -130,4 +131,17 @@ object SeriesKey {
             ?.let { CN_DIGIT[it.singleOrNull() ?: return null] ?: return null } ?: 0
         return tens * 10 + ones
     }
+}
+
+/** 同步 SQL 分组、代表行排序与搜索所需的派生列。 */
+fun MediaData.refreshLibraryMetadata(preserveExistingKey: Boolean = false) {
+    val key = SeriesKey.seriesKeyOf(path, type, storageId)
+    seriesKey = if (preserveExistingKey) key.ifBlank { seriesKey } else key
+    seasonNumber = SeriesKey.seasonNumberOf(SeriesKey.seasonLabelOf(path))
+    val decodedTitle = title.decodeHtmlEntities()
+    val seriesTitle = if (seriesKey.isBlank()) "" else SeriesKey.seriesTitleOf(path)
+    searchTitle = listOf(decodedTitle, seriesTitle)
+        .filter { it.isNotBlank() }
+        .distinct()
+        .joinToString(" ")
 }

@@ -43,7 +43,7 @@ import me.lingci.dy.player.room.entity.PlayingListItem
         AppMeta::class,
         PlayingListItem::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 @ColumnTypeConverters(

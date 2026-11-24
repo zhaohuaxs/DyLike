@@ -15,6 +15,12 @@ data class MediaWithVideos(
     val videos: List<VideoData>
 )
 
+/** SQL 分组后的首页卡片：代表季实体与完整组内季数。 */
+data class LibraryCardRow(
+    @Embedded val media: MediaData,
+    @ColumnInfo(name = "season_count") val seasonCount: Int
+)
+
 /**
  * 首页「继续观看」一行需要的字段（PlayHistoryDao.observeResumeRows）。
  *

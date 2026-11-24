@@ -49,6 +49,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.TextStyle
@@ -61,7 +62,7 @@ import androidx.compose.ui.unit.sp
 
 import me.lingci.dy.player.R
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
-import me.lingci.dy.player.ui.compose.model.mediaTypeLabel
+import me.lingci.dy.player.ui.compose.model.mediaTypeLabelRes
 import me.lingci.dy.player.ui.compose.theme.*
 
 private val TileShape = RoundedCornerShape(10.dp)
@@ -214,7 +215,7 @@ fun SearchField(
         if (value.isNotEmpty()) {
             AppIconButton(
                 icon = Icons.Default.Close,
-                contentDescription = "清空",
+                contentDescription = stringResource(R.string.action_clear),
                 onClick = { onValueChange("") },
                 modifier = Modifier.size(30.dp),
                 iconSize = 15.dp
@@ -620,6 +621,15 @@ fun PosterTile(
     media: MediaUiModel,
     index: Int,
     modifier: Modifier = Modifier,
+    /** 封面宽高比，由调用方从设置（3:4 / 1:1 / 4:3）传入；默认 3:4 与设置项默认值一致 */
+    coverAspect: Float = 0.75f,
+    /** 批量选择态：true 时描边强调 */
+    selected: Boolean = false,
+    /**
+     * 是否处于多选列表里。只有多选场景才暴露 selected 语义：
+     * 普通浏览时给每张卡都挂「未选中」状态，TalkBack 会逐张念一遍，纯噪音。
+     */
+    selectionMode: Boolean = false,
     progress: Float? = null,
     duration: String? = null,
     onLongClick: (() -> Unit)? = null,
@@ -628,16 +638,26 @@ fun PosterTile(
     val c = LocalDyLikeColors.current
     val player = LocalPlayerColors.current
     val colors = posterPalettes[index % posterPalettes.size]
-    val openLabel = stringResource(R.string.cd_open_library)
+    val isSelected = selected
+    // 多选态下点击的语义是「勾上/取消」而不是「打开」，标签跟着换，否则 TalkBack 会念成打开媒体库
+    val openLabel = if (selectionMode) {
+        stringResource(if (isSelected) R.string.cd_deselect else R.string.cd_select)
+    } else {
+        stringResource(R.string.cd_open_library)
+    }
     val moreLabel = stringResource(R.string.cd_more_actions)
-    val source = mediaTypeLabel(media.type)
+    val source = stringResource(mediaTypeLabelRes(media.type))
     val title = media.title
+    val tileShape = RoundedCornerShape(12.dp)
     Column(
-        modifier.clip(RoundedCornerShape(12.dp))
+        modifier
+            .then(if (isSelected) Modifier.border(2.dp, c.accent, tileShape) else Modifier)
+            .clip(tileShape)
             // 合并子节点并给整卡一个可读描述：卡内文字是零散的 Text 节点，
             // 不合并的话 TalkBack 会逐个朗读，读不出「这是一张卡片」
             .semantics(mergeDescendants = true) {
                 contentDescription = listOf(title, source).joinToString("，")
+                if (selectionMode) this.selected = isSelected
             }
             .then(
                 if (onLongClick != null) Modifier.combinedClickable(
@@ -651,7 +671,7 @@ fun PosterTile(
             )
     ) {
         Box(
-            Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(TileShape)
+            Modifier.fillMaxWidth().aspectRatio(coverAspect).clip(TileShape)
                 .background(Brush.linearGradient(colors))
                 .border(1.dp, Color.White.copy(alpha = .06f), TileShape)
         ) {

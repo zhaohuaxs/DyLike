@@ -1,6 +1,7 @@
 package me.lingci.dy.player.util
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import me.lingci.dy.player.entity.CoverType
 import me.lingci.dy.player.entity.MediaData
 import me.lingci.dy.player.entity.MediaLibType
@@ -317,7 +318,7 @@ object LibraryCompat {
         val videoDao = DatabaseManager.videoDataDao
         // 多季分组统一在唯一入库入口打标：Compose 扫描、旧 View 扫描、表单新增/编辑
         // 都会经过这里，path 语义与稳定 id 均不变，旧版取数零影响。
-        media.seriesKey = SeriesKey.seriesKeyOf(media.path, media.type, media.storageId)
+        media.refreshLibraryMetadata()
         val normalized = if (items.isEmpty()) {
             emptyList()
         } else {
@@ -352,6 +353,49 @@ object LibraryCompat {
         return DatabaseManager.mediaDataDao.listLibrary().firstOrNull {
             it.id == media.id || sameMedia(it, media, sources)
         }
+    }
+
+    // ---- 删除 ----
+
+    /** 多季卡片在库里可能对应多行；批量删除可传稳定 seriesKey，避免代表季已删后重试漏掉其余季。 */
+    suspend fun mediaIdsForDeletion(mediaId: String, seriesKey: String? = null): Set<String> {
+        val effectiveSeriesKey = seriesKey?.takeIf { it.isNotBlank() }
+            ?: DatabaseManager.mediaDataDao.getById(mediaId)?.seriesKey.orEmpty()
+        if (effectiveSeriesKey.isBlank()) return setOf(mediaId)
+        return (DatabaseManager.mediaDataDao.listBySeriesKey(effectiveSeriesKey).map { it.id } + mediaId)
+            .toSet()
+    }
+
+    /** 删除一个媒体库卡片；多季卡片会逐季删除，任一季失败时返回 false。 */
+    suspend fun deleteMediaCard(mediaId: String, sp: SpUtil, seriesKey: String? = null): Boolean {
+        var success = true
+        mediaIdsForDeletion(mediaId, seriesKey).forEach { id ->
+            if (!deleteMedia(id, sp)) success = false
+        }
+        return success
+    }
+
+    /**
+     * 删除一个媒体库，并清空指向它的「启动自动播放」偏好。
+     *
+     * 删除只调 `MediaDataDao.delete`：`video_data.media_id` 的外键级联会连带清掉分集，
+     * 再由分集级联清掉播放历史、收藏、播放列表项与随机播放状态，不需要在这里逐表删。
+     *
+     * 自动播放偏好只在记录已删除或确认已不存在后清理，避免数据库删除失败却误清偏好。
+     *
+     * @return true = 库里已经不存在这条记录（本次删掉了，或调用时它已被别处删掉），调用方无需重试；
+     *         false = 删除过程抛了异常，记录可能还在，调用方应保留它以便重试。
+     */
+    suspend fun deleteMedia(mediaId: String, sp: SpUtil): Boolean = try {
+        DatabaseManager.mediaDataDao.getById(mediaId)?.let { media ->
+            DatabaseManager.mediaDataDao.delete(media)
+        }
+        if (sp.autoPlayMediaId == mediaId) sp.autoPlayMediaId = ""
+        true
+    } catch (t: CancellationException) {
+        throw t
+    } catch (t: Exception) {
+        false
     }
 
     // ---- 视频落库（video_data.media_id 是 FK → media_data，写入前必须兜底）----

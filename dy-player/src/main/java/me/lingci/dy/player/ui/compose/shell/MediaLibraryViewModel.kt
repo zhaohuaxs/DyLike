@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -20,6 +21,7 @@ import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.media.MediaHelper
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
+import me.lingci.lib.base.util.PermissionUtil
 import me.lingci.lib.base.util.FileOperator
 import java.io.File
 
@@ -37,7 +39,6 @@ sealed interface MediaLibraryEvent {
  */
 class MediaLibraryViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val mediaDao = DatabaseManager.mediaDataDao
     private val sourceDao = DatabaseManager.sourceDataDao
     private val sp = SpUtil(app)
 
@@ -45,11 +46,25 @@ class MediaLibraryViewModel(app: Application) : AndroidViewModel(app) {
     val events: Flow<MediaLibraryEvent> = _events.receiveAsFlow()
 
     /**
+     * 存储权限从 Compose 的 `remember` 收回到这里。
+     *
+     * 以前授权后靠 `key(storageGranted)` 重建整棵内容树来让 Room 重订阅，副作用是
+     * 导航回退栈、滚动位置、输入态一起被清掉。现在权限是数据层的输入，
+     * 变化时由查询侧 `flatMapLatest` 重订阅，UI 树保持不动。
+     */
+    private val _storageAccess = MutableStateFlow(PermissionUtil.hasStorageAccess(app))
+    val storageAccess: StateFlow<Boolean> = _storageAccess.asStateFlow()
+
+    fun refreshStorageAccess() {
+        _storageAccess.value = PermissionUtil.hasStorageAccess(getApplication())
+    }
+
+    /**
      * 首次进入时自动扫描一次，与 View 侧 `MediaFragment.scanMedia()` 共用 `firstScanMovie`：
      * 谁先触发谁消费，另一条链路不会重复弹扫描页。
      *
-     * 用 StateFlow 而非一次性事件：存储权限授权会让 `ComposeApp` 整树重建，
-     * 状态留在 Activity 作用域的 ViewModel 里才不会丢；消费时立刻写回 SP 并置 false，
+     * 用 StateFlow 而非一次性事件：本 ViewModel 是 Activity 作用域，配置变化（旋转、深色切换）
+     * 后 Activity 重建、Compose 侧重新收集，状态不会丢；消费时立刻写回 SP 并置 false，
      * 重建后也不会二次导航。
      */
     private val _firstScanPending = MutableStateFlow(sp.firstScanMovie)
@@ -136,16 +151,22 @@ class MediaLibraryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { runCatching { LibraryCompat.togglePin(mediaId) } }
     }
 
-    /** 删除媒体库；若它正是「启动自动播放」目标，同步清空该偏好，避免下次启动指向已删除的 id */
-    fun delete(mediaId: String) {
+    /**
+     * 删除媒体库卡片；多季卡片会展开全部季，若它正是「启动自动播放」目标则同步清空偏好。
+     *
+     * 失败会发一次提示：以前整段 `runCatching` 把异常吞掉，用户点完删除什么反馈都没有。
+     */
+    fun delete(mediaId: String, seriesKey: String? = null) {
         viewModelScope.launch {
-            runCatching {
-                // 界面只传 id：实体在这里取，顺带解决「弹窗期间已被别处删掉」的竞态
-                val media = mediaDao.getById(mediaId) ?: return@runCatching
-                mediaDao.delete(media)
-                if (sp.autoPlayMediaId == mediaId) {
-                    sp.autoPlayMediaId = ""
-                }
+            val deleted = try {
+                LibraryCompat.deleteMediaCard(mediaId, sp, seriesKey)
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Exception) {
+                false
+            }
+            if (!deleted) {
+                _events.send(MediaLibraryEvent.Message(R.string.media_delete_failed))
             }
         }
     }

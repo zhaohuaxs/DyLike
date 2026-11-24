@@ -208,8 +208,8 @@
     <string name="hint_delete_video">确定删除该视频？</string>
     <string name="hint_delete_video_desc">视频文件删除后无法恢复，是否继续</string>
     <string name="hint_delete_media">确定删除该媒体库？</string>
-    <!-- §8.4 级联删除提示：删媒体会连带清空其播放历史/收藏/播放列表项（FK CASCADE） -->
-    <string name="hint_delete_media_cascade">删除该媒体将同时清空其播放历史、收藏及播放列表中的相关项，确定删除？</string>
+    <!-- §8.4 级联删除提示：删媒体会连带清空分集、播放历史、收藏、播放列表项和随机播放状态 -->
+    <string name="hint_delete_media_cascade">删除该媒体库将同时清空其全部分集、播放历史、收藏、播放列表中的相关项及随机播放状态，确定删除？</string>
     <string name="hint_show_more">显示更多按钮</string>
     <string name="hint_share_video">分享视频</string>
     <!-- 短视频「添加喜欢」写库失败提示（favorite.media_id FK 违约等），失败时同时回滚心形 -->
@@ -235,6 +235,7 @@
     <string name="media_add_success">媒体库添加成功</string>
     <string name="media_add_exist">媒体库已存在</string>
     <string name="media_add_failed">媒体库添加失败</string>
+    <string name="media_delete_failed">媒体库删除失败，请重试</string>
     <string name="hint_media_link_empty">请输入媒体链接</string>
     <string name="hint_media_link_unparsed">未解析到媒体</string>
     <string name="folder_no_video">该目录没有视频文件</string>
@@ -316,6 +317,8 @@
     <!-- 无障碍：卡片的操作标签，不显示在界面上，读屏会念出来 -->
     <string name="cd_open">打开</string>
     <string name="cd_open_library">打开媒体库</string>
+    <string name="cd_select">选择</string>
+    <string name="cd_deselect">取消选择</string>
     <string name="cd_play">播放</string>
     <string name="cd_continue_play">继续播放</string>
     <string name="cd_more_actions">更多操作</string>
@@ -507,8 +510,36 @@
     <string name="action_show_text">显示文本</string>
     <string name="action_hide_text">隐藏文本</string>
 
+    <!-- 媒体库首页 -->
+    <string name="library_title">DyLike放映厅</string>
+    <string name="library_add_local">添加本地媒体库</string>
+    <string name="library_continue_watching">继续观看</string>
+    <string name="library_recently_played">最近播放</string>
+    <string name="library_remaining">剩余 %1$s</string>
+    <string name="library_search_hint">搜索视频、媒体库</string>
+    <string name="library_filter_all">全部</string>
+    <string name="library_type_local">本地</string>
+    <string name="library_type_online">在线</string>
+    <string name="library_type_webdav">WebDAV</string>
+    <string name="library_type_smb">SMB</string>
+    <string name="library_type_media">媒体</string>
+    <string name="library_empty_title">还没有媒体</string>
+    <string name="library_empty_body">添加本地文件夹或连接远端资源。</string>
+    <string name="library_empty_action">浏览文件</string>
+    <string name="library_no_results_title">未找到匹配媒体</string>
+    <string name="library_no_results_body">换个关键词或清除类型筛选再试。</string>
+    <string name="library_no_results_action">清除筛选</string>
+    <string name="library_error_title">媒体库加载失败</string>
+    <string name="library_error_body">请稍后重试。</string>
+    <string name="library_error_action">重试</string>
+
     <!-- 多季剧集 -->
     <string name="library_season_count">%1$d 季</string>
+    <!-- 媒体库批量选择 -->
+    <string name="library_selection_count">已选 %1$d 项</string>
+    <string name="library_delete_selected_confirm">确定删除选中的 %1$d 个媒体库？其全部分集记录、播放历史、收藏、播放列表中的相关项及随机播放状态会一并清理。</string>
+    <string name="library_delete_selected_done">已删除 %1$d 个媒体库</string>
+    <string name="library_delete_selected_partial">已删除 %1$d 个，%2$d 个部分删除，%3$d 个删除失败；未完成项已保留选中</string>
     <string name="detail_season_tab">选择季</string>
     <string name="detail_media_count">包含 %1$d 条媒体</string>
     <string name="detail_season_episodes">%1$s · 本季 %2$d 集 · 共 %3$d 季</string>
