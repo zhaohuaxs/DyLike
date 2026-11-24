@@ -43,7 +43,7 @@ object SmbAuthToken {
             val obj = Json.parseToJsonElement(json).jsonObject
             Credentials(
                 username = obj.optString("username").takeIf { it.isNotBlank() },
-                password = obj.optString("password").takeIf { it.isNotBlank() },
+                password = obj.optString("password").takeIf { it.isNotEmpty() },
                 domain = obj.optString("domain").takeIf { it.isNotBlank() }
             )
         } catch (_: Exception) {
@@ -58,7 +58,7 @@ object SmbAuthToken {
     }
 
     fun normalize(username: String?, password: String?, domain: String? = null): Credentials {
-        val normalizedPassword = password?.takeIf { it.isNotBlank() }
+        val normalizedPassword = password?.takeIf { it.isNotEmpty() }
         val normalizedDomain = domain?.trim()?.takeIf { it.isNotBlank() }
         val rawUsername = username?.trim()?.takeIf { it.isNotBlank() }
             ?: return Credentials(null, normalizedPassword, normalizedDomain)

@@ -167,8 +167,25 @@ private fun SheetActionRow(
  *
  * 所有校验与字段默认值都对齐旧版 [me.lingci.dy.player.ui.source.WebdavManagerDialog] /
  * [me.lingci.dy.player.ui.source.SmbManagerDialog]，避免迁移后行为漂移：
- * 名称留空用默认名、账号密码留空填 guest、WebDAV 只收 http(s) 地址、SMB 只校验非空。
+ * 名称留空用默认名；SMB 空用户名/密码保持空，WebDAV 空凭据使用 guest；
+ * WebDAV 只收 http(s) 地址，SMB 只校验非空。
  */
+/**
+ * 域账号的域是拼在 username 里存的（`DOMAIN\user` / `DOMAIN;user`），
+ * 存储层只在 username 中拆域，所以编辑态回显必须拆回两个输入框，否则保存一次就多拼一层。
+ */
+private fun splitSmbUsername(value: String): Pair<String, String> {
+    val backslash = value.indexOf('\\')
+    if (backslash > 0 && backslash < value.lastIndex) {
+        return value.substring(0, backslash) to value.substring(backslash + 1)
+    }
+    val semicolon = value.indexOf(';')
+    if (semicolon > 0 && semicolon < value.lastIndex) {
+        return value.substring(0, semicolon) to value.substring(semicolon + 1)
+    }
+    return "" to value
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SourceFormSheet(
@@ -209,9 +226,14 @@ fun SourceFormSheet(
     var port by rememberSaveable(type, restoreKey) {
         mutableStateOf(if (isSmb) editPort else "")
     }
-    var domain by rememberSaveable(type, restoreKey) { mutableStateOf("") }
+    // SMB 的域存在 username 里，编辑态回显要拆开；WebDAV 用户名原样保留
+    val (editDomain, editUsername) = remember(restoreKey) {
+        if (isSmb) splitSmbUsername(editing?.username.orEmpty())
+        else "" to editing?.username.orEmpty()
+    }
+    var domain by rememberSaveable(type, restoreKey) { mutableStateOf(editDomain) }
     var username by rememberSaveable(type, restoreKey) {
-        mutableStateOf(editing?.username.orEmpty())
+        mutableStateOf(editUsername)
     }
     var password by rememberSaveable(type, restoreKey) {
         mutableStateOf(editing?.password.orEmpty())
@@ -237,13 +259,25 @@ fun SourceFormSheet(
         }
     )
 
+    /**
+     * 凭据归一（规则见 [SourceCredentials]）：SMB 的空用户名必须保持空，那代表匿名访问；
+     * 只有 WebDAV 才在留空时兜底 guest。
+     */
     fun buildSource(): SourceData {
         val source = SourceData()
         source.type = type
         editing?.let { source.id = it.id }
         source.title = name.trim().ifBlank { defaultName }
-        source.username = username.trim().ifBlank { "guest" }
-        source.password = password.trim().ifBlank { "guest" }
+        source.username = if (isSmb) {
+            SourceCredentials.smbUsername(username, domain)
+        } else {
+            SourceCredentials.webdavUsername(username)
+        }
+        source.password = if (isSmb) {
+            SourceCredentials.smbPassword(password)
+        } else {
+            SourceCredentials.webdavPassword(password)
+        }
         if (isSmb) {
             val host = site.trim()
                 .removePrefix("smb://")

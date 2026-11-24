@@ -106,7 +106,7 @@ data class SourceData(
                             ?: 445,
                         share = share,
                         username = username.takeIf { it.isNotBlank() },
-                        password = password.takeIf { it.isNotBlank() },
+                        password = password.takeIf { it.isNotEmpty() },
                         domain = null
                     ), ""
                 )
