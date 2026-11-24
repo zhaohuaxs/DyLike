@@ -90,6 +90,8 @@ import me.lingci.dy.player.ui.compose.components.AppIconButton
 import me.lingci.dy.player.ui.compose.components.CoverImage
 import me.lingci.dy.player.ui.compose.components.Kicker
 import me.lingci.dy.player.ui.compose.components.SearchField
+import me.lingci.dy.player.ui.compose.components.SortBar
+import me.lingci.dy.player.ui.compose.components.SortOption
 import me.lingci.dy.player.ui.compose.components.ThumbImage
 import me.lingci.dy.player.ui.compose.components.rememberStoragePermissionRequest
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
@@ -101,13 +103,11 @@ import me.lingci.dy.player.ui.compose.theme.ThemeMode
 import me.lingci.dy.player.util.decodeHtmlEntities
 import kotlin.math.abs
 
-private val SORT_LABELS = listOf("名称升序", "名称降序", "修改时间升序", "修改时间降序")
-
 /** 距离列表尾部还有这么多项就开始续页，留够 IO 时间，滑动不会看到空白等待。 */
 private const val LOAD_MORE_AHEAD = 12
 
-/** 剧集列表里，剧集之前的固定条目：顶栏、封面、搜索框。 */
-private const val EPISODE_HEADER_ITEMS = 3
+/** 剧集列表里，剧集之前的固定条目：顶栏、封面、搜索框、排序条。 */
+private const val EPISODE_HEADER_ITEMS = 4
 
 /** 超过这个项数就直接定位：动画滚动会一帧帧经过中间所有项，几百项会卡成幻灯片。 */
 private const val SCROLL_ANIMATE_MAX_ITEMS = 24
@@ -170,7 +170,8 @@ fun DetailRoute(
         onRetry = { vm.load(mediaId, force = true) },
         onOpEd = vm::updateOpEd,
         onQueryChange = vm::setQuery,
-        onSortChange = vm::setSortMode,
+        onSortField = vm::setSortField,
+        onToggleSortOrder = vm::toggleSortOrder,
         onLoadMore = vm::loadMore,
         onJumpLastPlayed = vm::jumpToLastPlayed,
         onSelectSeason = vm::selectSeason,
@@ -196,7 +197,8 @@ fun DetailScreen(
     onRetry: () -> Unit = {},
     onOpEd: (Int, Int) -> Unit = { _, _ -> },
     onQueryChange: (String) -> Unit = {},
-    onSortChange: (Int) -> Unit = {},
+    onSortField: (DetailSortField) -> Unit = {},
+    onToggleSortOrder: () -> Unit = {},
     onLoadMore: () -> Unit = {},
     onJumpLastPlayed: () -> Unit = {},
     onSelectSeason: (String) -> Unit = {},
@@ -353,7 +355,6 @@ fun DetailScreen(
                 title = title,
                 hideText = hideText,
                 onBack = onBack,
-                onSort = onSortChange,
                 onToggleText = { hideText = !hideText }
             )
             SearchField(
@@ -361,6 +362,14 @@ fun DetailScreen(
                 onQueryChange,
                 stringResource(R.string.detail_search_videos),
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            DetailSortBar(
+                field = state.sortField,
+                ascending = state.sortAscending,
+                count = state.totalCount,
+                onSelect = onSortField,
+                onToggleOrder = onToggleSortOrder,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
             )
             if (entries.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -436,7 +445,6 @@ fun DetailScreen(
                             title = title,
                             hideText = null,
                             onBack = onBack,
-                            onSort = onSortChange,
                             onToggleText = {}
                         )
                         DetailHeaderBlock(
@@ -464,6 +472,14 @@ fun DetailScreen(
                             stringResource(R.string.detail_search_episodes),
                             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
                         )
+                        DetailSortBar(
+                            field = state.sortField,
+                            ascending = state.sortAscending,
+                            count = state.totalCount,
+                            onSelect = onSortField,
+                            onToggleOrder = onToggleSortOrder,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
                         EpisodeList(
                             state = state,
                             listState = listState,
@@ -488,7 +504,6 @@ fun DetailScreen(
                             title = title,
                             hideText = null,
                             onBack = onBack,
-                            onSort = onSortChange,
                             onToggleText = {}
                         )
                     },
@@ -516,6 +531,16 @@ fun DetailScreen(
                             onQueryChange,
                             stringResource(R.string.detail_search_episodes),
                             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    },
+                    sortBar = {
+                        DetailSortBar(
+                            field = state.sortField,
+                            ascending = state.sortAscending,
+                            count = state.totalCount,
+                            onSelect = onSortField,
+                            onToggleOrder = onToggleSortOrder,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                         )
                     }
                 )
@@ -593,7 +618,8 @@ private fun EpisodeList(
     showHeaderItems: Boolean = false,
     topBar: @Composable () -> Unit = {},
     headerBlock: @Composable () -> Unit = {},
-    searchField: @Composable () -> Unit = {}
+    searchField: @Composable () -> Unit = {},
+    sortBar: @Composable () -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
     Box(modifier) {
@@ -607,6 +633,8 @@ private fun EpisodeList(
                 item { topBar() }
                 item { headerBlock() }
                 item { searchField() }
+                // 排序条作为列表固定头部：和搜索框一起滚走，列表本体占满剩余高度
+                item { sortBar() }
             }
             if (state.entries.isEmpty()) {
                 item {
@@ -651,7 +679,6 @@ private fun DetailTopBar(
     title: String,
     hideText: Boolean?,
     onBack: () -> Unit,
-    onSort: (Int) -> Unit,
     onToggleText: () -> Unit
 ) {
     val c = LocalDyLikeColors.current
@@ -671,19 +698,12 @@ private fun DetailTopBar(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Box {
-            AppIconButton(Icons.Default.MoreVert, "排序", { menuOpen = true })
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                SORT_LABELS.forEachIndexed { index, label ->
-                    DropdownMenuItem(
-                        text = { Text(label) },
-                        onClick = {
-                            onSort(index)
-                            menuOpen = false
-                        }
-                    )
-                }
-                if (hideText != null) {
+        // 排序已移到列表里的 SortBar：顶栏下拉既显示不了当前生效的字段，也要多一次点击才能看到选项。
+        // 这里只留「显示/隐藏文本」这类没有别处入口的开关。
+        if (hideText != null) {
+            Box {
+                AppIconButton(Icons.Default.MoreVert, "更多", { menuOpen = true })
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text(if (hideText) "显示文本" else "隐藏文本") },
                         onClick = {
@@ -695,6 +715,27 @@ private fun DetailTopBar(
             }
         }
     }
+}
+
+/** 分集列表的排序条：字段 + 升降序，选中项与方向都直接来自 UiState，与 SP 里持久化的一致。 */
+@Composable
+private fun DetailSortBar(
+    field: DetailSortField,
+    ascending: Boolean,
+    count: Int,
+    onSelect: (DetailSortField) -> Unit,
+    onToggleOrder: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    SortBar(
+        options = DetailSortField.entries.map { SortOption(it, stringResource(it.labelRes)) },
+        selected = field,
+        ascending = ascending,
+        onSelect = onSelect,
+        onToggleOrder = onToggleOrder,
+        leading = stringResource(R.string.sort_leading_episodes, count),
+        modifier = modifier
+    )
 }
 
 @Composable

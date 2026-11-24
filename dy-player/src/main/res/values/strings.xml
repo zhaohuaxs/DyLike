@@ -467,10 +467,28 @@
     <string name="cd_sort_descending">当前降序，点击切换为升序</string>
     <string name="browser_item_count">共 %1$d 项</string>
 
+    <!-- 各列表页排序字段与计数（SortBar 复用） -->
+    <string name="sort_field_default">默认顺序</string>
+    <string name="sort_field_last_played">最近观看</string>
+    <string name="sort_field_time">时间</string>
+    <string name="sort_field_added">添加时间</string>
+    <string name="sort_field_liked">收藏时间</string>
+    <string name="sort_field_updated">更新时间</string>
+    <string name="sort_field_created">创建时间</string>
+    <string name="sort_leading_media">共 %1$d 个媒体库</string>
+    <string name="sort_leading_episodes">共 %1$d 集</string>
+    <string name="sort_leading_history">共 %1$d 条记录</string>
+    <string name="sort_leading_playlists">共 %1$d 个列表</string>
+    <string name="sort_leading_likes">共 %1$d 个</string>
+    <string name="likes_leading_count">共 %1$d 项</string>
+
     <!-- 浏览页 -->
     <string name="cd_back">返回</string>
     <string name="action_back">返回</string>
     <string name="browser_search_hint">搜索文件或文件夹</string>
+    <string name="browser_settings_title">文件浏览设置</string>
+    <string name="browser_show_hidden">显示隐藏文件夹</string>
+    <string name="browser_show_hidden_desc">开启后，以「.」开头的文件夹也会列出（视频文件不受影响）</string>
     <string name="browser_folder">文件夹</string>
     <string name="browser_empty_title">没有文件</string>
     <string name="browser_empty_search">试试其他关键词</string>
@@ -482,7 +500,6 @@
     <!-- 喜欢页 -->
     <string name="title_likes">我的喜欢</string>
     <string name="likes_empty">还没有喜欢的视频</string>
-    <string name="likes_count">%1$d 个</string>
     <string name="likes_unlike_confirm">确定将这个视频移出喜欢列表？</string>
     <string name="likes_remove_failed">移出失败，请重试</string>
 

@@ -67,6 +67,8 @@ import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.ui.compose.components.AppIconButton
 import me.lingci.dy.player.ui.compose.components.Kicker
+import me.lingci.dy.player.ui.compose.components.SortBar
+import me.lingci.dy.player.ui.compose.components.SortOption
 import me.lingci.dy.player.ui.compose.components.ThumbImage
 import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
@@ -108,7 +110,9 @@ fun LikesRoute(
         state = state,
         onBack = onBack,
         onPlay = vm::play,
-        onUnlike = vm::unlike
+        onUnlike = vm::unlike,
+        onSortField = vm::setSortField,
+        onToggleSortOrder = vm::toggleSortOrder
     )
 }
 
@@ -118,7 +122,9 @@ fun LikesScreen(
     state: LikesUiState,
     onBack: () -> Unit,
     onPlay: (Int) -> Unit,
-    onUnlike: (String) -> Unit = {}
+    onUnlike: (String) -> Unit = {},
+    onSortField: (LikesSortField) -> Unit = {},
+    onToggleSortOrder: () -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
     val gridState = rememberLazyStaggeredGridState()
@@ -144,11 +150,6 @@ fun LikesScreen(
                     color = c.textPrimary
                 )
             }
-            Text(
-                stringResource(R.string.likes_count, items.size),
-                style = DyLikeType.meta,
-                color = c.textTertiary
-            )
             Box {
                 AppIconButton(
                     Icons.Default.MoreVert,
@@ -170,6 +171,20 @@ fun LikesScreen(
                     )
                 }
             }
+        }
+
+        // 排序条只在有内容时出现：空态下摆一行排序控件没有意义，也会把空态文案挤下去
+        if (items.isNotEmpty()) {
+            SortBar(
+                options = LikesSortField.entries.map { SortOption(it, stringResource(it.labelRes)) },
+                selected = state.sortField,
+                ascending = state.sortAscending,
+                onSelect = onSortField,
+                onToggleOrder = onToggleSortOrder,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                // 数量放在排序条最左：与历史/播放列表一致，也让顶栏只留标题和更多菜单
+                leading = stringResource(R.string.sort_leading_likes, items.size)
+            )
         }
 
         if (items.isEmpty()) {

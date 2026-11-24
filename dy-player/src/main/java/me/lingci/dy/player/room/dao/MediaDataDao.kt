@@ -5,6 +5,8 @@ import androidx.room3.Delete
 import androidx.room3.Insert
 import androidx.room3.OnConflictStrategy
 import androidx.room3.Query
+import androidx.room3.RawQuery
+import androidx.room3.RoomRawQuery
 import androidx.room3.Transaction
 import androidx.room3.Upsert
 import kotlinx.coroutines.flow.Flow
@@ -36,6 +38,18 @@ interface MediaDataDao {
         LIMIT :limit OFFSET :offset
     """)
     fun observeLibraryPage(limit: Int, offset: Int): Flow<List<MediaData>>
+
+    /**
+     * 首页分页查询（排序下推到 SQL）。
+     *
+     * 首页要让用户切「最近观看 / 名称 / 添加时间」，而 ORDER BY 无法用 `:param` 占位，
+     * 固定 @Query 只能有限几种顺序。这里用 @RawQuery 接一段调用方拼好的白名单 SQL，
+     * 分页仍然生效——内存排序只能排到已加载页，翻页后顺序会断。
+     *
+     * [observedEntities] 必须写明：Flow 的失效通知靠它订阅表变化，漏了就不会自动刷新。
+     */
+    @RawQuery(observedEntities = [MediaData::class])
+    fun observeLibraryPageRaw(query: RoomRawQuery): Flow<List<MediaData>>
 
     @Query("SELECT * FROM media_data WHERE media_type = :type AND is_virtual = 0 ORDER BY pinned DESC, pinned_at DESC, last_played_at DESC")
     fun observeByType(type: MediaLibType): Flow<List<MediaData>>

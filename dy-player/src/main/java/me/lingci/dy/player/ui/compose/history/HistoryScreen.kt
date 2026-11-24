@@ -51,6 +51,8 @@ import me.lingci.dy.player.room.entity.PlaySource
 import me.lingci.dy.player.ui.compose.components.AppIconButton
 import me.lingci.dy.player.ui.compose.components.CoverPlaceholder
 import me.lingci.dy.player.ui.compose.components.Kicker
+import me.lingci.dy.player.ui.compose.components.SortBar
+import me.lingci.dy.player.ui.compose.components.SortOption
 import me.lingci.dy.player.ui.compose.components.ThumbImage
 import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
@@ -87,7 +89,9 @@ fun HistoryRoute(
         onOpenDetail = onOpenDetail,
         onPlaySingle = vm::playSingle,
         onDelete = vm::deleteItem,
-        onClearAll = vm::clearAll
+        onClearAll = vm::clearAll,
+        onSortField = vm::setSortField,
+        onToggleSortOrder = vm::toggleSortOrder
     )
 }
 
@@ -98,7 +102,9 @@ fun HistoryScreen(
     onOpenDetail: (String) -> Unit = {},
     onPlaySingle: (HistoryItemUi.Single) -> Unit = {},
     onDelete: (HistoryItemUi) -> Unit = {},
-    onClearAll: () -> Unit = {}
+    onClearAll: () -> Unit = {},
+    onSortField: (HistorySortField) -> Unit = {},
+    onToggleSortOrder: () -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
 
@@ -139,6 +145,20 @@ fun HistoryScreen(
                 }
             }
         } else {
+            // 排序条放在列表首项：随内容滚动，清空历史时不会有孤零零的排序控件留在空态上
+            item {
+                SortBar(
+                    options = HistorySortField.entries.map {
+                        SortOption(it, stringResource(it.labelRes))
+                    },
+                    selected = state.sortField,
+                    ascending = state.sortAscending,
+                    onSelect = onSortField,
+                    onToggleOrder = onToggleSortOrder,
+                    leading = stringResource(R.string.sort_leading_history, state.items.size),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
             items(state.items, key = { it.key }) { entry ->
                 HistoryRow(
                     entry = entry,

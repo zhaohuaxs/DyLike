@@ -70,6 +70,8 @@ import me.lingci.dy.player.ui.compose.components.ResumeCard
 import me.lingci.dy.player.ui.compose.components.SearchField
 import me.lingci.dy.player.ui.compose.components.SectionHeader
 import me.lingci.dy.player.ui.compose.components.ShortcutChip
+import me.lingci.dy.player.ui.compose.components.SortBar
+import me.lingci.dy.player.ui.compose.components.SortOption
 import me.lingci.dy.player.ui.compose.components.StatePill
 import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
@@ -111,7 +113,9 @@ fun LibraryRoute(
         onScanMedia = onScanMedia,
         onEditMedia = onEditMedia,
         onDeleteMedia = onDeleteMedia,
-        onTogglePin = onTogglePin
+        onTogglePin = onTogglePin,
+        onSortField = vm::setSortField,
+        onToggleSortOrder = vm::toggleSortOrder
     )
 }
 
@@ -132,7 +136,9 @@ fun LibraryScreen(
     onScanMedia: () -> Unit = {},
     onEditMedia: (MediaUiModel) -> Unit = {},
     onDeleteMedia: (MediaUiModel) -> Unit = {},
-    onTogglePin: (MediaUiModel) -> Unit = {}
+    onTogglePin: (MediaUiModel) -> Unit = {},
+    onSortField: (LibrarySortField) -> Unit = {},
+    onToggleSortOrder: () -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
     var query by rememberSaveable { mutableStateOf("") }
@@ -283,6 +289,21 @@ fun LibraryScreen(
                 ) {
                     items(filters, key = { it }) { f -> StatePill(f, filter == f) { filter = f } }
                 }
+            }
+            // 排序条：与筛选 chips 分两行，避免一行里挤两个可横向滚动的控件。
+            // leading 显示的是「过滤后的条数」，搜索/筛选变化时这里的数字同步变，不再另摆一个计数。
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                SortBar(
+                    options = LibrarySortField.entries.map {
+                        SortOption(it, stringResource(it.labelRes))
+                    },
+                    selected = state.sortField,
+                    ascending = state.sortAscending,
+                    onSelect = onSortField,
+                    onToggleOrder = onToggleSortOrder,
+                    leading = stringResource(R.string.sort_leading_media, filteredList.size),
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
             }
             if (filteredList.isEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {

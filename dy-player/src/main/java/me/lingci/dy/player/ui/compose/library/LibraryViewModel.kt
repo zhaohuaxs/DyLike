@@ -25,10 +25,14 @@ import me.lingci.dy.player.entity.SourceData
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.room.dao.MediaDataDao
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
+import me.lingci.dy.player.ui.compose.sort.SortScope
+import me.lingci.dy.player.ui.compose.sort.SortSpec
+import me.lingci.dy.player.ui.compose.sort.writeSort
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.CoverHelper
 import me.lingci.dy.player.util.CoverProcessor
 import me.lingci.dy.player.util.SeriesKey
+import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.decodeHtmlEntities
 
 /** 「继续观看」一项：文本与封面路径都在 ViewModel 里算好，卡片只做渲染。 */
@@ -55,7 +59,10 @@ data class LibraryUiState(
     val phase: LibraryPhase = LibraryPhase.Loading,
     val media: List<MediaUiModel> = emptyList(),
     val resumeItems: List<ResumeItemUi> = emptyList(),
-    val hasMore: Boolean = true
+    val hasMore: Boolean = true,
+    /** 当前生效的排序字段与方向：SortBar 据此显示选中项，页面不另存一份状态。 */
+    val sortField: LibrarySortField = LibrarySortField.LastPlayed,
+    val sortAscending: Boolean = false
 )
 
 /**
@@ -71,24 +78,60 @@ data class LibraryUiState(
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val mediaDao = DatabaseManager.mediaDataDao
+    private val sp = SpUtil(app)
     private val pageSize = MutableStateFlow(MediaDataDao.PAGE_SIZE)
 
-    private val mediaFlow = pageSize.flatMapLatest { mediaDao.observeLibraryPage(it, 0) }
+    /** 排序偏好：改一次写一次 SP，并把新值灌回数据流重查（排序已下推到 SQL）。 */
+    private val sortSpec = MutableStateFlow(sp.readLibrarySort())
+    private val mediaFlow = combine(sortSpec, pageSize) { sort, size -> sort to size }
+        .flatMapLatest { (sort, size) ->
+            mediaDao.observeLibraryPageRaw(
+                libraryPageQuery(
+                    field = sort.modeOr(LibrarySortField.LastPlayed),
+                    ascending = sort.ascending,
+                    limit = size,
+                    offset = 0
+                )
+            )
+        }
 
     val state: StateFlow<LibraryUiState> = combine(
         mediaFlow,
         DatabaseManager.sourceDataDao.observeAll(),
         DatabaseManager.playHistoryDao.observeResumeRows(RESUME_LIMIT),
-        pageSize
-    ) { media, sources, resume, size ->
-        Snapshot(media, sources, resume, size)
+        pageSize,
+        sortSpec
+    ) { media, sources, resume, size, sort ->
+        Snapshot(media, sources, resume, size, sort)
     }
         .mapLatest { snapshot -> withContext(Dispatchers.IO) { buildState(snapshot) } }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = LibraryUiState()
+            initialValue = LibraryUiState(
+                sortField = sortSpec.value.modeOr(LibrarySortField.LastPlayed),
+                sortAscending = sortSpec.value.ascending
+            )
         )
+
+    /**
+     * 切换排序字段。升降序沿用当前值：用户从「最近观看降序」切到「名称」时，
+     * 期望的通常是「名称降序」这一脉相承的方向，而不是被打回升序。
+     */
+    fun setSortField(field: LibrarySortField) {
+        val current = sortSpec.value
+        if (current.modeOr(LibrarySortField.LastPlayed) == field) return
+        applySort(SortSpec(field.name, current.ascending))
+    }
+
+    fun toggleSortOrder() {
+        applySort(sortSpec.value.copy(ascending = !sortSpec.value.ascending))
+    }
+
+    private fun applySort(spec: SortSpec) {
+        sp.writeSort(SortScope.Library, spec)
+        sortSpec.value = spec
+    }
 
     init {
         // 只补「还没有封面」的条目：DEFAULT 是允许自动匹配的初始态，AUTO 表示已匹配过，
@@ -195,7 +238,9 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             },
             media = items,
             resumeItems = resumeItems,
-            hasMore = snapshot.media.size >= snapshot.pageSize
+            hasMore = snapshot.media.size >= snapshot.pageSize,
+            sortField = snapshot.sort.modeOr(LibrarySortField.LastPlayed),
+            sortAscending = snapshot.sort.ascending
         )
     }
 
@@ -203,7 +248,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         val media: List<MediaData>,
         val sources: List<SourceData>,
         val resume: List<me.lingci.dy.player.room.entity.ResumeRow>,
-        val pageSize: Int
+        val pageSize: Int,
+        val sort: SortSpec
     )
 
     private companion object {

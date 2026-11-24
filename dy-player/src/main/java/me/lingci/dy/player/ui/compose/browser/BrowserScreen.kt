@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.SdStorage
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,6 +39,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -218,7 +221,9 @@ fun BrowserScreen(
                     playlistVideos = videos
                 }
             }
-        }
+        },
+        showHidden = prefs.showHidden,
+        onShowHidden = viewModel::setShowHidden
     )
 
     playlistVideos?.let { videos ->
@@ -255,12 +260,15 @@ private fun BrowserContent(
     onToggleSortOrder: () -> Unit,
     onOpenFile: (FileEntity) -> Unit,
     onAddToLibrary: (FileEntity) -> Unit,
-    onAddToPlaylist: (FileEntity) -> Unit
+    onAddToPlaylist: (FileEntity) -> Unit,
+    showHidden: Boolean = false,
+    onShowHidden: (Boolean) -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
     val sortOptions = FileSortKey.entries.map { SortOption(it, stringResource(it.labelRes)) }
     // 行菜单的目标提升到页面层：放在行内会随 item 回收一起销毁
     var menuFile by remember { mutableStateOf<FileEntity?>(null) }
+    var settingsOpen by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -287,6 +295,12 @@ private fun BrowserContent(
                     onSelect = onSelectVolume
                 )
             }
+            // 设置入口常驻：连不上源时也要能改「显示隐藏文件夹」再重试，所以不挂在内容态里
+            AppIconButton(
+                Icons.Default.Settings,
+                stringResource(R.string.browser_settings_title),
+                { settingsOpen = true }
+            )
         }
 
         if (breadcrumbs.isNotEmpty()) {
@@ -424,6 +438,62 @@ private fun BrowserContent(
                 }
             }
         }
+    }
+
+    if (settingsOpen) {
+        ModalBottomSheet(
+            onDismissRequest = { settingsOpen = false },
+            sheetState = rememberModalBottomSheetState(),
+            containerColor = c.surface
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                Text(
+                    stringResource(R.string.browser_settings_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = c.accent,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)
+                )
+                BrowserSettingSwitch(
+                    label = stringResource(R.string.browser_show_hidden),
+                    description = stringResource(R.string.browser_show_hidden_desc),
+                    checked = showHidden,
+                    onCheckedChange = onShowHidden
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 设置行：整行可点（触控目标 ≥48dp），右侧开关只做状态显示。
+ *
+ * 空白处点击与开关点击必须走同一条回调，否则会出现「点文字和点开关结果不一样」。
+ */
+@Composable
+private fun BrowserSettingSwitch(
+    label: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val c = LocalDyLikeColors.current
+    Row(
+        Modifier.fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 24.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = c.textPrimary)
+            Spacer(Modifier.height(2.dp))
+            Text(description, style = DyLikeType.meta, color = c.textTertiary)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = c.accent)
+        )
     }
 }
 

@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -21,6 +22,7 @@ import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.room.entity.HistoryGroupSummary
 import me.lingci.dy.player.room.entity.PlayHistory
 import me.lingci.dy.player.room.entity.PlaySource
+import me.lingci.dy.player.ui.compose.sort.SortSpec
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.CoverHelper
 import me.lingci.dy.player.util.SpUtil
@@ -78,7 +80,10 @@ enum class HistoryPhase { Loading, Content, Empty, Error }
 @Immutable
 data class HistoryUiState(
     val phase: HistoryPhase = HistoryPhase.Loading,
-    val items: List<HistoryItemUi> = emptyList()
+    val items: List<HistoryItemUi> = emptyList(),
+    /** 当前生效的排序：SortBar 直接读它，页面不另存状态。 */
+    val sortField: HistorySortField = HistorySortField.Time,
+    val sortAscending: Boolean = false
 )
 
 /** 一次性事件：起播需要完整 VideoData，放在事件里不污染状态。 */
@@ -97,6 +102,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val historyDao = DatabaseManager.playHistoryDao
 
+    private val sp = SpUtil(app)
+
+    /** 排序偏好（`sort.history`）：默认时间倒序，与旧版「最近看的在最上面」一致。 */
+    private val sortSpec = MutableStateFlow(sp.readHistorySort())
+
     /** 播放形态偏好：读一次即固定，改变它需要重启进程（与旧入口行为一致） */
     val shortVideoMode: Boolean = !SpUtil(app).longVideoMode
 
@@ -106,16 +116,37 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<HistoryUiState> = combine(
         historyDao.observeGroupedHistory(),
         historyDao.observeStandaloneHistory(),
-        DatabaseManager.videoDataDao.observeStandaloneHistoryVideos()
-    ) { groups, standalone, videos -> Triple(groups, standalone, videos) }
-        .mapLatest { (groups, standalone, videos) ->
-            withContext(Dispatchers.IO) { buildState(groups, standalone, videos) }
+        DatabaseManager.videoDataDao.observeStandaloneHistoryVideos(),
+        sortSpec
+    ) { groups, standalone, videos, sort -> Snapshot(groups, standalone, videos, sort) }
+        .mapLatest { snapshot ->
+            withContext(Dispatchers.IO) {
+                buildState(snapshot.groups, snapshot.standalone, snapshot.videos, snapshot.sort)
+            }
         }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = HistoryUiState()
+            initialValue = HistoryUiState(
+                sortField = sortSpec.value.modeOr(HistorySortField.Time),
+                sortAscending = sortSpec.value.ascending
+            )
         )
+
+    /** 切换排序字段：升降序沿用当前方向，写 SP 后立即重排（不需要重新查库）。 */
+    fun setSortField(field: HistorySortField) {
+        if (field == sortSpec.value.modeOr(HistorySortField.Time)) return
+        applySort(SortSpec(field.name, sortSpec.value.ascending))
+    }
+
+    fun toggleSortOrder() {
+        applySort(sortSpec.value.copy(ascending = !sortSpec.value.ascending))
+    }
+
+    private fun applySort(spec: SortSpec) {
+        sp.writeHistorySort(spec.modeOr(HistorySortField.Time), spec.ascending)
+        sortSpec.value = spec
+    }
 
     fun deleteItem(item: HistoryItemUi) {
         viewModelScope.launch {
@@ -147,7 +178,8 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun buildState(
         groups: List<HistoryGroupSummary>,
         standalone: List<PlayHistory>,
-        videos: List<VideoData>
+        videos: List<VideoData>,
+        sort: SortSpec
     ): HistoryUiState {
         val mediaById = DatabaseManager.mediaDataDao.list().associateBy { it.id }
         val sources = DatabaseManager.sourceDataDao.list()
@@ -211,12 +243,32 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
 
-        val items = (groupItems + singleItems).sortedByDescending { it.lastPlayedAt }
+        // 集合行与单文件行混排：先合并再整体排序，否则「按时间」会被分组顺序打断
+        val merged = groupItems + singleItems
+        val sorted = when (sort.modeOr(HistorySortField.Time)) {
+            HistorySortField.Time -> {
+                val comparator = compareBy<HistoryItemUi> { it.lastPlayedAt }
+                if (sort.ascending) merged.sortedWith(comparator) else merged.sortedWith(comparator.reversed())
+            }
+            HistorySortField.Name -> {
+                val comparator = compareBy<HistoryItemUi> { it.title.lowercase() }
+                if (sort.ascending) merged.sortedWith(comparator) else merged.sortedWith(comparator.reversed())
+            }
+        }
         return HistoryUiState(
-            phase = if (items.isEmpty()) HistoryPhase.Empty else HistoryPhase.Content,
-            items = items
+            phase = if (sorted.isEmpty()) HistoryPhase.Empty else HistoryPhase.Content,
+            items = sorted,
+            sortField = sort.modeOr(HistorySortField.Time),
+            sortAscending = sort.ascending
         )
     }
+
+    private data class Snapshot(
+        val groups: List<HistoryGroupSummary>,
+        val standalone: List<PlayHistory>,
+        val videos: List<VideoData>,
+        val sort: SortSpec
+    )
 
     private companion object {
         const val LIBRARY_PREFIX = "lib:"

@@ -17,7 +17,9 @@ import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.ui.compose.sort.SortSpec
 import me.lingci.dy.player.util.AppUtil
+import me.lingci.dy.player.util.SpUtil
 import me.lingci.dy.player.util.decodeHtmlEntities
 
 enum class LikesPhase { Loading, Content, Empty }
@@ -39,7 +41,10 @@ data class LikeItemUi(
 @Immutable
 data class LikesUiState(
     val phase: LikesPhase = LikesPhase.Loading,
-    val items: List<LikeItemUi> = emptyList()
+    val items: List<LikeItemUi> = emptyList(),
+    /** 当前生效的排序：SortBar 直接读它，页面不另存状态。 */
+    val sortField: LikesSortField = LikesSortField.Liked,
+    val sortAscending: Boolean = false
 )
 
 /**
@@ -66,17 +71,62 @@ class LikesViewModel(app: Application) : AndroidViewModel(app) {
     /** 起播用的原始列表；只在这里流转，不暴露给 UI。 */
     private var videos: List<VideoData> = emptyList()
 
+    /** 收藏表返回的原始顺序（收藏时间倒序）：`Liked` 的正序只是把它反一下，不另外查时间戳。 */
+    private var rawVideos: List<VideoData> = emptyList()
+
+    private val sp = SpUtil(app)
+
+    private val sortSpec = MutableStateFlow(sp.readLikesSort())
+
     init {
         viewModelScope.launch {
             DatabaseManager.favoriteDao.observeFavoriteVideos().collect { list ->
-                videos = list
-                val items = withContext(Dispatchers.IO) { list.map { it.toItemUi() } }
-                _state.value = LikesUiState(
-                    phase = if (items.isEmpty()) LikesPhase.Empty else LikesPhase.Content,
-                    items = items
-                )
+                rawVideos = list
+                rebuild()
             }
         }
+    }
+
+    /** 切换排序字段：升降序沿用当前方向，写 SP 后立即重排，不重新查库。 */
+    fun setSortField(field: LikesSortField) {
+        if (field == sortSpec.value.modeOr(LikesSortField.Liked)) return
+        applySort(SortSpec(field.name, sortSpec.value.ascending))
+    }
+
+    fun toggleSortOrder() {
+        applySort(sortSpec.value.copy(ascending = !sortSpec.value.ascending))
+    }
+
+    private fun applySort(spec: SortSpec) {
+        sp.writeLikesSort(spec.modeOr(LikesSortField.Liked), spec.ascending)
+        sortSpec.value = spec
+        viewModelScope.launch { rebuild() }
+    }
+
+    /**
+     * 重排并重建卡片。
+     *
+     * [videos] 必须与 [items] 同序：起播靠下标定位，两者顺序不一致就会播到别的视频。
+     * 缩略图路径换算留在 IO 线程，排序只碰内存里的标题。
+     */
+    private suspend fun rebuild() {
+        val sort = sortSpec.value
+        val field = sort.modeOr(LikesSortField.Liked)
+        val sorted = when (field) {
+            LikesSortField.Liked -> if (sort.ascending) rawVideos.reversed() else rawVideos
+            LikesSortField.Name -> {
+                val byName = rawVideos.sortedBy { it.name.decodeHtmlEntities().lowercase() }
+                if (sort.ascending) byName else byName.reversed()
+            }
+        }
+        videos = sorted
+        val items = withContext(Dispatchers.IO) { sorted.map { it.toItemUi() } }
+        _state.value = LikesUiState(
+            phase = if (items.isEmpty()) LikesPhase.Empty else LikesPhase.Content,
+            items = items,
+            sortField = field,
+            sortAscending = sort.ascending
+        )
     }
 
     /** 点某张卡起播：下标在 UI 侧产出，整份列表由这里补齐。 */

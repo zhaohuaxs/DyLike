@@ -69,6 +69,11 @@ data class VideoData(
     @ColumnInfo(name = "sort_index")
     var sortIndex: Int = 0,
 
+    // 远端条目（WebDAV/SMB/在线）的修改时间：列目录时由存储接口带回，不落库。
+    // 远端视频没有可 stat 的本地文件，缺了它「按修改时间排序」对远端库恒等于不排序。
+    @Ignore
+    var lastModified: Long = 0,
+
     ) : Parcelable {
 
     companion object {

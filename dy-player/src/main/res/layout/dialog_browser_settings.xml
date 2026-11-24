@@ -18,81 +18,16 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <TextView
-        android:id="@+id/tv_global"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="@dimen/dp8"
-        android:layout_marginBottom="@dimen/dp8"
-        android:text="全局"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/text_title"/>
-
-    <com.google.android.material.switchmaterial.SwitchMaterial
-        android:id="@+id/sw_used_all"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="设置应用于所有页面"
-        app:layout_constraintTop_toBottomOf="@+id/tv_global"/>
-
-    <TextView
-        android:id="@+id/tv_sort"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="@dimen/dp8"
-        android:layout_marginBottom="@dimen/dp8"
-        android:text="排序"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/sw_used_all"/>
-
-    <RadioGroup
-        android:id="@+id/rg_sort"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        app:layout_constraintTop_toBottomOf="@+id/tv_sort">
-
-        <RadioButton
-            android:id="@+id/rb_name_up"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="文件名正序"/>
-
-        <RadioButton
-            android:id="@+id/rb_name_down"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="文件名倒序"/>
-
-        <RadioButton
-            android:id="@+id/rb_time_up"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="修改时间正序"/>
-
-        <RadioButton
-            android:id="@+id/rb_time_down"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="修改时间倒叙"/>
-
-    </RadioGroup>
-
-    <TextView
-        android:id="@+id/tv_other"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="@dimen/dp8"
-        android:layout_marginBottom="@dimen/dp8"
-        android:text="其他"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/rg_sort"/>
-
+    <!--
+      只保留真正生效的开关：排序由浏览页自己的排序控件负责（目录优先 + 所选字段），
+      旧版的「设置应用于所有页面」与排序单选组写了 SP 却从来没被读取，属于必须移除的无效开关。
+    -->
     <com.google.android.material.switchmaterial.SwitchMaterial
         android:id="@+id/sw_show_hide"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/dp8"
         android:text="显示隐藏文件夹"
-        app:layout_constraintTop_toBottomOf="@+id/tv_other"/>
+        app:layout_constraintTop_toBottomOf="@+id/text_title" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

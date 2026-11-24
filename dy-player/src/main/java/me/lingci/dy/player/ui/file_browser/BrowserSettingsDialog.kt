@@ -69,18 +69,8 @@ open class BrowserSettingsDialog(
     }
 
     private fun init() {
-        binding.swUsedAll.isChecked = spUtil.browserUsedAll
-        binding.swUsedAll.setOnCheckedChangeListener { _, checked ->
-            spUtil.browserUsedAll = checked
-        }
-
-        if (spUtil.browserSort != -1) {
-            binding.rgSort.check(spUtil.browserSort)
-        }
-        binding.rgSort.setOnCheckedChangeListener { _, id ->
-            spUtil.browserSort = id
-        }
-
+        // 只剩「显示隐藏文件夹」：旧版的「设置应用于所有页面」与排序单选组写了 SP 却没人读，
+        // 排序现在由浏览页自己的排序控件负责，这里不再提供重复且无效的入口。
         binding.swShowHide.isChecked = spUtil.browserShowHide
         binding.swShowHide.setOnCheckedChangeListener { _, checked ->
             spUtil.browserShowHide = checked

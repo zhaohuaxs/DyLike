@@ -32,6 +32,7 @@ import me.lingci.dy.player.entity.VideoData
 import me.lingci.dy.player.room.DatabaseManager
 import me.lingci.dy.player.ui.compose.components.ThumbCache
 import me.lingci.dy.player.ui.compose.model.MediaUiModel
+import me.lingci.dy.player.ui.compose.sort.SortSpec
 import me.lingci.dy.player.ui.media.MediaHelper
 import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.CoverHelper
@@ -102,7 +103,9 @@ data class DetailUiState(
     val opOffset: Int = 0,
     val edOffset: Int = 0,
     val query: String = "",
-    val sortMode: Int = 0,
+    /** 当前生效的排序：SortBar 直接显示这两项，页面不再各存一份。 */
+    val sortField: DetailSortField = DetailSortField.Default,
+    val sortAscending: Boolean = true,
     /** 只包含「卡片已解析」的前 N 项：1000 个视频也不会在首帧全量读磁盘 */
     val entries: List<DetailEntryUi> = emptyList(),
     /** 过滤 + 排序后的完整播放顺序，供起播与「下一个」使用 */
@@ -139,6 +142,16 @@ class DetailViewModel(private val app: Application) : ViewModel() {
 
     /** 过滤 + 排序后的播放顺序，分页从这里切片 */
     private var ordered: List<VideoRow> = emptyList()
+
+    private val sp = SpUtil(app)
+
+    /**
+     * 排序偏好（全局一套，`sort.detail`）。
+     *
+     * 放 ViewModel 字段而不是 UiState 的唯一来源：`load()` 会整体换新 state，
+     * 排序若只存在 state 里就会在每次进页面时被打回默认。
+     */
+    private var sortSpec: SortSpec = sp.readDetailSort()
 
     /** 解析结果缓存：排序 / 搜索来回切换时不重复读盘，也不重复算比例 */
     private val cardCache = ConcurrentHashMap<String, ShortCardUiModel>()
@@ -235,7 +248,10 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             rows = base.rows
             cardCache.clear()
             modifiedTimes.clear()
-            ordered = rows
+            // 排序偏好是跨页面记忆的：进页面就按上次选的顺序排，而不是先按默认顺序闪一下再排
+            val sort = sortSpec
+            if (sort.modeOr(DetailSortField.Default) == DetailSortField.Modified) ensureModifiedTimes()
+            ordered = withContext(Dispatchers.Default) { filterAndSort(rows, "", sort) }
 
             // 首屏只解析一屏多一点：短视频库常常上千条，全量解析等于每次进页面都做一次全盘 IO
             val first = resolvePage(ordered, 0, FIRST_PAGE)
@@ -247,6 +263,8 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                 shortMode = base.shortMode,
                 opOffset = base.media.opOffset,
                 edOffset = base.media.edOffset,
+                sortField = sort.modeOr(DetailSortField.Default),
+                sortAscending = sort.ascending,
                 entries = first,
                 playList = ordered.map { it.video },
                 totalCount = ordered.size,
@@ -430,15 +448,29 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         queryJob?.cancel()
         queryJob = viewModelScope.launch {
             delay(SEARCH_DEBOUNCE_MS)
-            refresh(query = query, sortMode = _state.value.sortMode)
+            refresh(query = query)
         }
     }
 
-    fun setSortMode(sortMode: Int) {
-        if (sortMode == _state.value.sortMode) return
+    /** 切换排序字段：升降序沿用当前方向（从「名称升序」切到「修改时间」不重置方向）。 */
+    fun setSortField(field: DetailSortField) {
+        if (field == sortSpec.modeOr(DetailSortField.Default)) return
+        applySort(SortSpec(field.name, sortSpec.ascending))
+    }
+
+    fun toggleSortOrder() {
+        applySort(sortSpec.copy(ascending = !sortSpec.ascending))
+    }
+
+    /** 排序偏好落 SP 后立即重排：写盘与刷新都不需要用户再点一次。 */
+    private fun applySort(spec: SortSpec) {
+        sortSpec = spec
+        sp.writeDetailSort(spec.modeOr(DetailSortField.Default), spec.ascending)
         queryJob?.cancel()
         queryJob = viewModelScope.launch {
-            refresh(query = _state.value.query, sortMode = sortMode)
+            refresh(_state.value.query)
+            // 换顺序后回到列表顶部：停在原来的滚动偏移上会看到「新顺序的中间一段」，像是排序没生效
+            _events.send(DetailEvent.ScrollToEntry(0))
         }
     }
 
@@ -457,21 +489,23 @@ class DetailViewModel(private val app: Application) : ViewModel() {
      * 搜索 / 排序后的列表：先换顺序，再从第 0 页重新解析。
      * 已解析过的卡片从 [cardCache] 直接命中，只有新进入范围的项目才读盘。
      */
-    private suspend fun refresh(query: String, sortMode: Int) {
+    private suspend fun refresh(query: String) {
         if (_state.value.phase != DetailPhase.Content) return
         generation++
         pageJob?.cancel()
         jumpJob?.cancel()
-        // 按修改时间排序才需要逐项 stat，默认的名称排序完全不碰磁盘
-        if (sortMode == SORT_BY_TIME_ASC || sortMode == SORT_BY_TIME_DESC) ensureModifiedTimes()
+        val sort = sortSpec
+        // 按修改时间排序才需要逐项 stat，默认顺序与名称排序完全不碰磁盘
+        if (sort.modeOr(DetailSortField.Default) == DetailSortField.Modified) ensureModifiedTimes()
 
-        val sorted = withContext(Dispatchers.Default) { filterAndSort(query, sortMode) }
+        val sorted = withContext(Dispatchers.Default) { filterAndSort(rows, query, sort) }
         ordered = sorted
         val first = resolvePage(ordered, 0, FIRST_PAGE)
         loadedEnd = first.size
         _state.value = _state.value.copy(
             query = query,
-            sortMode = sortMode,
+            sortField = sort.modeOr(DetailSortField.Default),
+            sortAscending = sort.ascending,
             entries = first,
             playList = ordered.map { it.video },
             totalCount = ordered.size,
@@ -514,20 +548,27 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         }
         _state.value = _state.value.copy(entries = entries)
     }
-    private fun filterAndSort(query: String, sortMode: Int): List<VideoRow> {
+    private fun filterAndSort(source: List<VideoRow>, query: String, sort: SortSpec): List<VideoRow> {
         val keyword = query.trim()
         val filtered = if (keyword.isEmpty()) {
-            rows
+            source
         } else {
-            rows.filter { it.title.contains(keyword, ignoreCase = true) }
+            source.filter { it.title.contains(keyword, ignoreCase = true) }
         }
-        val comparator: Comparator<VideoRow> = when (sortMode) {
-            SORT_BY_NAME_DESC -> compareByDescending { it.sortTitle }
-            SORT_BY_TIME_ASC -> compareBy { modifiedTimes[it.key] ?: 0L }
-            SORT_BY_TIME_DESC -> compareByDescending { modifiedTimes[it.key] ?: 0L }
-            else -> compareBy { it.sortTitle }
+        return when (sort.modeOr(DetailSortField.Default)) {
+            // 默认顺序 = 集合自身的顺序：播放列表是「加入顺序 / 父目录自然序」，
+            // 喜欢是收藏时间、历史是播放时间，本地/远端库是目录枚举顺序。这里不重排。
+            DetailSortField.Default -> filtered
+            DetailSortField.Name -> if (sort.ascending) {
+                filtered.sortedBy { it.sortTitle }
+            } else {
+                filtered.sortedByDescending { it.sortTitle }
+            }
+            DetailSortField.Modified -> {
+                val comparator = compareBy<VideoRow> { modifiedTimes[it.key] ?: 0L }
+                filtered.sortedWith(if (sort.ascending) comparator else comparator.reversed())
+            }
         }
-        return filtered.sortedWith(comparator)
     }
 
     /**
@@ -757,6 +798,8 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                         type = source.storageType()
                         parentPath = item.path.substringBeforeLast("/").substringAfterLast("/")
                         mediaId = media.id
+                        // 远端没有本地文件可 stat，「按修改时间排序」只能靠列目录带回的时间戳
+                        lastModified = item.lastModified
                         id = md5()
                     }
                 }
@@ -873,8 +916,17 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         val seasonLabel: String
     )
 
-    private fun VideoData.modifiedTime(): Long =
-        if (type == StorageType.LOCAL_STORAGE) File(videoUrl).lastModified() else 0L
+    /**
+     * 排序用的修改时间。
+     *
+     * 远端条目（WebDAV/SMB/在线）没有可 stat 的本地文件，时间来自列目录时的 [VideoData.lastModified]；
+     * 早期实现只判断本地存储、远端恒返回 0，导致「按修改时间排序」在远端库上等于没排。
+     */
+    private fun VideoData.modifiedTime(): Long = when {
+        lastModified > 0L -> lastModified
+        type == StorageType.LOCAL_STORAGE -> File(videoUrl).lastModified()
+        else -> 0L
+    }
 
     companion object {
         private const val TAG = "DetailViewModel"
@@ -889,10 +941,6 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         private const val PARALLEL_READS = 4
 
         private const val SEARCH_DEBOUNCE_MS = 250L
-
-        private const val SORT_BY_NAME_DESC = 1
-        private const val SORT_BY_TIME_ASC = 2
-        private const val SORT_BY_TIME_DESC = 3
 
         val Factory: ViewModelProvider.Factory = viewModelFactory {
             initializer {

@@ -69,6 +69,21 @@ open class SpUtil(context: Context) : SpBase(context) {
         editor.apply()
     }
 
+    /**
+     * 通用字符串偏好读写。
+     *
+     * 给「按作用域分键」的配置用（各列表页的排序偏好 `sort.<scope>`）：
+     * 每新增一页就加两个字段会让 SpUtil 无限膨胀，而且这些值只由对应页面解读。
+     *
+     * 仍然走同一份默认 SP，因此 [allPreferences]/[editAll] 的整份备份/还原天然覆盖它们。
+     */
+    fun stringPref(key: String, defaultValue: String): String =
+        preferences.getString(key, defaultValue) ?: defaultValue
+
+    fun putStringPref(key: String, value: String) {
+        preferences.edit().putString(key, value).apply()
+    }
+
     var isFirst by SPManager.boolean(true)
 
     var dataSchemaVersion by SPManager.int(0)
@@ -128,6 +143,9 @@ open class SpUtil(context: Context) : SpBase(context) {
 
     var dmFilter by SPManager.string("")
 
+    // 遗留键，只为旧备份还原保留（`BackupsViewModel` 的旧格式白名单会写这两个值）：
+    // browserUsedAll 从未被任何页面读取，browserSort 存的是 RadioGroup 控件 id（别人根本对不上），
+    // 两者对应的开关/单选组已从「文件浏览设置」面板移除。新代码请用下面的 browserSortKey/Ascending。
     var browserUsedAll by SPManager.boolean(false)
 
     var browserSort by SPManager.int(-1)

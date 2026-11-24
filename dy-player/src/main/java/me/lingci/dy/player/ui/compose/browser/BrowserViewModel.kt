@@ -118,7 +118,10 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
                 .distinctUntilChanged()
                 .drop(1)
                 .collect {
-                    if (storage != null) loadDir(_state.value.currentPath)
+                    if (storage == null) return@collect
+                    // 与切目录同一条纪律：先取消上一次列举，否则慢速 WebDAV 上两次结果会互相覆盖
+                    browseJob?.cancel()
+                    browseJob = viewModelScope.launch { loadDir(_state.value.currentPath) }
                 }
         }
     }
@@ -146,6 +149,19 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         val next = !_prefs.value.sortAscending
         SpUtil(getApplication()).browserSortAscending = next
         _prefs.value = _prefs.value.copy(sortAscending = next)
+    }
+
+    /**
+     * 「显示隐藏文件夹」开关。
+     *
+     * 隐藏项是在**列目录阶段**被过滤掉的（`IStorage` 返回的原始列表里就有），
+     * 所以这里只写 SP + 更新偏好还不够——`init` 里监听 `showHidden` 的协程会按新口径重列当前目录，
+     * 用户才能立刻看到结果，而不是退出去再进来才生效。
+     */
+    fun setShowHidden(show: Boolean) {
+        if (_prefs.value.showHidden == show) return
+        SpUtil(getApplication()).browserShowHide = show
+        _prefs.value = _prefs.value.copy(showHidden = show)
     }
 
     /** 首次进入 / 插拔存储卡后重新检测卷；重复调用时只在必要时重扫。 */

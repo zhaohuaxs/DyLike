@@ -58,6 +58,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import me.lingci.dy.player.R
 import me.lingci.dy.player.ui.compose.components.AppIconButton
 import me.lingci.dy.player.ui.compose.components.Kicker
+import me.lingci.dy.player.ui.compose.components.SortBar
+import me.lingci.dy.player.ui.compose.components.SortOption
 import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
 import me.lingci.dy.player.ui.compose.theme.DyLikeType
@@ -105,7 +107,9 @@ fun PlaylistRoute(
         onRename = vm::rename,
         onDelete = vm::delete,
         onSetPlayMode = vm::setPlayMode,
-        onToggleAutoPlay = vm::toggleAutoPlay
+        onToggleAutoPlay = vm::toggleAutoPlay,
+        onSortField = vm::setSortField,
+        onToggleSortOrder = vm::toggleSortOrder
     )
 }
 
@@ -119,7 +123,9 @@ fun PlaylistScreen(
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onSetPlayMode: (String, Int) -> Unit,
-    onToggleAutoPlay: (PlaylistUiModel) -> Unit
+    onToggleAutoPlay: (PlaylistUiModel) -> Unit,
+    onSortField: (PlaylistSortField) -> Unit = {},
+    onToggleSortOrder: () -> Unit = {}
 ) {
     val c = LocalDyLikeColors.current
 
@@ -140,6 +146,21 @@ fun PlaylistScreen(
                 Text("播放列表", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
             }
             AppIconButton(Icons.Default.Add, "新建", { showCreate = true })
+        }
+
+        if (state.phase == PlaylistPhase.Content) {
+            // 排序条只在有列表时出现：空态下摆一行无对象可排的控件只会挤掉「去创建」的引导
+            SortBar(
+                options = PlaylistSortField.entries.map {
+                    SortOption(it, stringResource(it.labelRes))
+                },
+                selected = state.sortField,
+                ascending = state.sortAscending,
+                onSelect = onSortField,
+                onToggleOrder = onToggleSortOrder,
+                leading = stringResource(R.string.sort_leading_playlists, state.items.size),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
         }
 
         if (state.phase == PlaylistPhase.Empty) {

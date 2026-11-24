@@ -10,10 +10,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import me.lingci.dy.player.room.DatabaseManager
+import me.lingci.dy.player.room.entity.Playlist
+import me.lingci.dy.player.room.entity.PlaylistItemCount
+import me.lingci.dy.player.ui.compose.sort.SortSpec
 import me.lingci.dy.player.util.LibraryCompat
 import me.lingci.dy.player.util.SpUtil
 
@@ -24,7 +28,10 @@ data class PlaylistUiModel(
     val title: String,
     val itemCount: Int,
     val playMode: Int,
-    val isAutoPlay: Boolean
+    val isAutoPlay: Boolean,
+    /** 排序用时间戳：排序在内存里做，不为了切换顺序再查一次库。 */
+    val createdAt: Long = 0L,
+    val updatedAt: Long = 0L
 )
 
 enum class PlaylistPhase { Loading, Content, Empty }
@@ -32,7 +39,10 @@ enum class PlaylistPhase { Loading, Content, Empty }
 @Immutable
 data class PlaylistUiState(
     val phase: PlaylistPhase = PlaylistPhase.Loading,
-    val items: List<PlaylistUiModel> = emptyList()
+    val items: List<PlaylistUiModel> = emptyList(),
+    /** 当前生效的排序：SortBar 直接读它，页面不另存状态。 */
+    val sortField: PlaylistSortField = PlaylistSortField.Updated,
+    val sortAscending: Boolean = false
 )
 
 /**
@@ -61,32 +71,76 @@ class PlaylistViewModel(app: Application) : AndroidViewModel(app) {
 
     private val autoPlayId = MutableStateFlow(sp.autoPlayPlaylistId)
 
+    /** 排序偏好（`sort.playlists`）：默认更新时间倒序，与旧版 `ORDER BY updated_at DESC` 一致。 */
+    private val sortSpec = MutableStateFlow(sp.readPlaylistSort())
+
     private val _events = Channel<PlaylistEvent>(Channel.BUFFERED)
     val events: Flow<PlaylistEvent> = _events.receiveAsFlow()
 
     val state: StateFlow<PlaylistUiState> = combine(
         playlistDao.observeAll(),
         itemDao.observeItemCounts(),
-        autoPlayId
-    ) { playlists, counts, auto ->
-        val countById = counts.associate { it.playlistId to it.itemCount }
-        val items = playlists.map { playlist ->
-            PlaylistUiModel(
-                id = playlist.id,
-                title = playlist.title,
-                itemCount = countById[playlist.id] ?: 0,
-                playMode = playlist.playMode,
-                isAutoPlay = playlist.id == auto
+        autoPlayId,
+        sortSpec
+    ) { playlists, counts, auto, sort -> PlaylistsSnapshot(playlists, counts, auto, sort) }
+        .map { snapshot ->
+            val countById = snapshot.counts.associate { it.playlistId to it.itemCount }
+            val field = snapshot.sort.modeOr(PlaylistSortField.Updated)
+            val comparator: Comparator<PlaylistUiModel> = when (field) {
+                PlaylistSortField.Updated -> compareBy { it.updatedAt }
+                PlaylistSortField.Created -> compareBy { it.createdAt }
+                PlaylistSortField.Name -> compareBy { it.title.lowercase() }
+            }
+            val items = snapshot.playlists.map { playlist ->
+                PlaylistUiModel(
+                    id = playlist.id,
+                    title = playlist.title,
+                    itemCount = countById[playlist.id] ?: 0,
+                    playMode = playlist.playMode,
+                    isAutoPlay = playlist.id == snapshot.auto,
+                    createdAt = playlist.createdAt,
+                    updatedAt = playlist.updatedAt
+                )
+            }.let { list ->
+                if (snapshot.sort.ascending) list.sortedWith(comparator)
+                else list.sortedWith(comparator.reversed())
+            }
+            PlaylistUiState(
+                phase = if (items.isEmpty()) PlaylistPhase.Empty else PlaylistPhase.Content,
+                items = items,
+                sortField = field,
+                sortAscending = snapshot.sort.ascending
             )
-        }
-        PlaylistUiState(
-            phase = if (items.isEmpty()) PlaylistPhase.Empty else PlaylistPhase.Content,
-            items = items
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = PlaylistUiState(
+                sortField = sortSpec.value.modeOr(PlaylistSortField.Updated),
+                sortAscending = sortSpec.value.ascending
+            )
         )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = PlaylistUiState()
+
+    /** 切换排序字段：升降序沿用当前方向，写 SP 后数据流重排，不再查库。 */
+    fun setSortField(field: PlaylistSortField) {
+        if (field == sortSpec.value.modeOr(PlaylistSortField.Updated)) return
+        applySort(SortSpec(field.name, sortSpec.value.ascending))
+    }
+
+    fun toggleSortOrder() {
+        applySort(sortSpec.value.copy(ascending = !sortSpec.value.ascending))
+    }
+
+    private fun applySort(spec: SortSpec) {
+        sp.writePlaylistSort(spec.modeOr(PlaylistSortField.Updated), spec.ascending)
+        sortSpec.value = spec
+    }
+
+    private data class PlaylistsSnapshot(
+        val playlists: List<Playlist>,
+        val counts: List<PlaylistItemCount>,
+        /** 启动自动播放目标 id；未设置时为 null */
+        val auto: String?,
+        val sort: SortSpec
     )
 
     fun create(name: String, playMode: Int) {
