@@ -1,6 +1,5 @@
 package me.lingci.dy.player.ui.compose.likes
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -69,6 +68,7 @@ import me.lingci.dy.player.ui.compose.components.AppIconButton
 import me.lingci.dy.player.ui.compose.components.Kicker
 import me.lingci.dy.player.ui.compose.components.SortBar
 import me.lingci.dy.player.ui.compose.components.SortOption
+import me.lingci.dy.player.ui.compose.components.ThumbCache
 import me.lingci.dy.player.ui.compose.components.ThumbImage
 import me.lingci.dy.player.ui.compose.theme.BrandHue
 import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
@@ -267,21 +267,9 @@ private fun LikeCard(
     val removeLabel = stringResource(R.string.hint_remove_from_like)
     val thumbPath = item.thumbPath
 
-    // 只做宽高测量：解码 bounds 拿不到就按 16:9 兜底，图像加载仍交给 ThumbImage
-    val aspectRatio by produceState(16f / 9f, thumbPath) {
-        value = if (thumbPath != null) {
-            withContext(Dispatchers.IO) {
-                try {
-                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(thumbPath, opts)
-                    val w = opts.outWidth
-                    val h = opts.outHeight
-                    if (w > 0 && h > 0) (w.toFloat() / h).coerceIn(0.4f, 3f) else 16f / 9f
-                } catch (e: Exception) {
-                    16f / 9f
-                }
-            }
-        } else 16f / 9f
+    // 与详情页共用同一份比例缓存：命中时不读盘，拿不到时兜底也统一走 3:4
+    val aspectRatio by produceState(ThumbCache.DEFAULT_ASPECT, thumbPath) {
+        value = withContext(Dispatchers.IO) { ThumbCache.aspectRatio(thumbPath) }
     }
 
     Column(

@@ -21,6 +21,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import me.lingci.dy.player.util.loadImage
+import java.io.File
 
 /**
  * 本地缩略图的内存缓存 + Composable 呈现。
@@ -57,22 +58,29 @@ object ThumbCache {
     }
 
     /**
-     * 只读文件头拿宽高比，不整张解码；结果按路径缓存，重复进入页面不再碰磁盘。
+     * 只读文件头拿宽高比，不整张解码；结果按「路径 + 文件版本」缓存，重复进入页面不再碰磁盘。
      * 网络地址没有本地文件可读，直接返回 [fallback]。
      */
     fun aspectRatio(path: String?, fallback: Float = DEFAULT_ASPECT): Float {
         if (path.isNullOrBlank() || !path.startsWith("/")) return fallback
-        ratios.get(path)?.let { return it }
-        val ratio = try {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            val w = bounds.outWidth
-            val h = bounds.outHeight
-            if (w > 0 && h > 0) (w.toFloat() / h).coerceIn(0.4f, 3f) else fallback
+        // 键里必须带 lastModified + length：缩略图会在同一路径上原地重生成（坏图/占位图被换成真封面），
+        // 只按路径缓存会让瀑布流一直按旧比例排版，卡片高度和留白都对不上
+        val file = File(path)
+        val key = "$path@${file.lastModified()}:${file.length()}"
+        ratios.get(key)?.let { return it }
+        val bounds = try {
+            BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                .also { BitmapFactory.decodeFile(path, it) }
         } catch (t: Throwable) {
-            fallback
+            return fallback
         }
-        ratios.put(path, ratio)
+        val w = bounds.outWidth
+        val h = bounds.outHeight
+        // 读不到（文件缺失 / 还没生成）时返回兜底但**不写缓存**：这一趟的兜底只代表
+        // 「此刻没图」，钉进缓存后缩略图补好了也不会再更新
+        if (w <= 0 || h <= 0) return fallback
+        val ratio = (w.toFloat() / h).coerceIn(0.4f, 3f)
+        ratios.put(key, ratio)
         return ratio
     }
 
