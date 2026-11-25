@@ -63,6 +63,8 @@ enum class LibraryPhase { Loading, Content, Empty, Error }
 sealed interface LibraryEvent {
     /** 批量删除结束；[partial]/[failed] 对应未完整删除的卡片，仍然保持选中 */
     data class BatchDeleted(val deleted: Int, val failed: Int, val partial: Int = 0) : LibraryEvent
+    data object AutoPlaySet : LibraryEvent
+    data object AutoPlayCleared : LibraryEvent
 }
 
 internal data class SelectionState(
@@ -112,7 +114,9 @@ data class LibraryUiState(
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
     /** 批量删除进行中：禁用重复确认，并避免加载态提前剪掉失败项 */
-    val deleting: Boolean = false
+    val deleting: Boolean = false,
+    /** 启动自动播放目标；媒体库与播放列表互斥 */
+    val autoPlayMediaId: String = ""
 )
 
 /**
@@ -140,6 +144,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** 批量选择只是 UI 状态，单独成流，勾选/取消不会触发数据库重查 */
     private val selectionFlow = MutableStateFlow(SelectionState())
     private val deleteInProgress = MutableStateFlow(false)
+    private val autoPlayMediaIdFlow = MutableStateFlow(sp.autoPlayMediaId.orEmpty())
 
     /** 排序偏好：改一次写一次 SP，并把新值灌回数据流重查（排序已下推到 SQL）。 */
     private val sortSpec = MutableStateFlow(sp.readLibrarySort())
@@ -243,13 +248,17 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                 deleting = deleting
             )
         }
+        .combine(autoPlayMediaIdFlow) { ui, mediaId ->
+            ui.copy(autoPlayMediaId = mediaId)
+        }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = LibraryUiState(
                 sortField = sortSpec.value.modeOr(LibrarySortField.LastPlayed),
                 sortAscending = sortSpec.value.ascending,
-                coverAspect = coverAspectFlow.value
+                coverAspect = coverAspectFlow.value,
+                autoPlayMediaId = autoPlayMediaIdFlow.value
             )
         )
 
@@ -278,6 +287,21 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置页可能改完比例就返回：重读 SP；值没变时 StateFlow 不发射，不会触发重组 */
     fun refreshCoverAspect() {
         coverAspectFlow.value = coverAspectOf(sp.coverRatio)
+    }
+
+    fun refreshAutoPlay() {
+        autoPlayMediaIdFlow.value = sp.autoPlayMediaId.orEmpty()
+    }
+
+    fun toggleAutoPlay(mediaId: String) {
+        if (mediaId.isBlank()) return
+        val clearing = sp.autoPlayMediaId == mediaId
+        sp.autoPlayMediaId = if (clearing) "" else mediaId
+        if (!clearing) sp.autoPlayPlaylistId = ""
+        autoPlayMediaIdFlow.value = sp.autoPlayMediaId.orEmpty()
+        viewModelScope.launch {
+            _events.send(if (clearing) LibraryEvent.AutoPlayCleared else LibraryEvent.AutoPlaySet)
+        }
     }
 
     /** 从系统设置返回等场景：权限可能变了，重订阅查询；值没变时不重查 */
@@ -361,6 +385,7 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
                     LibraryEvent.BatchDeleted(deleted = deleted, failed = failed.size, partial = partial)
                 )
             } finally {
+                autoPlayMediaIdFlow.value = sp.autoPlayMediaId.orEmpty()
                 deleteInProgress.value = false
             }
         }

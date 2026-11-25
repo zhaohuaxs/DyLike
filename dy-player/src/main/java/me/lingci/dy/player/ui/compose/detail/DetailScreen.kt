@@ -125,6 +125,7 @@ private val JUMP_BUTTON_GAP = 20.dp
 @Composable
 fun DetailRoute(
     mediaId: String,
+    directPlay: Boolean = false,
     onBack: () -> Unit = {},
     /**
      * [MediaData] 只在这里透传给播放页：播放页要靠它写回 `play_last` / 历史 / 进度，
@@ -136,7 +137,14 @@ fun DetailRoute(
 ) {
     val vm: DetailViewModel = viewModel(factory = DetailViewModel.Factory)
     val state by vm.state.collectAsStateWithLifecycle()
+    var directPlayRequested by remember { mutableStateOf(false) }
     LaunchedEffect(mediaId) { vm.load(mediaId) }
+    LaunchedEffect(directPlay, state.phase, state.totalCount, state.lastPlayedIndex, state.shortMode) {
+        if (!directPlay || directPlayRequested || state.phase != DetailPhase.Content) return@LaunchedEffect
+        if (state.playList.isEmpty()) return@LaunchedEffect
+        directPlayRequested = true
+        onPlay(state.media, state.playList, state.lastPlayedIndex ?: 0, state.shortMode, state.seasonLabel)
+    }
 
     // 一次性事件转成本地滚动请求：列表状态属于 Screen，这里只负责下发与消费
     var scrollRequest by remember { mutableStateOf<Int?>(null) }
@@ -151,12 +159,15 @@ fun DetailRoute(
         }
     }
 
-    // 播放页返回时重读 play_last：详情页不会被重建，不主动刷新就一直是进页面那一刻的快照。
-    // 每次 RESUMED 都会执行（首帧那次 phase 还是 Loading，VM 内部会直接跳过）。
     LaunchedEffect(lifecycleOwner, vm) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            vm.refreshLastPlayed()
+            if (!directPlay) vm.refresh()
         }
+    }
+
+    if (directPlay) {
+        DetailDirectPlayStatus(state = state, onBack = onBack, onRetry = { vm.load(mediaId, force = true) })
+        return
     }
 
     DetailScreen(
@@ -177,6 +188,67 @@ fun DetailRoute(
         onSelectSeason = vm::selectSeason,
         onOpenDanmaku = onOpenDanmaku
     )
+}
+
+@Composable
+private fun DetailDirectPlayStatus(
+    state: DetailUiState,
+    onBack: () -> Unit,
+    onRetry: () -> Unit
+) {
+    val c = LocalDyLikeColors.current
+    val requestStoragePermission = rememberStoragePermissionRequest(onRetry)
+    Box(Modifier.fillMaxSize()) {
+        AppIconButton(
+            Icons.AutoMirrored.Filled.ArrowBack,
+            stringResource(R.string.action_back),
+            onBack,
+            modifier = Modifier.padding(8.dp)
+        )
+        Column(
+            modifier = Modifier.align(Alignment.Center).padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            when (state.phase) {
+                DetailPhase.Loading -> CircularProgressIndicator(color = c.accent)
+                DetailPhase.Error -> {
+                    Text(
+                        stringResource(
+                            if (state.needsStoragePermission) {
+                                R.string.permission_storage_rationale
+                            } else {
+                                R.string.detail_load_failed
+                            }
+                        ),
+                        style = DyLikeType.meta,
+                        color = c.textSecondary
+                    )
+                    TextButton(
+                        onClick = if (state.needsStoragePermission) requestStoragePermission else onRetry
+                    ) {
+                        Text(
+                            stringResource(
+                                if (state.needsStoragePermission) R.string.permission_grant else R.string.action_retry
+                            )
+                        )
+                    }
+                }
+                DetailPhase.Content -> if (state.playList.isEmpty()) {
+                    Text(stringResource(R.string.detail_no_match_video), style = DyLikeType.meta, color = c.textTertiary)
+                } else {
+                    CircularProgressIndicator(color = c.accent)
+                }
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun DetailDirectPlayStatusPreview() {
+    DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
+        DetailDirectPlayStatus(state = DetailUiState(), onBack = {}, onRetry = {})
+    }
 }
 
 /**
@@ -545,8 +617,8 @@ fun DetailScreen(
                     }
                 )
             }
-            // 换季期间旧列表继续可见，只在顶部显示细进度条，避免整屏闪白
-            if (state.switchingSeason) {
+            // 换季或回前台刷新期间旧列表继续可见，只在顶部显示细进度条，避免整屏闪白
+            if (state.switchingSeason || state.refreshing) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
                     color = c.accent

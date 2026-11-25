@@ -114,6 +114,7 @@ fun LibraryRoute(
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             vm.refreshCoverAspect()
             vm.refreshStorageAccess()
+            vm.refreshAutoPlay()
         }
     }
 
@@ -136,6 +137,14 @@ fun LibraryRoute(
                             event.failed
                         )
                     }
+                )
+                LibraryEvent.AutoPlaySet -> ToastUtil.showToast(
+                    context,
+                    context.getString(R.string.library_auto_play_set_done)
+                )
+                LibraryEvent.AutoPlayCleared -> ToastUtil.showToast(
+                    context,
+                    context.getString(R.string.library_auto_play_cleared_done)
                 )
             }
         }
@@ -161,6 +170,7 @@ fun LibraryRoute(
         onEditMedia = onEditMedia,
         onDeleteMedia = onDeleteMedia,
         onTogglePin = onTogglePin,
+        onToggleAutoPlay = { vm.toggleAutoPlay(it.id) },
         onSortField = vm::setSortField,
         onToggleSortOrder = vm::toggleSortOrder,
         onStartSelection = vm::startSelection,
@@ -192,6 +202,7 @@ fun LibraryScreen(
     onEditMedia: (MediaUiModel) -> Unit = {},
     onDeleteMedia: (MediaUiModel) -> Unit = {},
     onTogglePin: (MediaUiModel) -> Unit = {},
+    onToggleAutoPlay: (MediaUiModel) -> Unit = {},
     onSortField: (LibrarySortField) -> Unit = {},
     onToggleSortOrder: () -> Unit = {},
     onStartSelection: (String) -> Unit = {},
@@ -481,7 +492,14 @@ fun LibraryScreen(
                         stringResource(R.string.action_select) to { menuMedia = null; onStartSelection(target.cardKey) },
                         stringResource(R.string.hint_media_edit) to { menuMedia = null; onEditMedia(target) },
                         stringResource(R.string.hint_media_delete) to { menuMedia = null; onDeleteMedia(target) },
-                        stringResource(R.string.hint_media_pin) to { menuMedia = null; onTogglePin(target) }
+                        stringResource(R.string.hint_media_pin) to { menuMedia = null; onTogglePin(target) },
+                        stringResource(
+                            if (state.autoPlayMediaId == target.id) {
+                                R.string.library_auto_play_cancel
+                            } else {
+                                R.string.library_auto_play_set
+                            }
+                        ) to { menuMedia = null; onToggleAutoPlay(target) }
                     ).forEach { (label, action) ->
                         Row(
                             Modifier.fillMaxWidth().clickable(onClick = action)

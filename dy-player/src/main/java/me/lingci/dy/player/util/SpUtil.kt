@@ -169,8 +169,8 @@ open class SpUtil(context: Context) : SpBase(context) {
     // 入口在首页 toolbar 的「切换布局」，键名沿用旧 newHome 以兼容备份文件
     var newHome by SPManager.boolean(false)
 
-    // 冷启动直接进 Compose 首页（设置项「新首页UI」的开关）
-    var launchComposeHome by SPManager.boolean(false)
+    // 首页 UI：默认 Compose；关闭后立即切回经典首页（设置项「新首页UI」的开关）
+    var launchComposeHome by SPManager.boolean(true)
 
     var sortRender by SPManager.boolean(false)
 

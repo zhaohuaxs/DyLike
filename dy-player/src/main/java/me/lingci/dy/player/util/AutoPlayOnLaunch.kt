@@ -35,14 +35,14 @@ object AutoPlayOnLaunch {
     private const val TAG = "AutoPlayOnLaunch"
 
     /**
-     * 进程内静态标志，防止从播放页返回 MainActivity 后再次触发自动播放。
+     * 进程内静态标志，防止从播放页返回首页后再次触发自动播放。
      * 仅在冷启动时由 [tryTrigger] 重置为已触发状态。
      */
     @Volatile
     private var triggered = false
 
     /**
-     * 尝试触发启动自动播放。应在 MainActivity.onCreate 中冷启动时调用一次。
+     * 尝试触发启动自动播放。由当前首页入口在冷启动时调用一次。
      *
      * @param context 上下文
      * @param scope   协程作用域，用于异步加载视频列表

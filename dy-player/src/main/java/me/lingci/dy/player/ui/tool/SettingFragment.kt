@@ -8,6 +8,7 @@ import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import me.lingci.dy.player.databinding.FragmentSettingBinding
 import me.lingci.dy.player.ui.about.AboutActivity
+import me.lingci.dy.player.ui.compose.MainComposeActivity
 import me.lingci.dy.player.ui.icon.IconSettingActivity
 import me.lingci.dy.player.ui.main.BaseTransitionFragment
 import me.lingci.dy.player.util.SpUtil
@@ -67,9 +68,15 @@ class SettingFragment : BaseTransitionFragment() {
         binding.swVideoDetail.setOnClickListener {
             spUtil.videoDetailMode = binding.swVideoDetail.isChecked
         }
-        // 只控制启动去向：开 = 冷启动直接进 Compose 首页；平铺/分类在媒体库首页 toolbar 的「切换布局」里
         binding.swNewHome.setOnClickListener {
             spUtil.launchComposeHome = binding.swNewHome.isChecked
+            if (binding.swNewHome.isChecked) {
+                startActivity(Intent(requireContext(), MainComposeActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(MainComposeActivity.EXTRA_UI_SWITCH, true)
+                })
+                requireActivity().finish()
+            }
         }
 
         // 封面比例 Spinner

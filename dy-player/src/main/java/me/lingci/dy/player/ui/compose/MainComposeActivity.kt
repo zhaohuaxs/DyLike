@@ -7,7 +7,6 @@ import android.content.res.Resources
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -31,7 +30,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,10 +38,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.core.net.toUri
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -65,12 +66,25 @@ import me.lingci.dy.player.ui.compose.theme.DyLikeTheme
 import me.lingci.dy.player.ui.compose.theme.ThemeMode
 import me.lingci.dy.player.ui.compose.media_add.MediaLinkAddSheet
 import me.lingci.dy.player.ui.compose.media_add.MediaManagerSheet
+import me.lingci.dy.player.ui.main.MainActivity
+import me.lingci.dy.player.ui.main.checkAppUpdateOnLaunch
+import me.lingci.dy.player.util.AutoPlayOnLaunch
+import me.lingci.dy.player.util.SpUtil
+import kotlinx.coroutines.launch
 
 import me.lingci.lib.compose.fileselect.FileSelectorActivity
 import me.lingci.lib.base.util.PermissionUtil
 import me.lingci.lib.base.util.ToastUtil
 
-class MainComposeActivity : ComponentActivity() {
+class MainComposeActivity : FragmentActivity() {
+
+    companion object {
+        const val EXTRA_UI_SWITCH = "home_ui_switch"
+    }
+
+    private val updateLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {}
 
     // 与旧版首页 MainActivity(BaseDisplayActivity) 行为一致：固定字体缩放，
     // 避免系统放大字体时撑破固定尺寸的工具栏与胶囊控件。
@@ -93,6 +107,10 @@ class MainComposeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!SpUtil(this).launchComposeHome) {
+            openLegacyHome(intent.getBooleanExtra(EXTRA_UI_SWITCH, false))
+            return
+        }
         enableEdgeToEdge()
         setContent {
             val context = LocalContext.current
@@ -168,6 +186,9 @@ class MainComposeActivity : ComponentActivity() {
                     onBrand = appearanceVm::setBrand,
                     onDynamicColor = appearanceVm::setDynamicColor,
                     onNavLabels = appearanceVm::setNavLabels,
+                    onHomeUiChanged = { enabled ->
+                        if (!enabled) openLegacyHome(suppressAutoplay = true)
+                    },
                     onAddLocalMedia = {
                         editingMediaId = null
                         showMediaManagerSheet = true
@@ -245,6 +266,28 @@ class MainComposeActivity : ComponentActivity() {
                 }
             }
         }
+        if (savedInstanceState == null &&
+            !intent.getBooleanExtra(EXTRA_UI_SWITCH, false)
+        ) {
+            checkAppUpdateOnLaunch(this) { versionData ->
+                updateLauncher.launch(
+                    Intent(Intent.ACTION_VIEW, versionData.downUrl.toUri())
+                )
+            }
+            lifecycleScope.launch {
+                if (!PlayerApp.awaitMigrationNeeded()) {
+                    AutoPlayOnLaunch.tryTrigger(this@MainComposeActivity, lifecycleScope)
+                }
+            }
+        }
+    }
+
+    private fun openLegacyHome(suppressAutoplay: Boolean) {
+        startActivity(Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_UI_SWITCH, suppressAutoplay)
+        })
+        finish()
     }
 }
 
@@ -336,12 +379,6 @@ private fun StoragePermissionDialog(
     )
 }
 
-private val tabs = listOf(
-    NavBarItem(Dest.Library, "媒体库", Icons.Default.VideoLibrary),
-    NavBarItem(Dest.Sources, "资源库", Icons.Default.Dns),
-    NavBarItem(Dest.Me, "我的", Icons.Default.Person)
-)
-
 @Composable
 private fun ComposeApp(
     navLabels: Boolean,
@@ -352,6 +389,7 @@ private fun ComposeApp(
     onBrand: (BrandHue) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
     onNavLabels: (Boolean) -> Unit,
+    onHomeUiChanged: (Boolean) -> Unit,
     onAddLocalMedia: () -> Unit,
     onAddOnlineMedia: () -> Unit,
     onImportOnlineMedia: () -> Unit,
@@ -366,6 +404,11 @@ private fun ComposeApp(
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
+    val tabs = listOf(
+        NavBarItem(Dest.Library, stringResource(R.string.title_media), Icons.Default.VideoLibrary),
+        NavBarItem(Dest.Sources, stringResource(R.string.title_source), Icons.Default.Dns),
+        NavBarItem(Dest.Me, stringResource(R.string.title_mine), Icons.Default.Person)
+    )
 
     // 首次进入自动打开扫描页并开始扫描，与旧页的首次扫描时机一致。
     // 先消费再导航：状态消费后置 false，重建时不会重复触发。
@@ -376,9 +419,8 @@ private fun ComposeApp(
     }
 
     // 冷启动闸门：旧数据未迁移时先进迁移页。应用级检查在 PlayerApp 里只跑一次，
-    // 走 MainActivity 时不带 Compose 首页开关就不会到这里；这段兜的是「直接以 Compose 为入口」，
-    // 避免迁移被绕过。Activity 已接管常见 configChanges，重建只有真正的进程/Activity 重建，
-    // 因此不会因为旋转屏幕重复弹迁移页。
+    // 这段兜的是「直接以 Compose 为入口」，避免迁移被绕过。Activity 已接管常见 configChanges，
+    // 重建只有真正的进程/Activity 重建，因此不会因为旋转屏幕重复弹迁移页。
     LaunchedEffect(nav) {
         if (PlayerApp.awaitMigrationNeeded()) nav.navigate(Dest.Migration)
     }
@@ -396,6 +438,7 @@ private fun ComposeApp(
             onBrand = onBrand,
             onDynamicColor = onDynamicColor,
             onNavLabels = onNavLabels,
+            onHomeUiChanged = onHomeUiChanged,
             onAddLocalMedia = onAddLocalMedia,
             onAddOnlineMedia = onAddOnlineMedia,
             onImportOnlineMedia = onImportOnlineMedia,

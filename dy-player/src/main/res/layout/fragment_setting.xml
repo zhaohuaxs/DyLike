@@ -166,7 +166,7 @@
                 android:id="@+id/tv_new_home"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="新首页UI"
+                android:text="@string/settings_library_launch_compose_home"
                 android:textColor="?android:attr/textColorPrimary"
                 android:textSize="18sp"
                 app:layout_constraintBottom_toTopOf="@id/tv_new_home_desc"
@@ -178,7 +178,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:textSize="12sp"
-                android:text="开启后启动时直接进入 Compose 首页"
+                android:text="@string/settings_library_launch_compose_home_desc"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@id/tv_new_home" />

@@ -89,7 +89,7 @@
     <string name="hint_video_detail">媒体库详情页</string>
     <string name="hint_video_detail_desc">媒体库优先进入详情页，而不是播放页</string>
     <string name="settings_library_launch_compose_home">新首页UI</string>
-    <string name="settings_library_launch_compose_home_desc">开启后启动时直接进入 Compose 首页，关闭则回到经典首页</string>
+    <string name="settings_library_launch_compose_home_desc">默认开启；关闭后立即切换到经典首页，开启后立即回到 Compose 首页</string>
     <string name="hint_video_player">长视频切换播放器内核</string>
     <string name="hint_video_player_desc">默认Media3，打开切换MPV实验内核</string>
     <string name="hint_short_video_player">短视频切换播放器内核</string>
@@ -540,6 +540,10 @@
     <string name="library_delete_selected_confirm">确定删除选中的 %1$d 个媒体库？其全部分集记录、播放历史、收藏、播放列表中的相关项及随机播放状态会一并清理。</string>
     <string name="library_delete_selected_done">已删除 %1$d 个媒体库</string>
     <string name="library_delete_selected_partial">已删除 %1$d 个，%2$d 个部分删除，%3$d 个删除失败；未完成项已保留选中</string>
+    <string name="library_auto_play_set">设为启动自动播放</string>
+    <string name="library_auto_play_cancel">取消启动自动播放</string>
+    <string name="library_auto_play_set_done">已设为启动自动播放</string>
+    <string name="library_auto_play_cleared_done">已取消启动自动播放</string>
     <string name="detail_season_tab">选择季</string>
     <string name="detail_media_count">包含 %1$d 条媒体</string>
     <string name="detail_season_episodes">%1$s · 本季 %2$d 集 · 共 %3$d 季</string>

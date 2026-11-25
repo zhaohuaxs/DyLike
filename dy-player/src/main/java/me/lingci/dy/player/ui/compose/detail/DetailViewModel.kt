@@ -124,7 +124,9 @@ data class DetailUiState(
     /** 当前季名，供播放页季末提示 */
     val seasonLabel: String = "",
     /** 换季重建列表期间保留旧内容，只显示顶部细进度条，避免整屏闪白 */
-    val switchingSeason: Boolean = false
+    val switchingSeason: Boolean = false,
+    /** 回前台重读当前媒体库；旧内容保持可见 */
+    val refreshing: Boolean = false
 )
 
 private class StoragePermissionRequiredException : Exception()
@@ -168,6 +170,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
     private var generation = 0
 
     private var loadJob: Job? = null
+    private var refreshJob: Job? = null
     private var pageJob: Job? = null
     private var queryJob: Job? = null
     private var jumpJob: Job? = null
@@ -217,7 +220,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         loadJob = viewModelScope.launch {
             val startedAt = SystemClock.elapsedRealtime()
             if (keepContent) {
-                _state.value = _state.value.copy(switchingSeason = true)
+                _state.value = _state.value.copy(switchingSeason = true, refreshing = false)
             } else {
                 _state.value = DetailUiState(phase = DetailPhase.Loading)
             }
@@ -228,7 +231,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
                 throw e
             } catch (e: StoragePermissionRequiredException) {
                 _state.value = if (keepContent) {
-                    _state.value.copy(switchingSeason = false)
+                    _state.value.copy(switchingSeason = false, refreshing = false)
                 } else {
                     DetailUiState(phase = DetailPhase.Error, needsStoragePermission = true)
                 }
@@ -239,7 +242,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
             val baseCost = SystemClock.elapsedRealtime() - readStart
             if (base == null) {
                 _state.value = if (keepContent) {
-                    _state.value.copy(switchingSeason = false)
+                    _state.value.copy(switchingSeason = false, refreshing = false)
                 } else {
                     DetailUiState(phase = DetailPhase.Error)
                 }
@@ -283,6 +286,61 @@ class DetailViewModel(private val app: Application) : ViewModel() {
         }
     }
 
+    fun refresh() {
+        val mediaId = loadedId ?: return
+        val current = _state.value
+        if (current.phase != DetailPhase.Content || refreshJob?.isActive == true) return
+        cancelJobs()
+        val gen = ++generation
+        seasonGroupsCache = null
+        modifiedTimes.clear()
+        refreshJob = viewModelScope.launch {
+            _state.value = current.copy(refreshing = true)
+            val base = try {
+                withContext(Dispatchers.IO) { readBase(mediaId) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (base == null || gen != generation || loadedId != mediaId) {
+                _state.value = _state.value.copy(refreshing = false)
+                return@launch
+            }
+            val latest = _state.value
+            if (latest.phase != DetailPhase.Content || gen != generation || loadedId != mediaId) return@launch
+            queryJob?.cancel()
+            pageJob?.cancel()
+            jumpJob?.cancel()
+            rows = base.rows
+            cardCache.clear()
+            val sort = sortSpec
+            if (sort.modeOr(DetailSortField.Default) == DetailSortField.Modified) ensureModifiedTimes()
+            ordered = withContext(Dispatchers.Default) { filterAndSort(rows, latest.query, sort) }
+            val resolveCount = minOf(maxOf(FIRST_PAGE, latest.entries.size), ordered.size)
+            val resolved = resolvePage(ordered, 0, resolveCount)
+            loadedEnd = resolved.size
+            _state.value = latest.copy(
+                media = base.media,
+                cover = base.cover,
+                shortMode = base.shortMode,
+                opOffset = base.media.opOffset,
+                edOffset = base.media.edOffset,
+                entries = resolved,
+                playList = ordered.map { it.video },
+                totalCount = ordered.size,
+                hasMore = loadedEnd < ordered.size,
+                lastPlayedIndex = lastPlayedIndexOf(ordered),
+                seasons = base.seasons,
+                seasonLabel = base.seasonLabel,
+                jumpingToLastPlayed = false,
+                switchingSeason = false,
+                refreshing = false
+            )
+            requestThumbs(ordered, 0, loadedEnd)
+        }
+    }
+
     /** 季 Tab 点击：根库切季只换缓存里的分组；一季一库则切到对应 mediaId 重读。 */
     fun selectSeason(key: String) {
         if (key.isBlank()) return
@@ -311,7 +369,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
     /** 滚动到底部附近时续一页；重复调用会被 pageJob 挡掉。 */
     fun loadMore() {
         val current = _state.value
-        if (current.phase != DetailPhase.Content || !current.hasMore) return
+        if (current.phase != DetailPhase.Content || !current.hasMore || current.refreshing) return
         // 定位跳转正在补页，此时再续页会出现两条流程同时改 entries / loadedEnd
         if (current.jumpingToLastPlayed) return
         if (pageJob?.isActive == true) return
@@ -347,7 +405,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
      */
     fun jumpToLastPlayed() {
         val current = _state.value
-        if (current.phase != DetailPhase.Content || current.jumpingToLastPlayed) return
+        if (current.phase != DetailPhase.Content || current.jumpingToLastPlayed || current.refreshing) return
         val target = current.lastPlayedIndex ?: return
         // 目标已经在列表里：直接滚，不用补页
         if (target < loadedEnd) {
@@ -393,53 +451,6 @@ class DetailViewModel(private val app: Application) : ViewModel() {
     /** 「上次播放」在给定顺序里的下标；被搜索过滤掉或没有记录时返回 null。 */
     private fun lastPlayedIndexOf(source: List<VideoRow>): Int? =
         source.indexOfFirst { it.video.lastPlay }.takeIf { it >= 0 }
-
-    /**
-     * 从播放页回来时刷新「上次播放」。
-     *
-     * 播放页是独立 Activity，把 `play_last` 写进数据库后就结束了；Compose 页面不会被重建
-     * （`LaunchedEffect(mediaId)` 也不会重跑），所以这里只重读库里的 `play_last`，
-     * 更新内存标记与「上次播放」下标——不重建列表、不动滚动位置、不重新解析卡片。
-     */
-    fun refreshLastPlayed() {
-        val current = _state.value
-        if (current.phase != DetailPhase.Content) return
-        val media = current.media ?: return
-        // 实体 id 理论上就是路由参数；两者都为空说明这个库根本落不了库（如内置聚合页），直接跳过
-        val mediaId = media.id.takeIf { it.isNotBlank() } ?: loadedId?.takeIf { it.isNotBlank() } ?: return
-        val gen = generation
-        viewModelScope.launch {
-            val playLast = try {
-                withContext(Dispatchers.IO) {
-                    DatabaseManager.mediaDataDao.getById(mediaId)?.playLast
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                null
-            } ?: return@launch
-            // 没变化就直接退出：避免每次回到页面都推一次等价状态
-            if (playLast == media.playLast || gen != generation) return@launch
-            media.playLast = playLast
-            val source = ordered
-            // 一次遍历同时清旧标记、定位新下标；不再额外重建 playList 或二次 indexOfFirst。
-            // playList 里的 VideoData 与 source 是同一批引用，顺序也没变，无需重建全量列表。
-            var newIndex: Int? = null
-            source.forEachIndexed { index, row ->
-                val match = playLast.isNotBlank() && row.video.videoUrl == playLast
-                row.video.lastPlay = match
-                if (match && newIndex == null) newIndex = index
-            }
-            // 异步期间用户可能输入了搜索词（只改 query、不递增 generation），取最新状态再写回
-            val latest = _state.value
-            if (latest.phase != DetailPhase.Content || gen != generation) return@launch
-            val entries = latest.entries.map { entry ->
-                entry.copy(lastPlay = source.getOrNull(entry.playIndex)?.video?.lastPlay == true)
-            }
-            _state.value = latest.copy(entries = entries, lastPlayedIndex = newIndex)
-            Log.d(TAG, "上次播放已刷新 index=$newIndex")
-        }
-    }
 
     fun setQuery(query: String) {
         if (query == _state.value.query) return
@@ -894,6 +905,7 @@ class DetailViewModel(private val app: Application) : ViewModel() {
 
     private fun cancelJobs() {
         loadJob?.cancel()
+        refreshJob?.cancel()
         pageJob?.cancel()
         queryJob?.cancel()
         jumpJob?.cancel()

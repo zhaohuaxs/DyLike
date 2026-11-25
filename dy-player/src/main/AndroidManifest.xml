@@ -40,7 +40,7 @@
             android:icon="${APP_ICON}"
             android:label="${APP_NAME}"
             android:roundIcon="${APP_ICON_ROUND}"
-            android:targetActivity=".ui.main.MainActivity">
+            android:targetActivity=".ui.compose.MainComposeActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -54,7 +54,7 @@
             android:icon="@mipmap/ic_launcher_line"
             android:roundIcon="@mipmap/ic_launcher_round_line"
             android:label="${APP_NAME}"
-            android:targetActivity=".ui.main.MainActivity">
+            android:targetActivity=".ui.compose.MainComposeActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

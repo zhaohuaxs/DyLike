@@ -27,7 +27,7 @@ data class PlaybackSettingsState(
 data class LibrarySettingsState(
     val videoDetailMode: Boolean = false,
     val coverRatio: String = "3:4",
-    val launchComposeHome: Boolean = false
+    val launchComposeHome: Boolean = true
 )
 
 /** Exo 网络路线：系统默认数据源 vs OkHttp（旧 useOkhttp 布尔开关的语义化表达） */

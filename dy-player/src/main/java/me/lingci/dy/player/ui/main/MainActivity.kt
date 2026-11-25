@@ -14,22 +14,15 @@ import androidx.navigation.ui.AppBarConfiguration
 import androidx.navigation.ui.setupActionBarWithNavController
 import androidx.navigation.ui.setupWithNavController
 import com.google.android.material.bottomnavigation.BottomNavigationView
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import me.lingci.dy.player.R
 import me.lingci.dy.player.PlayerApp
 import me.lingci.dy.player.databinding.ActivityMainBinding
-import me.lingci.dy.player.entity.VersionData
 import me.lingci.dy.player.migrate.MigrationActivity
 import me.lingci.dy.player.ui.compose.MainComposeActivity
-import me.lingci.dy.player.util.AppUtil
 import me.lingci.dy.player.util.AutoPlayOnLaunch
 import me.lingci.dy.player.util.SpUtil
-import me.lingci.lib.base.okhttp.httpGet
 import me.lingci.lib.base.ui.BaseDisplayActivity
-import me.lingci.lib.base.util.CodeUtil
-import me.lingci.lib.base.util.JsonUtil
 import me.lingci.lib.base.util.Log
 import java.lang.reflect.Method
 
@@ -48,19 +41,26 @@ class MainActivity : BaseDisplayActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (spUtil.launchComposeHome) {
+            startActivity(Intent(this, MainComposeActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(
+                    MainComposeActivity.EXTRA_UI_SWITCH,
+                    intent.getBooleanExtra(MainComposeActivity.EXTRA_UI_SWITCH, false)
+                )
+            })
+            finish()
+            return
+        }
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         init()
-        // 冷启动一次性处理（避免旋转屏幕、从后台恢复或从播放页返回时重复触发）：
-        // 迁移页 > Compose 首页（设置里「新首页UI」开关）> 启动自动播放，三者互斥，只走一个
+        // 冷启动一次性处理；手动切换 UI 只切页面，不顺带触发启动自动播放。
         if (savedInstanceState == null) {
             lifecycleScope.launch {
                 if (PlayerApp.awaitMigrationNeeded()) {
                     startActivity(Intent(this@MainActivity, MigrationActivity::class.java))
-                } else if (spUtil.launchComposeHome) {
-                    startActivity(Intent(this@MainActivity, MainComposeActivity::class.java))
-                } else {
-                    // 启动自动播放
+                } else if (!intent.getBooleanExtra(MainComposeActivity.EXTRA_UI_SWITCH, false)) {
                     AutoPlayOnLaunch.tryTrigger(this@MainActivity, lifecycleScope)
                 }
             }
@@ -151,48 +151,10 @@ class MainActivity : BaseDisplayActivity() {
     }
 
     private fun initUpdate() {
-        val today = AppUtil.today()
-        if (spUtil.dayStr!!.startsWith(today)) {
-            return
-        }
-        lifecycleScope.launch {
-            httpGet("https://gitee.com/happycao/static-file/raw/api/app/api/dy_like_version.json")
-                .execute()
-                .onSuccess { response ->
-                    val versionData = JsonUtil.toEntityCbc<VersionData>(response)
-                    withContext(Dispatchers.Main) {
-                        val versionCode = CodeUtil.versionCode(this@MainActivity)
-                        if (versionData.type == 0 && versionCode < versionData.versionCode && spUtil.isFirst) {
-                            spUtil.isFirst = false
-                            val versionDialog = VersionDialog.newInstance(versionData, null)
-                            versionDialog.show(supportFragmentManager, "app-version")
-                        }
-                        if (versionCode < versionData.versionCode) {
-                            val dayStr = spUtil.dayStr!!.split("#")
-                            if (dayStr.size > 1) {
-                                if (dayStr[0] == today) {
-                                    return@withContext
-                                }
-                                if (versionData.type == 0 && dayStr[1] == "${versionData.versionCode}") {
-                                    return@withContext
-                                }
-                            }
-                            val versionDialog = VersionDialog.newInstance(versionData) {
-                                resultLauncher.launch(
-                                    Intent(
-                                        Intent.ACTION_VIEW,
-                                        versionData.downUrl.toUri()
-                                    )
-                                )
-                            }
-                            versionDialog.show(supportFragmentManager, versionDialog.tag)
-                        }
-                        spUtil.dayStr = "$today#${versionData.versionCode}"
-                    }
-                }.onFailure { e ->
-                    spUtil.dayStr = "$today#"
-                    Log.d(TAG, "initUpdate: ${e.message}", e)
-                }
+        checkAppUpdateOnLaunch(this) { versionData ->
+            resultLauncher.launch(
+                Intent(Intent.ACTION_VIEW, versionData.downUrl.toUri())
+            )
         }
     }
 

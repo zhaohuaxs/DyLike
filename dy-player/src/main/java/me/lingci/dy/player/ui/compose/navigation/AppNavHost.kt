@@ -65,6 +65,7 @@ object Dest {
     const val Sources = "sources"
     const val Me = "me"
     const val Detail = "detail"
+    const val DetailWithMode = "detail/{mediaId}?directPlay={directPlay}"
     const val History = "history"
     const val Likes = "likes"
     const val Playlists = "playlists"
@@ -111,6 +112,7 @@ fun AppNavHost(
     onBrand: (BrandHue) -> Unit = {},
     onDynamicColor: (Boolean) -> Unit = {},
     onNavLabels: (Boolean) -> Unit = {},
+    onHomeUiChanged: (Boolean) -> Unit = {},
     onAddLocalMedia: () -> Unit = {},
     onAddOnlineMedia: () -> Unit = {},
     onImportOnlineMedia: () -> Unit = {},
@@ -138,10 +140,17 @@ fun AppNavHost(
         }
     ) {
         composable(Dest.Library) {
+            val settingsVm = settingsViewModel()
+            val settingsState by settingsVm.state.collectAsStateWithLifecycle()
+            val openMedia: (String) -> Unit = { mediaId ->
+                navController.navigate(
+                    "${Dest.Detail}/${Uri.encode(mediaId)}?directPlay=${!settingsState.library.videoDetailMode}"
+                )
+            }
             LibraryRoute(
                 storageAccess = storageAccess,
-                onOpen = { mediaId -> navController.navigate("${Dest.Detail}/${Uri.encode(mediaId)}") },
-                onResume = { mediaId -> navController.navigate("${Dest.Detail}/${Uri.encode(mediaId)}") },
+                onOpen = openMedia,
+                onResume = openMedia,
                 onHistory = { navController.navigate(Dest.History) },
                 onLikes = { navController.navigate(Dest.Likes) },
                 onLists = { navController.navigate(Dest.Playlists) },
@@ -237,16 +246,25 @@ fun AppNavHost(
             IconSettingsRoute(onBack = { navController.popBackStack() })
         }
         composable(
-            route = "detail/{mediaId}",
-            arguments = listOf(navArgument("mediaId") { type = NavType.StringType })
+            route = Dest.DetailWithMode,
+            arguments = listOf(
+                navArgument("mediaId") { type = NavType.StringType },
+                navArgument("directPlay") {
+                    type = NavType.BoolType
+                    defaultValue = false
+                }
+            )
         ) { backStackEntry ->
             val mediaId = backStackEntry.arguments?.getString("mediaId") ?: ""
+            val directPlay = backStackEntry.arguments?.getBoolean("directPlay") == true
             val context = LocalContext.current
             val scope = rememberCoroutineScope()
             DetailRoute(
                 mediaId = mediaId,
+                directPlay = directPlay,
                 onBack = { navController.popBackStack() },
                 onPlay = { media, videos, index, isShort, seasonLabel ->
+                    if (directPlay) navController.popBackStack()
                     startPlayback(context, media, videos, index, isShort, seasonLabel = seasonLabel)
                 },
                 onOpenDanmaku = { videos, targetMediaId ->
@@ -307,7 +325,9 @@ fun AppNavHost(
                 onDynamic = onDynamicColor,
                 onNavLabels = onNavLabels,
                 onLaunchComposeHome = { on ->
+                    val changed = on != settingsState.library.launchComposeHome
                     settingsVm.applyLibrary(settingsState.library.copy(launchComposeHome = on))
+                    if (changed) onHomeUiChanged(on)
                 },
                 onIcon = { navController.navigate(Dest.Icon) }
             )
