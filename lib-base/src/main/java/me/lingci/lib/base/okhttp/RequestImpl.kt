@@ -17,6 +17,12 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.URLConnection
 
+/**
+ * 带 HTTP 状态码的下载结果。
+ * [code] 为响应状态码，[stream] 仅在 2xx 且有 body 时非空。
+ */
+data class HttpStreamResult(val code: Int, val stream: InputStream?)
+
 class GetRequest(url: String) : BaseRequest<GetRequest>(url) {
 
     override fun get(): String {
@@ -38,17 +44,24 @@ class GetRequest(url: String) : BaseRequest<GetRequest>(url) {
     }
 
     /**
+     * 下载大文件或流数据，同时返回 HTTP 状态码。
+     * 非 2xx（如 304/412/403）会关闭 response 并返回 code + null。
+     */
+    fun downloadWithStatus(): HttpStreamResult {
+        val response = getClient().newCall(buildRequest()).execute() // 这里的 execute 在协程中需注意线程
+        if (!response.isSuccessful) {
+            val code = response.code
+            response.close()
+            return HttpStreamResult(code, null)
+        }
+        // 注意：调用方需要在使用完后关闭 InputStream
+        return HttpStreamResult(response.code, response.body?.byteStream())
+    }
+
+    /**
      * 下载大文件或流数据的协程实现
      */
-    fun download(): InputStream? {
-        val response = getClient().newCall(buildRequest()).execute() // 这里的 execute 在协程中需注意线程
-        return if (!response.isSuccessful) {
-            null
-        } else {
-            // 注意：调用方需要在使用完后关闭 InputStream
-            response.body?.byteStream()
-        }
-    }
+    fun download(): InputStream? = downloadWithStatus().stream
 
     /**
      * 针对流媒体/文件下载的扩展
