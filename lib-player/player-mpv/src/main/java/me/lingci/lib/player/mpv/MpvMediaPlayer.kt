@@ -1294,9 +1294,9 @@ class MpvMediaPlayer(context: Context) : AbstractPlayer(),
 
         return try {
             // mpv 没有 network-bandwidth 属性（旧实现读它，永远拿到 null → 网速恒为 0）。
-            // cache-speed 是 demuxer 每秒填充缓存的字节数，正是"当前网络下载速度"，单位 B/s。
+            // cache-speed 是 demuxer 缓存填充速率，网络播放时近似当前下载速度，单位 B/s。
             val bytesPerSecond = mpv.getPropertyDouble("cache-speed") ?: 0.0
-            if (bytesPerSecond <= 0.0) 0L else (bytesPerSecond / 1024.0).toLong()
+            if (bytesPerSecond <= 0.0) 0L else bytesPerSecond.toLong()
         } catch (e: Exception) {
             L.e("Error getting network speed: ${e.message}")
             0

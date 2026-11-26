@@ -32,6 +32,7 @@ import java.util.Map;
 
 import me.lingci.lib.base.util.Log;
 import me.lingci.lib.player.exo.FfmpegRenderersFactory;
+import me.lingci.lib.player.exo.datasource.NetworkSpeedMeter;
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 import xyz.doikki.videoplayer.player.VideoViewManager;
 import me.lingci.lib.player.util.SurfaceRenderTrace;
@@ -43,6 +44,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
     protected ExoPlayer mInternalPlayer;
     protected MediaSource mMediaSource;
     protected ExoMediaSourceHelper mMediaSourceHelper;
+    protected final NetworkSpeedMeter mNetworkSpeedMeter = new NetworkSpeedMeter();
     /** 主视频请求头，供外挂字幕/音轨继承鉴权语义。 */
     protected Map<String, String> mCurrentRequestHeaders;
 
@@ -112,8 +114,9 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void setDataSource(String path, Map<String, String> headers) {
+        mNetworkSpeedMeter.reset();
         mCurrentRequestHeaders = headers == null ? null : new java.util.HashMap<>(headers);
-        mMediaSource = mMediaSourceHelper.getMediaSource(path, headers);
+        mMediaSource = mMediaSourceHelper.getMediaSource(path, headers, false, mNetworkSpeedMeter);
     }
 
     @Override
@@ -159,6 +162,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void reset() {
+        mNetworkSpeedMeter.reset();
         if (mInternalPlayer != null) {
             mInternalPlayer.stop();
             mInternalPlayer.clearMediaItems();
@@ -192,6 +196,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public void release() {
+        mNetworkSpeedMeter.reset();
         if (mInternalPlayer != null) {
             mInternalPlayer.removeListener(this);
             mInternalPlayer.release();
@@ -282,8 +287,7 @@ public class ExoMediaPlayer extends AbstractPlayer implements Player.Listener {
 
     @Override
     public long getTcpSpeed() {
-        // no support
-        return 0;
+        return mNetworkSpeedMeter.getBytesPerSecond();
     }
 
     @Override

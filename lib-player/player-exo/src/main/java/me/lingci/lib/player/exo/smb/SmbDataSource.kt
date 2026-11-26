@@ -13,6 +13,7 @@ import jcifs.smb.SmbException
 import jcifs.smb.SmbFile
 import jcifs.smb.SmbRandomAccessFile
 import me.lingci.lib.base.storage.smb.SmbAuthToken
+import me.lingci.lib.player.exo.datasource.NetworkSpeedMeter
 import java.io.IOException
 
 /**
@@ -24,7 +25,8 @@ import java.io.IOException
  */
 @OptIn(UnstableApi::class)
 class SmbDataSource(
-    private val cifsContext: CIFSContext = SingletonContext.getInstance()
+    private val cifsContext: CIFSContext = SingletonContext.getInstance(),
+    private val networkSpeedMeter: NetworkSpeedMeter? = null
 ) : BaseDataSource(true) {
 
     private companion object {
@@ -35,7 +37,8 @@ class SmbDataSource(
 
     @UnstableApi
     open class Factory(
-        private val headers: Map<String, String>? = null
+        private val headers: Map<String, String>? = null,
+        private val networkSpeedMeter: NetworkSpeedMeter? = null
     ) : DataSource.Factory {
 
         override fun createDataSource(): DataSource {
@@ -45,7 +48,8 @@ class SmbDataSource(
                     credentials?.username ?: headers?.get("username")?.trim(),
                     credentials?.password ?: headers?.get("password"),
                     credentials?.domain ?: headers?.get("domain")?.trim()
-                )
+                ),
+                networkSpeedMeter
             )
         }
     }
@@ -145,6 +149,7 @@ class SmbDataSource(
         }
 
         if (filled <= 0) return false
+        networkSpeedMeter?.recordBytes(filled.toLong())
         readBufferOffset = 0
         readBufferLength = filled
         return true

@@ -328,6 +328,17 @@ public final class PlayerUtils {
         }
     }
 
+    public static String formatNetworkSpeed(long bytesPerSecond) {
+        long speed = Math.max(0L, bytesPerSecond);
+        if (speed >= 1024L * 1024L) {
+            return String.format(Locale.US, "%.1f MB/s", speed / (1024.0 * 1024.0));
+        }
+        if (speed >= 1024L) {
+            return String.format(Locale.US, "%d KB/s", speed / 1024L);
+        }
+        return speed + " B/s";
+    }
+
     /**
      * 获取集合的快照
      */

@@ -209,8 +209,9 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
         // Cache selection used to live in CustomVideoView. Keeping it here prevents player-ui from
         // importing Exo media-source helpers just to choose a data source implementation.
 
+        mNetworkSpeedMeter.reset()
         if (isCacheEnabled) {
-            mMediaSource = mMediaSourceHelper.getMediaSource(path, headers, true)
+            mMediaSource = mMediaSourceHelper.getMediaSource(path, headers, true, mNetworkSpeedMeter)
         } else {
             super.setDataSource(path, headers)
         }
@@ -243,7 +244,8 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
     }
 
     fun buildDataSource(url: String, headers: Map<String, String>): MediaSource {
-        return mMediaSourceHelper.getMediaSource(url, headers, isCacheEnabled)
+        mNetworkSpeedMeter.reset()
+        return mMediaSourceHelper.getMediaSource(url, headers, isCacheEnabled, mNetworkSpeedMeter)
     }
 
     fun setSubtitleAttachStrategy(strategy: SubtitleAttachStrategy) {
@@ -464,7 +466,8 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
         val dataSourceFactory = mMediaSourceHelper.getDataSourceFactory(
             uri.toString(),
             requestHeaders,
-            isCacheEnabled
+            isCacheEnabled,
+            mNetworkSpeedMeter
         )
         externalSubtitleSource = SingleSampleMediaSource.Factory(dataSourceFactory)
             .createMediaSource(subtitleConfig, C.TIME_UNSET)
@@ -486,7 +489,8 @@ class CustomExoMediaPlayer(context: Context) : ExoMediaPlayer(context),
         val dataSourceFactory = mMediaSourceHelper.getDataSourceFactory(
             uri.toString(),
             mCurrentRequestHeaders,
-            isCacheEnabled
+            isCacheEnabled,
+            mNetworkSpeedMeter
         )
         externalAudioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
             .createMediaSource(mediaItem)

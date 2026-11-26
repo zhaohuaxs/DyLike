@@ -16,6 +16,7 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.HttpDataSource;
+import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.cache.Cache;
 import androidx.media3.datasource.cache.CacheDataSource;
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor;
@@ -36,6 +37,7 @@ import java.util.Map;
 import me.lingci.lib.base.okhttp.OkUtil;
 import me.lingci.lib.base.util.HttpUtil;
 import me.lingci.lib.base.util.Log;
+import me.lingci.lib.player.exo.datasource.NetworkSpeedMeter;
 import me.lingci.lib.player.exo.datasource.RetryDataSource;
 import me.lingci.lib.player.exo.smb.SmbDataSource;
 import okhttp3.Call;
@@ -94,32 +96,51 @@ public final class ExoMediaSourceHelper {
 
     @OptIn(markerClass = UnstableApi.class)
     public MediaSource getMediaSource(String uri, Map<String, String> headers, boolean isCache) {
+        return getMediaSource(uri, headers, isCache, null);
+    }
+
+    @OptIn(markerClass = UnstableApi.class)
+    public MediaSource getMediaSource(
+            String uri,
+            Map<String, String> headers,
+            boolean isCache,
+            NetworkSpeedMeter networkSpeedMeter
+    ) {
         Uri contentUri = Uri.parse(uri);
         if ("rtmp".equals(contentUri.getScheme())) {
-            return new ProgressiveMediaSource.Factory(new RtmpDataSource.Factory())
+            DataSource.Factory factory = new RtmpDataSource.Factory();
+            if (networkSpeedMeter != null) {
+                factory = withTransferListener(factory, networkSpeedMeter);
+            }
+            return new ProgressiveMediaSource.Factory(factory)
                     .createMediaSource(MediaItem.fromUri(contentUri));
         } else if ("rtsp".equals(contentUri.getScheme())) {
             return new RtspMediaSource.Factory().createMediaSource(MediaItem.fromUri(contentUri));
         } else if ("smb".equals(contentUri.getScheme())) {
-            return new ProgressiveMediaSource.Factory(new SmbDataSource.Factory(headers))
+            return new ProgressiveMediaSource.Factory(
+                    new SmbDataSource.Factory(headers, networkSpeedMeter))
                     .createMediaSource(MediaItem.fromUri(contentUri));
         }
         int contentType = inferContentType(uri);
         DataSource.Factory factory;
-        if (isCache) {
-            factory = getCacheDataSourceFactory();
+        if (networkSpeedMeter != null) {
+            factory = getDataSourceFactory(uri, headers, isCache, networkSpeedMeter);
         } else {
-            factory = getDataSourceFactory();
-        }
-        // headers 必须下发给「实际用到的那个工厂」：跳过 TLS 校验时会强制走 OkHttp，
-        // 若仍按 useOkhttp 判断，鉴权头会被设到没被使用的 Http 工厂上，表现为 401。
-        if (useOkhttp || isSkipTlsVerify()) {
-            if (mOkHttpDataSourceFactory != null) {
-                setOkHeaders(headers);
+            if (isCache) {
+                factory = getCacheDataSourceFactory();
+            } else {
+                factory = getDataSourceFactory();
             }
-        } else {
-            if (mHttpDataSourceFactory != null) {
-                setHeaders(headers);
+            // headers 必须下发给「实际用到的那个工厂」：跳过 TLS 校验时会强制走 OkHttp，
+            // 若仍按 useOkhttp 判断，鉴权头会被设到没被使用的 Http 工厂上，表现为 401。
+            if (useOkhttp || isSkipTlsVerify()) {
+                if (mOkHttpDataSourceFactory != null) {
+                    setOkHeaders(headers);
+                }
+            } else {
+                if (mHttpDataSourceFactory != null) {
+                    setHeaders(headers);
+                }
             }
         }
         if (uri.startsWith("/") && contentType == C.CONTENT_TYPE_OTHER) {
@@ -141,9 +162,19 @@ public final class ExoMediaSourceHelper {
      */
     @OptIn(markerClass = UnstableApi.class)
     public DataSource.Factory getDataSourceFactory(String uri, Map<String, String> headers, boolean isCache) {
+        return getDataSourceFactory(uri, headers, isCache, null);
+    }
+
+    @OptIn(markerClass = UnstableApi.class)
+    public DataSource.Factory getDataSourceFactory(
+            String uri,
+            Map<String, String> headers,
+            boolean isCache,
+            NetworkSpeedMeter networkSpeedMeter
+    ) {
         Uri parsed = Uri.parse(uri);
         if ("smb".equals(parsed.getScheme())) {
-            return new SmbDataSource.Factory(headers == null ? null : new HashMap<>(headers));
+            return new SmbDataSource.Factory(headers == null ? null : new HashMap<>(headers), networkSpeedMeter);
         }
 
         Map<String, String> requestHeaders = headers == null
@@ -179,6 +210,10 @@ public final class ExoMediaSourceHelper {
             upstream = new DefaultDataSource.Factory(mAppContext, new RetryDataSource.Factory(httpFactory));
         }
 
+        if (networkSpeedMeter != null) {
+            upstream = withTransferListener(upstream, networkSpeedMeter);
+        }
+
         if (!isCache) {
             return upstream;
         }
@@ -189,6 +224,17 @@ public final class ExoMediaSourceHelper {
                 .setCache(mCache)
                 .setUpstreamDataSourceFactory(upstream)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR);
+    }
+
+    private static DataSource.Factory withTransferListener(
+            DataSource.Factory factory,
+            TransferListener transferListener
+    ) {
+        return () -> {
+            DataSource dataSource = factory.createDataSource();
+            dataSource.addTransferListener(transferListener);
+            return dataSource;
+        };
     }
 
     private int inferContentType(String fileName) {
