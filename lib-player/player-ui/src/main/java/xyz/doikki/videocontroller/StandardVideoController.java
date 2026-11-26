@@ -227,4 +227,9 @@ public class StandardVideoController extends GestureVideoController implements V
         mBinding.timeSync.setOnClickListener(listener);
     }
 
+    public void setTimeSyncVisible(boolean visible) {
+        showTimeSync = visible;
+        mBinding.timeSync.setVisibility(visible && isLocked() ? VISIBLE : GONE);
+    }
+
 }

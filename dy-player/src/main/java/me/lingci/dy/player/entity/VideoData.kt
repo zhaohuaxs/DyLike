@@ -19,6 +19,7 @@ import me.lingci.lib.base.util.CodeUtil
 import me.lingci.lib.base.util.Log
 import me.lingci.lib.base.util.md5
 import java.io.File
+import java.util.Locale
 
 /**
  *   @author : happyc
@@ -122,6 +123,18 @@ data class VideoData(
         } else {
             videoUrl
         }
+    }
+
+    fun isNetworkPlayback(playUrl: String = videoUrl): Boolean {
+        val scheme = playUrl.toUri().scheme?.lowercase(Locale.ROOT)
+        return type == StorageType.WEBDAV
+                || type == StorageType.SMB
+                || type == StorageType.STREAM_LINK
+                || type == StorageType.ONLINE_LINK
+                || scheme == "http"
+                || scheme == "https"
+                || scheme == "smb"
+                || scheme == "rtmp"
     }
 
     fun is302(url: String): Boolean {

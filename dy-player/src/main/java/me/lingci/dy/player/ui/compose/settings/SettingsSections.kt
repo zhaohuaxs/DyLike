@@ -53,6 +53,7 @@ import java.util.Locale
 fun LazyListScope.playbackSettings(
     state: PlaybackSettingsState,
     onChange: (PlaybackSettingsState) -> Unit,
+    onOpenLongVideoControls: () -> Unit,
     /** 打开「后台播放」时请求通知权限（API 33+），否则用户开了也看不到媒体通知 */
     onBackgroundPlayEnabled: () -> Unit
 ) {
@@ -136,7 +137,70 @@ fun LazyListScope.playbackSettings(
             if (on) onBackgroundPlayEnabled()
         }
     }
+    item {
+        SettingRow(
+            title = stringResource(R.string.settings_long_video_controls_title),
+            summary = stringResource(R.string.settings_long_video_controls_desc),
+            value = stringResource(R.string.settings_enter),
+            onClick = onOpenLongVideoControls
+        )
+    }
 
+}
+
+fun LazyListScope.longVideoControlSettings(
+    state: PlaybackSettingsState,
+    onChange: (PlaybackSettingsState) -> Unit
+) {
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_screenshot),
+            stringResource(R.string.settings_long_video_show_screenshot_desc),
+            state.longVideoShowScreenshot
+        ) { onChange(state.copy(longVideoShowScreenshot = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_media_info),
+            stringResource(R.string.settings_long_video_show_media_info_desc),
+            state.longVideoShowMediaInfo
+        ) { onChange(state.copy(longVideoShowMediaInfo = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_danmaku_tools),
+            stringResource(R.string.settings_long_video_show_danmaku_tools_desc),
+            state.longVideoShowDanmakuTools
+        ) { onChange(state.copy(longVideoShowDanmakuTools = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_time_sync),
+            stringResource(R.string.settings_long_video_show_time_sync_desc),
+            state.longVideoShowTimeSync
+        ) { onChange(state.copy(longVideoShowTimeSync = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_smooth_curve),
+            stringResource(R.string.settings_long_video_show_smooth_curve_desc),
+            state.longVideoShowSmoothCurve
+        ) { onChange(state.copy(longVideoShowSmoothCurve = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_status_info),
+            stringResource(R.string.settings_long_video_show_status_info_desc),
+            state.longVideoShowStatusInfo
+        ) { onChange(state.copy(longVideoShowStatusInfo = it)) }
+    }
+    item {
+        ToggleRow(
+            stringResource(R.string.settings_long_video_show_manual_pip),
+            stringResource(R.string.settings_long_video_show_manual_pip_desc),
+            state.longVideoShowManualPip
+        ) { onChange(state.copy(longVideoShowManualPip = it)) }
+    }
 }
 
 @Composable
@@ -691,6 +755,7 @@ private fun SettingsSectionsPreview() {
             playbackSettings(
                 state = PlaybackSettingsState(audioFadeEnabled = true),
                 onChange = {},
+                onOpenLongVideoControls = {},
                 onBackgroundPlayEnabled = {}
             )
             item { GroupLabel("播放内核") }

@@ -20,7 +20,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import me.lingci.dy.player.databinding.LayoutLongVideoControlViewBinding;
-import me.lingci.lib.base.util.SpBase;
+import me.lingci.dy.player.util.SpUtil;
 import me.lingci.lib.player.danmaku.PlayerInitializer;
 import me.lingci.lib.player.listener.OnLongVideoListener;
 import me.lingci.lib.player.listener.OnPlayNextListener;
@@ -36,11 +36,14 @@ import xyz.doikki.videoplayer.util.PlayerUtils;
 public class LongVideoControlView extends FrameLayout implements IControlComponent {
 
     private final LayoutLongVideoControlViewBinding mBinding;
-    private final SpBase mSpBase = new SpBase(getContext());
+    private final SpUtil mSpUtil = new SpUtil(getContext());
 
     private ControlWrapper mControlWrapper;
 
     private boolean mIsDragging = false;
+    private boolean mNetworkPlayback = false;
+    private boolean mIsFullScreen = false;
+    private boolean mPipSupported = false;
 
     private OnLongVideoListener mOnLongVideoListener;
     private OnPlayNextListener mOnPlayNextListener;
@@ -105,17 +108,17 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
                 mControlWrapper.startFadeOut();
             }
         });
-        mBinding.cbDmShow.setSelected(mSpBase.getShowDm());
+        mBinding.cbDmShow.setSelected(mSpUtil.getShowDm());
         mBinding.cbDmShow.setOnClickListener(v -> {
             boolean selected = !mBinding.cbDmShow.isSelected();
-            mSpBase.setShowDm(selected);
+            mSpUtil.setShowDm(selected);
             mBinding.cbDmShow.setSelected(selected);
             mBinding.ivDmConf.setVisibility(selected ? VISIBLE : GONE);
             if (mOnLongVideoListener != null) {
                 mOnLongVideoListener.onDmShow(selected);
             }
         });
-        mBinding.ivDmConf.setVisibility(mSpBase.getShowDm() ? VISIBLE : GONE);
+        mBinding.ivDmConf.setVisibility(mSpUtil.getShowDm() ? VISIBLE : GONE);
         mBinding.ivDmConf.setOnClickListener(v -> {
             if (mOnLongVideoListener != null) {
                 mOnLongVideoListener.onConfDm();
@@ -172,14 +175,9 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
                 mOnLongVideoListener.onEnterPiP();
             }
         });
-        // 系统不支持 PiP 时隐藏按钮
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             android.content.pm.PackageManager pm = getContext().getPackageManager();
-            if (!pm.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
-                mBinding.ivPip.setVisibility(GONE);
-            }
-        } else {
-            mBinding.ivPip.setVisibility(GONE);
+            mPipSupported = pm.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE);
         }
         mBinding.ivPlayPrevious.setOnClickListener(v -> {
             if (mOnPlayNextListener != null) {
@@ -197,16 +195,17 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
                 showTips("同步弹幕时间...");
             }
         });
-        boolean showSmooth = mSpBase.getShowSmooth();
+        boolean showSmooth = mSpUtil.getShowSmooth();
         mBinding.ivSmoothCurve.setSelected(showSmooth);
         mBinding.smoothCurve.setVisibility(showSmooth ? VISIBLE : GONE);
         mBinding.ivSmoothCurve.setOnClickListener(v -> {
             boolean isSelect = !v.isSelected();
             mBinding.ivSmoothCurve.setSelected(isSelect);
             mBinding.smoothCurve.setVisibility(isSelect ? VISIBLE : GONE);
-            mSpBase.setShowSmooth(isSelect);
+            mSpUtil.setShowSmooth(isSelect);
         });
         mBatteryReceiver = new BatteryReceiver(mBinding.tvBattery);
+        applyControlVisibility();
     }
 
     @Override
@@ -221,6 +220,7 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        applyControlVisibility();
         if (!mIsRegister) {
             getContext().registerReceiver(mBatteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
             mIsRegister = true;
@@ -229,6 +229,40 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
 
     public void setTitle(String name) {
         mBinding.tvTitle.setText(name);
+    }
+
+    public void setNetworkPlayback(boolean networkPlayback) {
+        mNetworkPlayback = networkPlayback;
+        applyControlVisibility();
+        updateNetworkSpeed();
+    }
+
+    public void refreshControlVisibility() {
+        applyControlVisibility();
+    }
+
+    private void applyControlVisibility() {
+        boolean showStatusInfo = mSpUtil.getLongVideoShowStatusInfo();
+        mBinding.tvTime.setVisibility(showStatusInfo ? VISIBLE : GONE);
+        mBinding.tvBattery.setVisibility(showStatusInfo ? VISIBLE : GONE);
+        mBinding.tvNetworkSpeed.setVisibility(showStatusInfo && mNetworkPlayback ? VISIBLE : GONE);
+        mBinding.ivScreenshot.setVisibility(mSpUtil.getLongVideoShowScreenshot() ? VISIBLE : GONE);
+        mBinding.ivMediaInfo.setVisibility(mSpUtil.getLongVideoShowMediaInfo() ? VISIBLE : GONE);
+        boolean showDanmakuTools = mSpUtil.getLongVideoShowDanmakuTools();
+        mBinding.tvDmTrack.setVisibility(showDanmakuTools ? VISIBLE : GONE);
+        mBinding.ivDmList.setVisibility(showDanmakuTools ? VISIBLE : GONE);
+        mBinding.ivPlaySync.setVisibility(
+                mIsFullScreen && mSpUtil.getLongVideoShowTimeSync() ? VISIBLE : GONE);
+        mBinding.ivSmoothCurve.setVisibility(
+                mIsFullScreen && mSpUtil.getLongVideoShowSmoothCurve() ? VISIBLE : GONE);
+        mBinding.ivPip.setVisibility(
+                mPipSupported && mSpUtil.getLongVideoShowManualPip() ? VISIBLE : GONE);
+    }
+
+    private void updateNetworkSpeed() {
+        if (!mNetworkPlayback || mControlWrapper == null) return;
+        mBinding.tvNetworkSpeed.setText(
+                PlayerUtils.formatNetworkSpeed(mControlWrapper.getTcpSpeed()));
     }
 
     public void useTrack() {
@@ -296,6 +330,7 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
             mBinding.centerContainer.setVisibility(VISIBLE);
             mBinding.endContainer.setVisibility(VISIBLE);
             mBinding.tvTime.setText(PlayerUtils.getCurrentSystemTime());
+            updateNetworkSpeed();
         } else {
             mBinding.topContainer.setVisibility(GONE);
             mBinding.bottomContainer.setVisibility(GONE);
@@ -312,6 +347,7 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
 
     @Override
     public void onPlayStateChanged(int playState) {
+        updateNetworkSpeed();
         switch (playState) {
             case VideoView.STATE_IDLE:
             case VideoView.STATE_PLAYBACK_COMPLETED:
@@ -322,7 +358,7 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
             case VideoView.STATE_PLAYING:
                 L.e("STATE_PLAYING " + hashCode());
                 setVisibility(VISIBLE);
-                onVisibilityChanged(false, null);
+                mControlWrapper.hide();
                 //mBinding.playBtn.setVisibility(GONE);
                 mBinding.playBtn.setSelected(true);
                 mControlWrapper.startProgress();
@@ -346,25 +382,24 @@ public class LongVideoControlView extends FrameLayout implements IControlCompone
     @Override
     public void onPlayerStateChanged(int playerState) {
         mBinding.tvTime.setText(PlayerUtils.getCurrentSystemTime());
+        mIsFullScreen = playerState == VideoView.PLAYER_FULL_SCREEN;
         switch (playerState) {
             case VideoView.PLAYER_FULL_SCREEN:
                 mBinding.cbDmShow.setVisibility(VISIBLE);
                 mBinding.tvSelectDm.setVisibility(VISIBLE);
-                mBinding.ivPlaySync.setVisibility(VISIBLE);
-                mBinding.ivSmoothCurve.setVisibility(VISIBLE);
                 break;
             case VideoView.PLAYER_NORMAL:
             default:
                 mBinding.cbDmShow.setVisibility(GONE);
                 mBinding.tvSelectDm.setVisibility(GONE);
-                mBinding.ivPlaySync.setVisibility(GONE);
-                mBinding.ivSmoothCurve.setVisibility(GONE);
                 break;
         }
+        applyControlVisibility();
     }
 
     @Override
     public void setProgress(int duration, int position) {
+        updateNetworkSpeed();
         if (mOnLongVideoListener != null) {
             mOnLongVideoListener.onVideoProgress(duration, position);
         }

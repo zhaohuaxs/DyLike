@@ -692,6 +692,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
         danmakuView = DanmakuControlView(this)
         videoController.addControlComponent(danmakuView)
         videoController.setTimeSyncListener { onTimeSync() }
+        videoController.setTimeSyncVisible(spUtil.longVideoShowTimeSync)
         // 长视频控制器
         longVideoControlView = LongVideoControlView(this)
         longVideoControlView.setTitle("本地播放")
@@ -715,6 +716,7 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     private fun applyPlaybackCoreFor(videoBean: VideoData, playUrl: String) {
         applyConfiguredRenderFactory()
+        longVideoControlView.setNetworkPlayback(videoBean.isNetworkPlayback(playUrl))
         val core = if (isSmbVideo(videoBean, playUrl)) DyPlayerCore.EXO else spUtil.dyPlayerCore
         DyPlayerCoreRegistry.applyCore(videoView, core, spUtil.labMpvSpecialRender, spUtil.labMpvSuperResolution, false)
     }
@@ -1405,6 +1407,12 @@ class LongVideoActivity : BaseActivity(), OnLongVideoListener, OnPlayNextListene
 
     override fun onResume() {
         super.onResume()
+        if (::videoController.isInitialized) {
+            videoController.setTimeSyncVisible(spUtil.longVideoShowTimeSync)
+        }
+        if (::longVideoControlView.isInitialized) {
+            longVideoControlView.refreshControlVisibility()
+        }
         // 标记后台返回后的短暂恢复窗口，仅在该窗口内允许 STATE_ERROR 自动重试 // track-id: bg-retry-20260421
         clearBackgroundRecoveryState()
         if (hasPausedForBackgroundRecovery) {

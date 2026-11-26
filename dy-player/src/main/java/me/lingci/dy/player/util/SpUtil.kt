@@ -309,6 +309,15 @@ open class SpUtil(context: Context) : SpBase(context) {
     // 长视频后台播放：开启后 PiP 关闭/无 PiP 时按 Home 进入后台音频播放
     var longVideoBackgroundPlay by SPManager.boolean(false)
 
+    // 长视频控制栏显示偏好；默认保持原有按钮布局
+    var longVideoShowScreenshot by SPManager.boolean(true)
+    var longVideoShowMediaInfo by SPManager.boolean(true)
+    var longVideoShowDanmakuTools by SPManager.boolean(true)
+    var longVideoShowTimeSync by SPManager.boolean(true)
+    var longVideoShowSmoothCurve by SPManager.boolean(true)
+    var longVideoShowStatusInfo by SPManager.boolean(true)
+    var longVideoShowManualPip by SPManager.boolean(true)
+
     // 实验室开关：App 启动时自动播放指定媒体库的上次视频
     var autoPlayOnLaunch by SPManager.boolean(false)
 

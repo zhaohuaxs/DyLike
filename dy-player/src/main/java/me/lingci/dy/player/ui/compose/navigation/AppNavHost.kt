@@ -44,6 +44,7 @@ import me.lingci.dy.player.ui.compose.settings.DanmakuSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.KernelSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.LabSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.LibrarySettingsDetail
+import me.lingci.dy.player.ui.compose.settings.LongVideoControlSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.PlaybackSettingsDetail
 import me.lingci.dy.player.ui.compose.settings.settingsViewModel
 import me.lingci.dy.player.ui.compose.sources.BuiltinSources
@@ -72,6 +73,7 @@ object Dest {
     const val Theme = "theme"
     /** 设置分类页：「我的」页直接列设置入口，这里只是分类详情，没有中间的「全部设置」索引层 */
     const val SettingsPlayback = "settings/playback"
+    const val SettingsLongVideoControls = "settings/longVideoControls"
     const val SettingsLibrary = "settings/library"
     const val SettingsKernel = "settings/kernel"
     const val SettingsDanmaku = "settings/danmaku"
@@ -208,7 +210,13 @@ fun AppNavHost(
             )
         }
         composable(Dest.SettingsPlayback) {
-            PlaybackSettingsDetail(onBack = { navController.popBackStack() })
+            PlaybackSettingsDetail(
+                onBack = { navController.popBackStack() },
+                onOpenLongVideoControls = { navController.navigate(Dest.SettingsLongVideoControls) }
+            )
+        }
+        composable(Dest.SettingsLongVideoControls) {
+            LongVideoControlSettingsDetail(onBack = { navController.popBackStack() })
         }
         composable(Dest.SettingsLibrary) {
             LibrarySettingsDetail(onBack = { navController.popBackStack() })

@@ -73,6 +73,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
     private final int mScaledTouchSlop;
 
     private boolean mIsDragging = false;
+    private boolean mNetworkPlayback = false;
     private final GestureDetector mGestureDetector;
     private boolean mIsLongPressing = false;
     private float mCurrentSpeed = 1.0f;
@@ -229,6 +230,19 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
                 mControlWrapper.startFadeOut();
             }
         });
+    }
+
+    public void setNetworkPlayback(boolean networkPlayback) {
+        mNetworkPlayback = networkPlayback;
+        mBinding.tvNetworkSpeed.setVisibility(
+                networkPlayback && !globalImmersiveMode ? VISIBLE : GONE);
+        updateNetworkSpeed();
+    }
+
+    private void updateNetworkSpeed() {
+        if (!mNetworkPlayback || mControlWrapper == null) return;
+        mBinding.tvNetworkSpeed.setText(
+                PlayerUtils.formatNetworkSpeed(mControlWrapper.getTcpSpeed()));
     }
 
     public void setOnLikeClickListener(OnShortVideoListener onShortVideoListener) {
@@ -648,6 +662,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mBinding.ivFull.setVisibility(GONE);
         mBinding.tvTime.setVisibility(GONE);
         mBinding.tvBattery.setVisibility(GONE);
+        mBinding.tvNetworkSpeed.setVisibility(GONE);
         mBinding.ivBack.setVisibility(GONE);
     }
 
@@ -683,7 +698,9 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
         mBinding.ivMore.setVisibility(PlayerInitializer.Player.INSTANCE.getShortShowMore() ? VISIBLE : GONE);
         mBinding.tvTime.setVisibility(VISIBLE);
         mBinding.tvBattery.setVisibility(VISIBLE);
+        mBinding.tvNetworkSpeed.setVisibility(mNetworkPlayback ? VISIBLE : GONE);
         mBinding.ivBack.setVisibility(VISIBLE);
+        updateNetworkSpeed();
     }
 
     @SuppressLint("SetTextI18n")
@@ -712,6 +729,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
     @Override
     public void onPlayStateChanged(int playState) {
+        updateNetworkSpeed();
         switch (playState) {
             case VideoView.STATE_IDLE:
                 resetSpeed();
@@ -766,6 +784,7 @@ public class ShortVideoControlView extends FrameLayout implements IControlCompon
 
     @Override
     public void setProgress(int duration, int position) {
+        updateNetworkSpeed();
         if (mIsDragging) {
             return;
         }

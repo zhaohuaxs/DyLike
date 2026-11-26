@@ -82,6 +82,27 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         if (updated.longVideoBackgroundPlay != current.longVideoBackgroundPlay) {
             sp.longVideoBackgroundPlay = updated.longVideoBackgroundPlay
         }
+        if (updated.longVideoShowScreenshot != current.longVideoShowScreenshot) {
+            sp.longVideoShowScreenshot = updated.longVideoShowScreenshot
+        }
+        if (updated.longVideoShowMediaInfo != current.longVideoShowMediaInfo) {
+            sp.longVideoShowMediaInfo = updated.longVideoShowMediaInfo
+        }
+        if (updated.longVideoShowDanmakuTools != current.longVideoShowDanmakuTools) {
+            sp.longVideoShowDanmakuTools = updated.longVideoShowDanmakuTools
+        }
+        if (updated.longVideoShowTimeSync != current.longVideoShowTimeSync) {
+            sp.longVideoShowTimeSync = updated.longVideoShowTimeSync
+        }
+        if (updated.longVideoShowSmoothCurve != current.longVideoShowSmoothCurve) {
+            sp.longVideoShowSmoothCurve = updated.longVideoShowSmoothCurve
+        }
+        if (updated.longVideoShowStatusInfo != current.longVideoShowStatusInfo) {
+            sp.longVideoShowStatusInfo = updated.longVideoShowStatusInfo
+        }
+        if (updated.longVideoShowManualPip != current.longVideoShowManualPip) {
+            sp.longVideoShowManualPip = updated.longVideoShowManualPip
+        }
         if (updated.audioFadeEnabled != current.audioFadeEnabled) sp.audioFadeEnabled = updated.audioFadeEnabled
         if (updated.audioFadeInDuration != current.audioFadeInDuration) {
             sp.audioFadeInDuration = updated.audioFadeInDuration
@@ -242,6 +263,13 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         loopList = sp.loopList,
         longVideoPip = sp.longVideoPip,
         longVideoBackgroundPlay = sp.longVideoBackgroundPlay,
+        longVideoShowScreenshot = sp.longVideoShowScreenshot,
+        longVideoShowMediaInfo = sp.longVideoShowMediaInfo,
+        longVideoShowDanmakuTools = sp.longVideoShowDanmakuTools,
+        longVideoShowTimeSync = sp.longVideoShowTimeSync,
+        longVideoShowSmoothCurve = sp.longVideoShowSmoothCurve,
+        longVideoShowStatusInfo = sp.longVideoShowStatusInfo,
+        longVideoShowManualPip = sp.longVideoShowManualPip,
         audioFadeEnabled = sp.audioFadeEnabled,
         audioFadeInDuration = sp.audioFadeInDuration,
         audioFadeOutDuration = sp.audioFadeOutDuration,

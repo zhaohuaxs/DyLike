@@ -56,14 +56,15 @@ import me.lingci.lib.base.util.FileOperator
  */
 
 @Composable
-private fun SettingsDetailScaffold(
+internal fun SettingsDetailScaffold(
     title: String,
     kicker: String,
     onBack: () -> Unit,
+    modifier: Modifier = Modifier,
     content: LazyListScope.() -> Unit
 ) {
     val c = LocalDyLikeColors.current
-    Column(Modifier.fillMaxSize()) {
+    Column(modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(start = 8.dp, top = 8.dp, end = 20.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -92,6 +93,7 @@ private fun SettingsDetailScaffold(
 @Composable
 fun PlaybackSettingsDetail(
     onBack: () -> Unit,
+    onOpenLongVideoControls: () -> Unit,
     vm: SettingsViewModel = settingsViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -105,6 +107,7 @@ fun PlaybackSettingsDetail(
         state = state,
         onBack = onBack,
         onPlayerChange = vm::applyPlayer,
+        onOpenLongVideoControls = onOpenLongVideoControls,
         onBackgroundPlayEnabled = {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val granted = ContextCompat.checkSelfPermission(
@@ -122,6 +125,7 @@ fun PlaybackSettingsContent(
     state: SettingsState,
     onBack: () -> Unit,
     onPlayerChange: (PlaybackSettingsState) -> Unit,
+    onOpenLongVideoControls: () -> Unit,
     onBackgroundPlayEnabled: () -> Unit
 ) {
     SettingsDetailScaffold(
@@ -133,6 +137,7 @@ fun PlaybackSettingsContent(
         playbackSettings(
             state = state.player,
             onChange = onPlayerChange,
+            onOpenLongVideoControls = onOpenLongVideoControls,
             onBackgroundPlayEnabled = onBackgroundPlayEnabled
         )
     }
@@ -342,6 +347,7 @@ private fun PlaybackSettingsPreview() {
             ),
             onBack = {},
             onPlayerChange = {},
+            onOpenLongVideoControls = {},
             onBackgroundPlayEnabled = {}
         )
     }

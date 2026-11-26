@@ -1085,6 +1085,7 @@ class ShortVideoActivity : BaseActivity() {
 
         val nextHolder = findViewHolderByPosition(nextPos)
         if (nextHolder != null) {
+            nextHolder.shortVideoControlView.setNetworkPlayback(videoBean.isNetworkPlayback())
             removeViewFormParent(nextView)
             nextHolder.playerContainer.addView(nextView, 0)
         }
@@ -1185,6 +1186,7 @@ class ShortVideoActivity : BaseActivity() {
             mController.setTitle(displayTitle)
             holder.shortVideoControlView.setTitle(displayTitle)
             holder.shortVideoControlView.setPage(position, mVideoList.size)
+            holder.shortVideoControlView.setNetworkPlayback(mVideoList[position].isNetworkPlayback())
             mController.addShortVideoControlView(holder.shortVideoControlView)
             holder.shortVideoControlView.setOnVideoTransformChangedListener {
                 updateSubtitleDocking()
@@ -1310,6 +1312,7 @@ class ShortVideoActivity : BaseActivity() {
         mController.setTitle(displayTitle)
         holder.shortVideoControlView.setTitle(displayTitle)
         holder.shortVideoControlView.setPage(position, mVideoList.size)
+        holder.shortVideoControlView.setNetworkPlayback(videoBean.isNetworkPlayback())
         mController.addShortVideoControlView(holder.shortVideoControlView)
         holder.shortVideoControlView.setOnVideoTransformChangedListener {
             updateSubtitleDocking()
