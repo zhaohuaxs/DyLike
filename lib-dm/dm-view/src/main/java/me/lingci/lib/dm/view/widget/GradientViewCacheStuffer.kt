@@ -4,53 +4,32 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.PorterDuff
-import android.graphics.PorterDuffXfermode
 import android.graphics.Shader
 import android.text.TextPaint
 import kotlin.math.ceil
 import master.flame.danmaku.danmaku.model.BaseDanmaku
-import master.flame.danmaku.danmaku.model.android.AndroidDisplayer
 import master.flame.danmaku.danmaku.model.android.SimpleTextCacheStuffer
 import me.lingci.lib.dm.view.entity.DmStyleExtend
 
-/**
- * 绘制渐变(自定义弹幕样式)
- * 通过扩展SimpleTextCacheStuffer或SpannedCacheStuffer个性化你的弹幕样式
- */
 open class GradientViewCacheStuffer(
     private val strokeMultiple: Float = 1.2f
 ) : SimpleTextCacheStuffer() {
 
     private val defaultColors = intArrayOf(Color.RED, Color.MAGENTA, Color.BLUE)
     private val defaultColorsHash = defaultColors.contentHashCode()
-    private val strokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        strokeJoin = Paint.Join.ROUND
-        strokeCap = Paint.Cap.ROUND
+    private val strokePaintLocal = ThreadLocal.withInitial {
+        TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            strokeJoin = Paint.Join.ROUND
+            strokeCap = Paint.Cap.ROUND
+        }
     }
-    private val drawFromWorkerThread = ThreadLocal<Boolean>()
+    private val strokePaint get() = strokePaintLocal.get()!!
     private val cacheLock = Any()
     private val positionCache = HashMap<Int, FloatArray>()
     private val shaderCache = object : LinkedHashMap<ShaderKey, LinearGradient>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<ShaderKey, LinearGradient>?): Boolean {
             return size > MAX_SHADER_CACHE_SIZE
-        }
-    }
-
-    override fun drawDanmaku(
-        danmaku: BaseDanmaku?,
-        canvas: Canvas?,
-        left: Float,
-        top: Float,
-        fromWorkerThread: Boolean,
-        displayerConfig: AndroidDisplayer.DisplayerConfig?
-    ) {
-        drawFromWorkerThread.set(fromWorkerThread)
-        try {
-            super.drawDanmaku(danmaku, canvas, left, top, fromWorkerThread, displayerConfig)
-        } finally {
-            drawFromWorkerThread.remove()
         }
     }
 
@@ -71,17 +50,20 @@ open class GradientViewCacheStuffer(
             return
         }
         if (extend.strokeMode) {
-            if (!fromWorkerThread) {
-                super.drawText(item, lineText, canvas, left, top, textPaint, fromWorkerThread)
-            }
+            super.drawText(item, lineText, canvas, left, top, textPaint, fromWorkerThread)
             return
         }
+        val drawCanvas = canvas ?: return
         val colors = resolveGradientColors(extend)
-        textPaint.shader = buildShader(colors, resolveGradientHash(extend, colors), item.paintWidth)
+        val textWidth = textPaint.measureText(lineText ?: item.text?.toString() ?: "")
+        textPaint.shader = buildShader(colors, resolveGradientHash(extend, colors), textWidth)
+        drawCanvas.save()
+        drawCanvas.translate(left, top)
         try {
-            super.drawText(item, lineText, canvas, left, top, textPaint, fromWorkerThread)
+            super.drawText(item, lineText, drawCanvas, 0f, 0f, textPaint, fromWorkerThread)
         } finally {
             textPaint.shader = null
+            drawCanvas.restore()
         }
     }
 
@@ -101,28 +83,24 @@ open class GradientViewCacheStuffer(
             return
         }
 
+        val drawCanvas = canvas ?: return
         val colors = resolveGradientColors(extend)
         val gradientHash = resolveGradientHash(extend, colors)
+        val textWidth = sourcePaint.measureText(lineText ?: item.text?.toString() ?: "")
         prepareStrokePaint(sourcePaint)
         strokePaint.style = Paint.Style.STROKE
         strokePaint.strokeWidth = sourcePaint.strokeWidth * strokeMultiple
-        strokePaint.shader = buildShader(colors, gradientHash, item.paintWidth)
+        strokePaint.shader = buildShader(colors, gradientHash, textWidth)
         strokePaint.xfermode = null
-        super.drawStroke(item, lineText, canvas, left, top, strokePaint)
-
-        strokePaint.shader = null
-        strokePaint.strokeWidth = 0f
-        strokePaint.style = Paint.Style.FILL
-        if (drawFromWorkerThread.get() == true) {
-            // 缓存构建在线程内完成时，直接用 SRC 覆盖字形内部，避免低透明度下渐变污染文字。
-            strokePaint.color = item.textColor and 0x00FFFFFF
-            strokePaint.alpha = sourcePaint.alpha
-            strokePaint.xfermode = SRC_XFERMODE
-        } else {
-            strokePaint.xfermode = CLEAR_XFERMODE
+        drawCanvas.save()
+        drawCanvas.translate(left, top)
+        try {
+            super.drawStroke(item, lineText, drawCanvas, 0f, 0f, strokePaint)
+        } finally {
+            strokePaint.shader = null
+            strokePaint.xfermode = null
+            drawCanvas.restore()
         }
-        super.drawStroke(item, lineText, canvas, left, top, strokePaint)
-        strokePaint.xfermode = null
     }
 
     override fun clearCaches() {
@@ -135,6 +113,8 @@ open class GradientViewCacheStuffer(
 
     private fun prepareStrokePaint(source: Paint) {
         strokePaint.set(source)
+        strokePaint.shader = null
+        strokePaint.xfermode = null
         strokePaint.isAntiAlias = true
         strokePaint.strokeJoin = Paint.Join.ROUND
         strokePaint.strokeCap = Paint.Cap.ROUND
@@ -200,8 +180,6 @@ open class GradientViewCacheStuffer(
 
     companion object {
         private const val MAX_SHADER_CACHE_SIZE = 32
-        private val CLEAR_XFERMODE = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-        private val SRC_XFERMODE = PorterDuffXfermode(PorterDuff.Mode.SRC)
     }
 
 }
