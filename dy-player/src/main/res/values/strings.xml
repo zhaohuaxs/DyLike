@@ -560,6 +560,7 @@
     <string name="action_danmaku_binding_clear_all">清空所有</string>
     <string name="action_danmaku_binding_clear_current">清空当前</string>
     <string name="action_danmaku_binding_reset">还原选择</string>
+    <string name="action_danmaku_binding_auto_match">智能匹配</string>
     <string name="danmaku_binding_loading">正在加载…</string>
     <string name="danmaku_binding_error">加载失败，请返回重试</string>
     <string name="danmaku_binding_empty_media">没有可绑定的视频</string>
@@ -575,6 +576,8 @@
     <string name="danmaku_binding_hint_manual_bound">手动绑定 %1$s</string>
     <string name="danmaku_binding_hint_auto_matched">自动匹配 %1$s</string>
     <string name="danmaku_binding_hint_score">匹配度 %1$d</string>
+    <string name="danmaku_binding_hint_auto_match_done">已预绑定 %1$d 条，%2$d 条需手动确认</string>
+    <string name="danmaku_binding_hint_auto_match_no_files">请先选择弹幕文件夹</string>
     <string name="danmaku_binding_hint_episode_same">集数一致</string>
     <string name="danmaku_binding_hint_episode_diff">集数不同</string>
     <string name="danmaku_binding_primary_for_current">已作为主弹幕</string>

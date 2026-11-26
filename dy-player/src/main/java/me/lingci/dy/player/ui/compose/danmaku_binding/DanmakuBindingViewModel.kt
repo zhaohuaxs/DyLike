@@ -28,7 +28,9 @@ import me.lingci.dy.player.ui.danmaku_binding.removeExtensionForDisplay
 import me.lingci.dy.player.ui.danmaku_binding.samePath
 import me.lingci.dy.player.ui.long_video.PlayHelper
 import me.lingci.dy.player.ui.long_video.PlayInfo
+import me.lingci.dy.player.util.SeriesKey
 import me.lingci.lib.base.storage.entity.FileEntity
+import me.lingci.lib.base.util.Comparators
 import me.lingci.lib.base.util.FileOperator
 import me.lingci.lib.dm.view.entity.DmTrack
 import me.lingci.lib.dm.view.util.ZipXmlLoader
@@ -84,7 +86,8 @@ data class DanmakuFileUiModel(
     val score: Int,
     val isArchive: Boolean,
     val owner: DanmakuFileOwner,
-    val isPrimaryForCurrent: Boolean
+    val isPrimaryForCurrent: Boolean,
+    val isStrongMatch: Boolean = false
 )
 
 @Immutable
@@ -121,6 +124,8 @@ sealed interface DanmakuBindingMessage {
     @Immutable data class Saved(val count: Int) : DanmakuBindingMessage
     @Immutable data class SaveFailed(val count: Int) : DanmakuBindingMessage
     @Immutable data object NoChanges : DanmakuBindingMessage
+    @Immutable data class AutoMatchFinished(val matched: Int, val pending: Int) : DanmakuBindingMessage
+    @Immutable data object NoDanmakuFiles : DanmakuBindingMessage
 }
 
 sealed interface DanmakuBindingEvent {
@@ -153,6 +158,8 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
     private var selectedIndex = -1
     private var folderPath = ""
     private var mediaId = ""
+    private var mediaSeasonNumber: Int? = null
+    private var folderSeasonNumber: Int? = null
     private var loaded = false
 
     private val _state = MutableStateFlow(DanmakuBindingUiState())
@@ -195,6 +202,20 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     }
                 }
+                val seasonNumber = withContext(Dispatchers.IO) {
+                    val media = if (mediaId.isBlank()) null else DatabaseManager.mediaDataDao.getById(mediaId)
+                    val storedSeason = media?.seasonNumber?.takeIf { it != Int.MAX_VALUE }
+                    val pathSeason = media?.path.orEmpty()
+                        .let(SeriesKey::seasonLabelOf)
+                        .let(SeriesKey::seasonNumberOf)
+                        .takeIf { it != Int.MAX_VALUE }
+                    val parentSeason = working.firstOrNull()?.item?.videoData?.parentPath.orEmpty()
+                        .let(SeriesKey::seasonLabelOf)
+                        .let(SeriesKey::seasonNumberOf)
+                        .takeIf { it != Int.MAX_VALUE }
+                    storedSeason ?: pathSeason ?: parentSeason
+                }
+                mediaSeasonNumber = seasonNumber
                 val cachedFolder = withContext(Dispatchers.IO) { loadFolderFromMeta() }
                 val cachedFiles = withContext(Dispatchers.IO) {
                     if (cachedFolder.isNotBlank() && File(cachedFolder).isDirectory) {
@@ -211,6 +232,7 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (cachedFiles.isNotEmpty()) {
                     folderPath = cachedFolder
+                    folderSeasonNumber = seasonNumberOfFolder(cachedFolder)
                     danmakuFiles.clear()
                     danmakuFiles.addAll(cachedFiles)
                 }
@@ -238,6 +260,7 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
     fun chooseFolder(path: String) {
         if (path.isBlank()) return
         folderPath = path
+        folderSeasonNumber = seasonNumberOfFolder(path)
         saveFolderToMeta(path)
         viewModelScope.launch {
             val files = withContext(Dispatchers.IO) { scanFiles(File(path)) }
@@ -245,6 +268,68 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
             danmakuFiles.addAll(files)
             publish()
             emitMessage(DanmakuBindingMessage.FolderLoaded(files.size))
+        }
+    }
+
+    fun autoMatch() {
+        if (danmakuFiles.isEmpty()) {
+            emitMessage(DanmakuBindingMessage.NoDanmakuFiles)
+            return
+        }
+        data class Proposal(val mediaIndex: Int, val candidate: DanmakuBindingMatcher.Candidate, val margin: Int)
+        viewModelScope.launch {
+            val (proposals, suggestions) = withContext(Dispatchers.Default) {
+                val matchableFiles = danmakuFiles.filterNot { it.isArchiveFile() }
+                val usedPaths = mediaItems.flatMap { media ->
+                    media.item.workingTracks.map { it.path.normalizeBindingPath() }
+                }.toMutableSet()
+                val proposed = mutableListOf<Proposal>()
+                val suggested = mutableMapOf<Int, DanmakuBindingMatcher.Candidate?>()
+                mediaItems.forEachIndexed { index, media ->
+                    if (media.item.workingTracks.isNotEmpty()) return@forEachIndexed
+                    val candidates = candidatesFor(media, matchableFiles).filterNot { candidate ->
+                        usedPaths.contains(candidate.file.path.normalizeBindingPath())
+                    }
+                    val first = candidates.firstOrNull()
+                    suggested[index] = first
+                    if (first != null && DanmakuBindingMatcher.shouldAutoBind(candidates)) {
+                        val secondScore = candidates.getOrNull(1)?.score ?: 0
+                        proposed += Proposal(index, first, first.score - secondScore)
+                    }
+                }
+                proposed.sortedWith(
+                    compareByDescending<Proposal> { it.candidate.score }
+                        .thenByDescending { it.margin }
+                        .thenBy { it.mediaIndex }
+                ) to suggested
+            }
+            val usedPaths = mediaItems.flatMap { media ->
+                media.item.workingTracks.map { it.path.normalizeBindingPath() }
+            }.toMutableSet()
+            var matched = 0
+            proposals.forEach { proposal ->
+                val media = mediaItems.getOrNull(proposal.mediaIndex) ?: return@forEach
+                if (media.item.workingTracks.isNotEmpty()) return@forEach
+                val path = proposal.candidate.file.path.normalizeBindingPath()
+                if (!usedPaths.add(path)) return@forEach
+                val track = proposal.candidate.file.toDmTrack()
+                media.item.workingTracks.add(track)
+                media.item.lastTrackKey = track.bindingKey()
+                media.hint = DanmakuMatchHint.AutoMatched(track.displayNameWithoutExtension())
+                matched++
+            }
+            mediaItems.forEachIndexed { index, media ->
+                if (media.item.workingTracks.isNotEmpty()) return@forEachIndexed
+                val suggestion = suggestions[index]
+                media.hint = if (suggestion == null) {
+                    DanmakuMatchHint.Unmatched
+                } else {
+                    DanmakuMatchHint.Scored(suggestion.episodeSame, suggestion.score)
+                }
+            }
+            publish()
+            val pending = mediaItems.count { it.item.workingTracks.isEmpty() }
+            emitMessage(DanmakuBindingMessage.AutoMatchFinished(matched, pending))
         }
     }
 
@@ -368,6 +453,7 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
         query = ""
         danmakuFiles.clear()
         folderPath = ""
+        folderSeasonNumber = null
         mediaItems.forEach { media ->
             media.item.workingTracks = media.item.originalTracks.map { it.bindingCopy() }.toMutableList()
             media.item.lastTrackKey = media.item.originalLastTrackKey
@@ -488,9 +574,7 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun buildFileUi(): List<DanmakuFileUiModel> {
         val selected = mediaItems.getOrNull(selectedIndex)
-        val candidates = selected?.let {
-            DanmakuBindingMatcher.match(it.item.videoData, danmakuFiles)
-        }.orEmpty()
+        val candidates = selected?.let(::candidatesFor).orEmpty()
         val candidateMap = candidates.associateBy { it.file.path.normalizeBindingPath() }
         return danmakuFiles.filter { file ->
             query.isBlank() ||
@@ -520,13 +604,30 @@ class DanmakuBindingViewModel(app: Application) : AndroidViewModel(app) {
                 owner = ownerUi,
                 isPrimaryForCurrent = owner != null &&
                     ownerIndex == selectedIndex &&
-                    owner.item.isPrimary(key)
+                    owner.item.isPrimary(key),
+                isStrongMatch = candidate?.autoBindable == true
             )
         }.sortedWith(
             compareByDescending<DanmakuFileUiModel> { it.owner is DanmakuFileOwner.Current }
                 .thenByDescending { it.score }
-                .thenBy { it.title }
+                .thenBy(Comparators.stringComparator()) { it.title }
         )
+    }
+
+    private fun candidatesFor(
+        media: WorkingMedia,
+        files: List<FileEntity> = danmakuFiles
+    ): List<DanmakuBindingMatcher.Candidate> {
+        return DanmakuBindingMatcher.match(
+            media.item.videoData,
+            files,
+            videoSeasonHint = mediaSeasonNumber,
+            fileSeasonHint = folderSeasonNumber
+        )
+    }
+
+    private fun seasonNumberOfFolder(path: String): Int? {
+        return SeriesKey.seasonNumberOf(SeriesKey.seasonLabelOf(path)).takeIf { it != Int.MAX_VALUE }
     }
 
     private fun scanFiles(folder: File): List<FileEntity> {

@@ -17,16 +17,17 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
@@ -47,6 +48,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -107,6 +110,8 @@ fun DanmakuBindingRoute(
     val tplSaved = stringResource(R.string.danmaku_binding_hint_saved)
     val tplSaveFailed = stringResource(R.string.danmaku_binding_hint_save_failed)
     val msgNoChanges = stringResource(R.string.danmaku_binding_hint_no_changes)
+    val tplAutoMatchDone = stringResource(R.string.danmaku_binding_hint_auto_match_done)
+    val msgNoDanmakuFiles = stringResource(R.string.danmaku_binding_hint_auto_match_no_files)
 
     LaunchedEffect(lifecycleOwner, vm) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -124,6 +129,9 @@ fun DanmakuBindingRoute(
                             is DanmakuBindingMessage.Saved -> tplSaved.format(message.count)
                             is DanmakuBindingMessage.SaveFailed -> tplSaveFailed.format(message.count)
                             DanmakuBindingMessage.NoChanges -> msgNoChanges
+                            is DanmakuBindingMessage.AutoMatchFinished ->
+                                tplAutoMatchDone.format(message.matched, message.pending)
+                            DanmakuBindingMessage.NoDanmakuFiles -> msgNoDanmakuFiles
                         }
                         ToastUtil.showToast(context, text)
                     }
@@ -160,6 +168,7 @@ fun DanmakuBindingRoute(
         },
         onQueryChange = vm::setQuery,
         onSelectMedia = vm::selectMedia,
+        onAutoMatch = vm::autoMatch,
         onBindFile = vm::bindFile,
         onRebindFile = vm::rebindFile,
         onSetPrimary = vm::setPrimary,
@@ -182,6 +191,7 @@ fun DanmakuBindingScreen(
     onSelectFolder: () -> Unit = {},
     onQueryChange: (String) -> Unit = {},
     onSelectMedia: (Int) -> Unit = {},
+    onAutoMatch: () -> Unit = {},
     onBindFile: (Int) -> Unit = {},
     onRebindFile: (Int) -> Unit = {},
     onSetPrimary: (Int, String) -> Unit = { _, _ -> },
@@ -321,6 +331,7 @@ fun DanmakuBindingScreen(
         }
 
         BottomBar(
+            onAutoMatch = onAutoMatch,
             onClearCurrent = onClearCurrent,
             onRequestClearAll = {
                 if (state.summary.trackCount == 0) {
@@ -515,7 +526,7 @@ private fun FileRow(
                 item.title,
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (item.owner is DanmakuFileOwner.Current) c.accent else c.textPrimary,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             val summary = fileSummary(item)
@@ -530,17 +541,54 @@ private fun FileRow(
                 )
             }
         }
-        Icon(
-            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            null,
-            tint = c.textTertiary,
-            modifier = Modifier.size(16.dp)
+        Spacer(Modifier.width(8.dp))
+        MatchScoreBadge(score = item.score, strongMatch = item.isStrongMatch)
+    }
+}
+
+@Composable
+private fun MatchScoreBadge(
+    score: Int,
+    strongMatch: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val c = LocalDyLikeColors.current
+    val shape = RoundedCornerShape(8.dp)
+    val background = when {
+        strongMatch -> c.accent.copy(alpha = .14f)
+        score > 0 -> c.surfaceRaised
+        else -> Color.Transparent
+    }
+    val border = if (strongMatch) c.accent.copy(alpha = .35f) else c.hairline
+    val textColor = when {
+        strongMatch -> c.accent
+        score > 0 -> c.textSecondary
+        else -> c.textTertiary
+    }
+    val description = stringResource(R.string.danmaku_binding_hint_score, score)
+    Box(
+        modifier
+            .heightIn(min = 28.dp)
+            .widthIn(min = 40.dp)
+            .clip(shape)
+            .background(background)
+            .border(1.dp, border, shape)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = score.toString(),
+            style = DyLikeType.meta.copy(fontWeight = FontWeight.SemiBold),
+            color = textColor,
+            maxLines = 1
         )
     }
 }
 
 @Composable
 private fun BottomBar(
+    onAutoMatch: () -> Unit,
     onClearCurrent: () -> Unit,
     onRequestClearAll: () -> Unit,
     onSave: () -> Unit
@@ -554,6 +602,13 @@ private fun BottomBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        TextButton(onClick = onAutoMatch) {
+            Text(
+                stringResource(R.string.action_danmaku_binding_auto_match),
+                style = DyLikeType.meta,
+                color = c.accent
+            )
+        }
         TextButton(onClick = onRequestClearAll) {
             Text(
                 stringResource(R.string.action_danmaku_binding_clear_all),
@@ -637,7 +692,6 @@ private fun hintText(hint: DanmakuMatchHint, boundCount: Int): String = when (hi
 @Composable
 private fun fileSummary(item: DanmakuFileUiModel): String {
     val parts = buildList {
-        if (item.score > 0) add(stringResource(R.string.danmaku_binding_hint_score, item.score))
         when (val owner = item.owner) {
             is DanmakuFileOwner.None -> Unit
             is DanmakuFileOwner.Current -> add(
@@ -656,7 +710,7 @@ private fun fileSummary(item: DanmakuFileUiModel): String {
     return parts.joinToString(" · ")
 }
 
-@Preview(showBackground = true, backgroundColor = 0xFF101014, heightDp = 640)
+@Preview(showBackground = true, heightDp = 640)
 @Composable
 private fun DanmakuBindingContentPreview() {
     DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
@@ -691,11 +745,12 @@ private fun DanmakuBindingContentPreview() {
                     DanmakuFileUiModel(
                         sourceIndex = 0,
                         key = "/dm/E01.ass",
-                        title = "进击的巨人 S01E01.ass",
+                        title = "进击的巨人 第一季 第01集 1080p 高清修复版 弹幕.ass",
                         score = 92,
                         isArchive = false,
                         owner = DanmakuFileOwner.Current,
-                        isPrimaryForCurrent = true
+                        isPrimaryForCurrent = true,
+                        isStrongMatch = true
                     ),
                     DanmakuFileUiModel(
                         sourceIndex = 1,
@@ -714,7 +769,7 @@ private fun DanmakuBindingContentPreview() {
     }
 }
 
-@Preview(showBackground = true, backgroundColor = 0xFF101014, heightDp = 400)
+@Preview(showBackground = true, heightDp = 400)
 @Composable
 private fun DanmakuBindingEmptyPreview() {
     DyLikeTheme(ThemeMode.Dark, BrandHue.Purple, false) {
