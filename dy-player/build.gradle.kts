@@ -30,8 +30,8 @@ android {
         minSdk = 24
         // noinspection ExpiredTargetSdkVersion
         targetSdk = 28
-        versionCode = 24
-        versionName = "0.2.4"
+        versionCode = 30
+        versionName = "0.3.0"
 
         // Bugly APP ID，从 local.properties 读取，未配置时使用空字符串
         buildConfigField("String", "BUGLY_APP_ID", buglyAppId)
@@ -102,7 +102,7 @@ android {
         create("beta") {
             dimension = "mode"
 
-            applicationIdSuffix = ".debugx"
+            applicationIdSuffix = ".debug"
             versionNameSuffix = "-d"
             manifestPlaceholders["APP_NAME"] = "@string/app_name_debug"
             manifestPlaceholders["APP_ICON"] = "@mipmap/ic_launcher_debug"

@@ -41,7 +41,9 @@
     <string name="hint_smb_port_desc">默认445</string>
     <string name="hint_smb_domain">域/工作组</string>
     <string name="hint_smb_domain_desc">可选，Windows/NAS 登录失败时可填写 WORKGROUP 或设备名</string>
-    <string name="hint_smb_username_desc">可选，不填使用访客/匿名访问</string>
+    <string name="hint_smb_username_desc">可选，不填使用匿名访问；Windows 共享可开启 Guest 模式</string>
+    <string name="hint_smb_windows_guest">Windows Guest</string>
+    <string name="hint_smb_windows_guest_desc">使用 Guest 账号和空密码，适用于已启用访客登录的 Windows 共享</string>
     <string name="hint_smb_password_desc">可选，不填为空密码</string>
     <string name="default_source_dav_name">WebDav资源库</string>
     <string name="hint_source_site_required">请填写服务器地址</string>

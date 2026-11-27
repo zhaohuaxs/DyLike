@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -238,6 +239,14 @@ fun SourceFormSheet(
     var password by rememberSaveable(type, restoreKey) {
         mutableStateOf(editing?.password.orEmpty())
     }
+    var windowsGuest by rememberSaveable(type, restoreKey) {
+        mutableStateOf(
+            isSmb && SourceCredentials.isSmbWindowsGuest(
+                editing?.username.orEmpty(),
+                editing?.password.orEmpty()
+            )
+        )
+    }
 
     var error by remember { mutableStateOf<String?>(null) }
     var testState by remember { mutableStateOf(TestState.Idle) }
@@ -261,7 +270,7 @@ fun SourceFormSheet(
 
     /**
      * 凭据归一（规则见 [SourceCredentials]）：SMB 的空用户名必须保持空，那代表匿名访问；
-     * 只有 WebDAV 才在留空时兜底 guest。
+     * Windows Guest 模式显式落库 Guest 用户名和空密码，只有 WebDAV 才在留空时兜底 guest。
      */
     fun buildSource(): SourceData {
         val source = SourceData()
@@ -269,12 +278,13 @@ fun SourceFormSheet(
         editing?.let { source.id = it.id }
         source.title = name.trim().ifBlank { defaultName }
         source.username = if (isSmb) {
-            SourceCredentials.smbUsername(username, domain)
+            if (windowsGuest) SourceCredentials.smbWindowsGuestUsername()
+            else SourceCredentials.smbUsername(username, domain)
         } else {
             SourceCredentials.webdavUsername(username)
         }
         source.password = if (isSmb) {
-            SourceCredentials.smbPassword(password)
+            if (windowsGuest) "" else SourceCredentials.smbPassword(password)
         } else {
             SourceCredentials.webdavPassword(password)
         }
@@ -376,20 +386,54 @@ fun SourceFormSheet(
                             modifier = Modifier.width(140.dp)
                         )
                         OutlinedTextField(
-                            value = domain,
+                            value = if (windowsGuest) "" else domain,
                             onValueChange = { domain = it },
                             label = { Text(stringResource(R.string.hint_smb_domain)) },
+                            enabled = !windowsGuest,
                             singleLine = true,
                             modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                windowsGuest = !windowsGuest
+                                testState = TestState.Idle
+                                testMessage = null
+                            }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.hint_smb_windows_guest),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = stringResource(R.string.hint_smb_windows_guest_desc),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = windowsGuest,
+                            onCheckedChange = {
+                                windowsGuest = it
+                                testState = TestState.Idle
+                                testMessage = null
+                            }
                         )
                     }
                 }
 
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
-                    value = username,
+                    value = if (windowsGuest) SourceCredentials.smbWindowsGuestUsername() else username,
                     onValueChange = { username = it },
                     label = { Text(stringResource(R.string.hint_dav_username)) },
+                    enabled = !windowsGuest,
                     supportingText = {
                         Text(
                             stringResource(
@@ -402,9 +446,10 @@ fun SourceFormSheet(
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
-                    value = password,
+                    value = if (windowsGuest) "" else password,
                     onValueChange = { password = it },
                     label = { Text(stringResource(R.string.hint_dav_password)) },
+                    enabled = !windowsGuest,
                     supportingText = {
                         Text(
                             stringResource(

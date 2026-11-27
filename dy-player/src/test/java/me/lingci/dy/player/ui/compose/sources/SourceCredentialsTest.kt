@@ -2,6 +2,8 @@ package me.lingci.dy.player.ui.compose.sources
 
 import me.lingci.lib.base.storage.smb.SmbAuthToken
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SourceCredentialsTest {
@@ -41,6 +43,20 @@ class SourceCredentialsTest {
     fun smbToken_preservesWhitespacePassword() {
         assertEquals("   ", SmbAuthToken.normalize("alice", "   ").password)
         assertEquals(" secret ", SmbAuthToken.normalize("alice", " secret ").password)
+    }
+
+    @Test
+    fun smb_windowsGuest_usesStableUsername() {
+        assertEquals("Guest", SourceCredentials.smbWindowsGuestUsername())
+    }
+
+    @Test
+    fun smb_windowsGuest_isDetectedOnlyWithEmptyPassword() {
+        assertTrue(SourceCredentials.isSmbWindowsGuest("Guest", ""))
+        assertTrue(SourceCredentials.isSmbWindowsGuest(" guest ", ""))
+        assertFalse(SourceCredentials.isSmbWindowsGuest("", ""))
+        assertFalse(SourceCredentials.isSmbWindowsGuest("Guest", "secret"))
+        assertFalse(SourceCredentials.isSmbWindowsGuest("WORKGROUP\\Guest", ""))
     }
 
     @Test
